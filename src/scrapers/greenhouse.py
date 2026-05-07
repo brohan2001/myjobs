@@ -23,7 +23,9 @@ class GreenhouseScraper(BaseScraper):
             description = _strip_html(j.get("content", ""))
             location = (j.get("location") or {}).get("name", "")
             remote = 1 if "remote" in location.lower() else 0
-            posted_date = (j.get("updated_at") or "")[:10] or None
+            raw_ts = j.get("updated_at") or ""
+            posted_date = raw_ts[:10] or None
+            posted_at = raw_ts or None  # full ISO datetime, e.g. "2026-05-06T14:23:00.000Z"
 
             jobs.append({
                 "external_id": str(j["id"]),
@@ -34,6 +36,7 @@ class GreenhouseScraper(BaseScraper):
                 "remote":      remote,
                 "url":         j.get("absolute_url", ""),
                 "posted_date": posted_date,
+                "posted_at":   posted_at,
                 "ats_type":    "greenhouse",
             })
         return jobs

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -32,10 +33,13 @@ from src.renderer import render_report
 from src.scrapers.base import ScraperError
 from src.scrapers.greenhouse import GreenhouseScraper
 from src.scrapers.lever import LeverScraper
+from src.scrapers.workday import WorkdayScraper
+from src.scrapers.amazon import AmazonScraper
+from src.scrapers.linkedin import LinkedInScraper
 
 console = Console()
 
-# Max concurrent scrape tasks per ATS type
+# Max concurrent scrape tasks per ATS batch
 _SCRAPE_CONCURRENCY = asyncio.Semaphore(5)
 
 
@@ -48,7 +52,6 @@ async def _scrape_company(scraper, company: dict, company_id: int, existing_keys
             with get_conn() as conn:
                 inserted = insert_jobs(conn, new_jobs)
                 update_company_scraped(conn, company["slug"], company["ats_type"])
-            # Update caller's key set in-place
             for j in new_jobs:
                 existing_keys.add((j["external_id"], j["ats_type"]))
             return len(jobs), inserted, None
@@ -58,12 +61,27 @@ async def _scrape_company(scraper, company: dict, company_id: int, existing_keys
             return 0, 0, f"{company['ats_type']}/{company['slug']}: unexpected: {e}"
 
 
+async def _scrape_linkedin_company(scraper, company: dict, company_id: int, existing_keys: set) -> tuple[int, int, str | None]:
+    """LinkedIn runs without the shared semaphore — it enforces its own rate limit."""
+    try:
+        jobs = await scraper.fetch_jobs(company, company_id)
+        new_jobs = scraper.deduplicate(jobs, existing_keys)
+        with get_conn() as conn:
+            inserted = insert_jobs(conn, new_jobs)
+            update_company_scraped(conn, company["slug"], company["ats_type"])
+        for j in new_jobs:
+            existing_keys.add((j["external_id"], j["ats_type"]))
+        return len(jobs), inserted, None
+    except Exception as e:
+        return 0, 0, f"linkedin/{company['slug']}: {e}"
+
+
 async def run_daily(shortlist_limit: int = 50) -> Path:
     run_date = date.today().isoformat()
     start_time = time.monotonic()
     errors: list[str] = []
 
-    console.rule(f"[bold blue]Daily Job Run — {run_date}")
+    console.rule(f"[bold blue]Job Run — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
     # ── 1. INIT ────────────────────────────────────────────────────────────
     init_db()
@@ -73,15 +91,17 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     companies = load_companies()
     gh_companies = [c for c in companies if c["ats_type"] == "greenhouse"]
     lv_companies = [c for c in companies if c["ats_type"] == "lever"]
+    wd_companies = [c for c in companies if c["ats_type"] == "workday"]
+    az_companies = [c for c in companies if c["ats_type"] == "amazon"]
+    li_companies = [c for c in companies if c["ats_type"] == "linkedin"]
 
     console.print(
-        f"[dim]Companies: {len(gh_companies)} Greenhouse, {len(lv_companies)} Lever[/dim]"
+        f"[dim]Companies: {len(gh_companies)} Greenhouse, {len(lv_companies)} Lever, "
+        f"{len(wd_companies)} Workday, {len(az_companies)} Amazon, {len(li_companies)} LinkedIn[/dim]"
     )
 
-    # Load existing keys once (shared mutable set updated per task)
     with get_conn() as conn:
         existing_keys: set[tuple] = get_existing_keys(conn)
-        # Ensure all companies exist in DB
         company_id_map: dict[str, int] = {}
         for c in companies:
             cid = upsert_company(conn, c)
@@ -98,15 +118,18 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
         TaskProgressColumn(),
         console=console,
     ) as progress:
+        total_companies = len(gh_companies) + len(lv_companies) + len(wd_companies) + len(az_companies)
         task_gh = progress.add_task("[cyan]Greenhouse", total=len(gh_companies))
         task_lv = progress.add_task("[yellow]Lever     ", total=len(lv_companies))
+        task_wd = progress.add_task("[green]Workday   ", total=len(wd_companies))
+        task_az = progress.add_task("[orange3]Amazon    ", total=max(len(az_companies), 1))
 
+        # Greenhouse
         async with GreenhouseScraper() as gh_scraper:
-            gh_tasks = []
-            for c in gh_companies:
-                cid = company_id_map[f"greenhouse:{c['slug']}"]
-                gh_tasks.append(_scrape_company(gh_scraper, c, cid, existing_keys))
-
+            gh_tasks = [
+                _scrape_company(gh_scraper, c, company_id_map[f"greenhouse:{c['slug']}"], existing_keys)
+                for c in gh_companies
+            ]
             for coro in asyncio.as_completed(gh_tasks):
                 scraped, new, err = await coro
                 jobs_scraped += scraped
@@ -115,12 +138,12 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
                     errors.append(err)
                 progress.advance(task_gh)
 
+        # Lever
         async with LeverScraper() as lv_scraper:
-            lv_tasks = []
-            for c in lv_companies:
-                cid = company_id_map[f"lever:{c['slug']}"]
-                lv_tasks.append(_scrape_company(lv_scraper, c, cid, existing_keys))
-
+            lv_tasks = [
+                _scrape_company(lv_scraper, c, company_id_map[f"lever:{c['slug']}"], existing_keys)
+                for c in lv_companies
+            ]
             for coro in asyncio.as_completed(lv_tasks):
                 scraped, new, err = await coro
                 jobs_scraped += scraped
@@ -128,6 +151,48 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
                 if err:
                     errors.append(err)
                 progress.advance(task_lv)
+
+        # Workday
+        if wd_companies:
+            async with WorkdayScraper() as wd_scraper:
+                wd_tasks = [
+                    _scrape_company(wd_scraper, c, company_id_map[f"workday:{c['slug']}"], existing_keys)
+                    for c in wd_companies
+                ]
+                for coro in asyncio.as_completed(wd_tasks):
+                    scraped, new, err = await coro
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_wd)
+
+        # Amazon
+        if az_companies:
+            async with AmazonScraper() as az_scraper:
+                for c in az_companies:
+                    cid = company_id_map[f"amazon:{c['slug']}"]
+                    scraped, new, err = await _scrape_company(az_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_az)
+
+    # LinkedIn runs outside the progress bar (best-effort, sequential, rate-limited)
+    if li_companies:
+        task_li = progress.add_task("[blue]LinkedIn  ", total=len(li_companies)) if False else None
+        console.print(f"[dim]LinkedIn: scraping {len(li_companies)} companies (rate-limited)...[/dim]")
+        async with LinkedInScraper() as li_scraper:
+            for c in li_companies:
+                cid = company_id_map[f"linkedin:{c['slug']}"]
+                scraped, new, err = await _scrape_linkedin_company(li_scraper, c, cid, existing_keys)
+                jobs_scraped += scraped
+                jobs_new += new
+                if err:
+                    errors.append(err)
+                # Random delay between companies to avoid rate limiting
+                await asyncio.sleep(random.uniform(5, 10))
 
     console.print(f"[green]Scraped {jobs_scraped} jobs ({jobs_new} new)[/green]")
 
@@ -181,7 +246,6 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             "status":           "complete" if not errors else "complete_with_errors",
         })
 
-    # Summary
     elapsed_fmt = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
     console.rule("[bold blue]Done")
     console.print(f"[bold]Run complete in {elapsed_fmt}[/bold]")

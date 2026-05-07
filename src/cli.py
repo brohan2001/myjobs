@@ -257,5 +257,37 @@ def company_disable(
     console.print(f"[yellow]Disabled {slug}[/yellow]")
 
 
+# ── serve ─────────────────────────────────────────────────────────────────────
+
+@app.command()
+def serve(
+    port: int = typer.Option(8080, help="Port to listen on"),
+    host: str = typer.Option("127.0.0.1", help="Host to bind"),
+    days: int = typer.Option(14, help="Show jobs from the last N days"),
+) -> None:
+    """Start the live job board web server at http://localhost:<port>"""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]uvicorn not installed. Run: pip install uvicorn[/red]")
+        raise typer.Exit(1)
+
+    from src.database import init_db
+    init_db()
+    console.print(f"[bold green]myjobs live → http://{host}:{port}[/bold green]")
+    console.print("[dim]Press Ctrl+C to stop.[/dim]")
+
+    import os
+    os.environ.setdefault("MYJOBS_SERVE_DAYS", str(days))
+
+    uvicorn.run(
+        "src.server:app",
+        host=host,
+        port=port,
+        reload=False,
+        log_level="warning",
+    )
+
+
 if __name__ == "__main__":
     app()

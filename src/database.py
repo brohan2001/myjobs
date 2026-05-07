@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     remote        INTEGER DEFAULT 0,
     url           TEXT NOT NULL,
     posted_date   TEXT,
+    posted_at     TEXT,
     scraped_at    TEXT DEFAULT (datetime('now')),
     ats_type      TEXT,
 
@@ -99,9 +100,19 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 
+_MIGRATIONS = [
+    "ALTER TABLE jobs ADD COLUMN posted_at TEXT",
+]
+
+
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
+        for migration in _MIGRATIONS:
+            try:
+                conn.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 def upsert_company(conn: sqlite3.Connection, company: dict) -> int:
@@ -121,13 +132,15 @@ def insert_jobs(conn: sqlite3.Connection, jobs: list[dict]) -> int:
     inserted = 0
     for job in jobs:
         try:
+            row = dict(job)
+            row.setdefault("posted_at", None)
             conn.execute(
                 """INSERT OR IGNORE INTO jobs
                    (external_id, company_id, title, description, location, remote,
-                    url, posted_date, ats_type)
+                    url, posted_date, posted_at, ats_type)
                    VALUES (:external_id, :company_id, :title, :description,
-                           :location, :remote, :url, :posted_date, :ats_type)""",
-                job,
+                           :location, :remote, :url, :posted_date, :posted_at, :ats_type)""",
+                row,
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 inserted += 1
@@ -273,4 +286,22 @@ def get_existing_keys(conn: sqlite3.Connection) -> set[tuple[str, str]]:
 def get_daily_run(conn: sqlite3.Connection, run_date: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM daily_runs WHERE run_date=?", (run_date,)
+    ).fetchone()
+
+
+def get_shortlisted_jobs(conn: sqlite3.Connection, days: int = 14) -> list[dict]:
+    rows = conn.execute(
+        """SELECT j.*, c.name as company_name, c.industry, c.tier, c.domain
+           FROM jobs j JOIN companies c ON j.company_id=c.id
+           WHERE j.status='shortlisted'
+             AND julianday('now') - julianday(j.scraped_at) <= ?
+           ORDER BY j.total_score DESC""",
+        (days,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_last_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM daily_runs ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
