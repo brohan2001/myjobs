@@ -32,7 +32,7 @@ class BaseScraper(ABC):
         if self.client:
             await self.client.aclose()
 
-    async def _get(self, url: str, **kwargs) -> httpx.Response:
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         elapsed = time.monotonic() - self._last_request
         wait = self._min_interval - elapsed
         if wait > 0:
@@ -41,7 +41,7 @@ class BaseScraper(ABC):
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                resp = await self.client.get(url, **kwargs)
+                resp = await self.client.request(method, url, **kwargs)
                 self._last_request = time.monotonic()
                 if resp.status_code == 429:
                     await asyncio.sleep(2 ** (attempt + 2))
@@ -60,6 +60,12 @@ class BaseScraper(ABC):
                 await asyncio.sleep(2 ** attempt)
 
         raise ScraperError(f"Failed after 3 attempts: {url}") from last_exc
+
+    async def _get(self, url: str, **kwargs) -> httpx.Response:
+        return await self._request("GET", url, **kwargs)
+
+    async def _post(self, url: str, **kwargs) -> httpx.Response:
+        return await self._request("POST", url, **kwargs)
 
     def deduplicate(self, jobs: list[dict], existing_keys: set[tuple]) -> list[dict]:
         seen: set[tuple] = set()

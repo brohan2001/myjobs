@@ -30,13 +30,14 @@ class LeverScraper(BaseScraper):
 
             created_ms = j.get("createdAt", 0)
             posted_date = None
+            posted_at = None
             if created_ms:
                 try:
-                    posted_date = datetime.fromtimestamp(
-                        created_ms / 1000, tz=timezone.utc
-                    ).date().isoformat()
+                    dt = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
+                    posted_date = dt.date().isoformat()
+                    posted_at = dt.isoformat()
                 except (OSError, OverflowError):
-                    posted_date = None
+                    pass
 
             description = j.get("descriptionPlain", "") or _strip_html(
                 j.get("description", "")
@@ -51,6 +52,7 @@ class LeverScraper(BaseScraper):
                 "remote":      remote,
                 "url":         j.get("hostedUrl", ""),
                 "posted_date": posted_date,
+                "posted_at":   posted_at,
                 "ats_type":    "lever",
             })
         return jobs
