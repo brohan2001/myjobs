@@ -19,8 +19,9 @@ from src.scrapers.greenhouse import GreenhouseScraper
 from src.scrapers.lever import LeverScraper
 from src.scrapers.workday import WorkdayScraper
 from src.scrapers.amazon import AmazonScraper
-from src.scrapers.google import GoogleScraper
-from src.scrapers.apple import AppleScraper
+from src.scrapers.google import GoogleScraper, _parse_api_job as _google_parse_api_job
+from src.scrapers.apple import AppleScraper, _parse_api_job as _apple_parse_api_job
+from src.scrapers.ashby import AshbyScraper
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -297,6 +298,7 @@ class TestAmazonParser:
 
 
 # ── Google ────────────────────────────────────────────────────────────────────
+# GoogleScraper uses Playwright (no _request calls), so we test _parse_api_job directly.
 
 @pytest.mark.asyncio
 class TestGoogleParser:
@@ -309,45 +311,32 @@ class TestGoogleParser:
         return _load_fixture(self.FIXTURE)
 
     @pytest.fixture
-    def mock_request(self, fixture_data):
-        # No nextPageToken in fixture → pagination stops after one page.
-        resp = _mock_response(fixture_data)
-        with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
-            m.return_value = resp
-            yield m
+    def parsed_jobs(self, fixture_data):
+        return [j for j in (_google_parse_api_job(r, COMPANY_ID) for r in fixture_data["jobs"]) if j]
 
-    async def test_returns_list_of_dicts(self, mock_request):
-        async with GoogleScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert isinstance(jobs, list)
-        assert len(jobs) > 0
+    async def test_returns_list_of_dicts(self, parsed_jobs):
+        assert isinstance(parsed_jobs, list)
+        assert len(parsed_jobs) > 0
 
-    async def test_required_fields_present(self, mock_request, fixture_data):
-        async with GoogleScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert len(jobs) == len(fixture_data["jobs"])
-        _assert_job_contract(jobs, "google")
+    async def test_required_fields_present(self, parsed_jobs, fixture_data):
+        assert len(parsed_jobs) == len(fixture_data["jobs"])
+        _assert_job_contract(parsed_jobs, "google")
 
-    async def test_external_id_is_nonempty_string(self, mock_request):
-        async with GoogleScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
+    async def test_external_id_is_nonempty_string(self, parsed_jobs):
+        for job in parsed_jobs:
             assert job["external_id"] != ""
 
-    async def test_remote_is_binary_int(self, mock_request):
-        async with GoogleScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
+    async def test_remote_is_binary_int(self, parsed_jobs):
+        for job in parsed_jobs:
             assert job["remote"] in (0, 1)
 
-    async def test_url_starts_with_http(self, mock_request):
-        async with GoogleScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
+    async def test_url_starts_with_http(self, parsed_jobs):
+        for job in parsed_jobs:
             assert job["url"].startswith("http")
 
 
 # ── Apple ─────────────────────────────────────────────────────────────────────
+# AppleScraper uses Playwright (no _request calls), so we test _parse_api_job directly.
 
 @pytest.mark.asyncio
 class TestAppleParser:
@@ -360,39 +349,77 @@ class TestAppleParser:
         return _load_fixture(self.FIXTURE)
 
     @pytest.fixture
+    def parsed_jobs(self, fixture_data):
+        seen: set = set()
+        return [j for j in (_apple_parse_api_job(r, COMPANY_ID, seen) for r in fixture_data["searchResults"]) if j]
+
+    async def test_returns_list_of_dicts(self, parsed_jobs):
+        assert isinstance(parsed_jobs, list)
+        assert len(parsed_jobs) > 0
+
+    async def test_required_fields_present(self, parsed_jobs, fixture_data):
+        assert len(parsed_jobs) == len(fixture_data["searchResults"])
+        _assert_job_contract(parsed_jobs, "apple")
+
+    async def test_external_id_is_nonempty_string(self, parsed_jobs):
+        for job in parsed_jobs:
+            assert job["external_id"] != ""
+
+    async def test_remote_is_binary_int(self, parsed_jobs):
+        for job in parsed_jobs:
+            assert job["remote"] in (0, 1)
+
+    async def test_url_starts_with_http(self, parsed_jobs):
+        for job in parsed_jobs:
+            assert job["url"].startswith("http")
+
+
+# ── Ashby ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+class TestAshbyParser:
+    COMPANY = {"name": "Ramp", "slug": "ramp", "ats_type": "ashby",
+               "ashby_slug": "ramp", "domain": "ramp.com", "industry": "fintech", "tier": 1}
+    FIXTURE = "ashby_synthetic.json"
+
+    @pytest.fixture
+    def fixture_data(self):
+        return _load_fixture(self.FIXTURE)
+
+    @pytest.fixture
     def mock_request(self, fixture_data):
-        # totalRecords == len(searchResults) → no second page fetched.
         resp = _mock_response(fixture_data)
         with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
             m.return_value = resp
             yield m
 
     async def test_returns_list_of_dicts(self, mock_request):
-        async with AppleScraper() as scraper:
+        async with AshbyScraper() as scraper:
             jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
         assert isinstance(jobs, list)
         assert len(jobs) > 0
 
     async def test_required_fields_present(self, mock_request, fixture_data):
-        async with AppleScraper() as scraper:
+        async with AshbyScraper() as scraper:
             jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert len(jobs) == len(fixture_data["searchResults"])
-        _assert_job_contract(jobs, "apple")
+        postings = fixture_data["data"]["jobBoard"]["jobPostings"]
+        assert len(jobs) == len(postings)
+        _assert_job_contract(jobs, "ashby")
 
     async def test_external_id_is_nonempty_string(self, mock_request):
-        async with AppleScraper() as scraper:
+        async with AshbyScraper() as scraper:
             jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
         for job in jobs:
             assert job["external_id"] != ""
 
     async def test_remote_is_binary_int(self, mock_request):
-        async with AppleScraper() as scraper:
+        async with AshbyScraper() as scraper:
             jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
         for job in jobs:
             assert job["remote"] in (0, 1)
 
     async def test_url_starts_with_http(self, mock_request):
-        async with AppleScraper() as scraper:
+        async with AshbyScraper() as scraper:
             jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
         for job in jobs:
             assert job["url"].startswith("http")

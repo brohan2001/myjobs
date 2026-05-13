@@ -39,6 +39,7 @@ from src.scrapers.workday import WorkdayScraper, fetch_workday_description
 from src.scrapers.amazon import AmazonScraper
 from src.scrapers.google import GoogleScraper
 from src.scrapers.apple import AppleScraper
+from src.scrapers.ashby import AshbyScraper
 from src.scrapers.linkedin import LinkedInBroadScraper, LinkedInScraper
 
 console = Console()
@@ -190,11 +191,12 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     li_companies = [c for c in companies if c["ats_type"] == "linkedin"]
     go_companies = [c for c in companies if c["ats_type"] == "google"]
     ap_companies = [c for c in companies if c["ats_type"] == "apple"]
+    ab_companies = [c for c in companies if c["ats_type"] == "ashby"]
 
     console.print(
         f"[dim]Companies: {len(gh_companies)} Greenhouse, {len(lv_companies)} Lever, "
         f"{len(wd_companies)} Workday, {len(az_companies)} Amazon, {len(li_companies)} LinkedIn, "
-        f"{len(go_companies)} Google, {len(ap_companies)} Apple[/dim]"
+        f"{len(go_companies)} Google, {len(ap_companies)} Apple, {len(ab_companies)} Ashby[/dim]"
     )
 
     with get_conn() as conn:
@@ -222,6 +224,7 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
         task_az = progress.add_task("[orange3]Amazon    ", total=max(len(az_companies), 1))
         task_go = progress.add_task("[red]Google    ", total=max(len(go_companies), 1))
         task_ap = progress.add_task("[white]Apple     ", total=max(len(ap_companies), 1))
+        task_ab = progress.add_task("[magenta]Ashby     ", total=max(len(ab_companies), 1))
 
         # Greenhouse
         async with GreenhouseScraper() as gh_scraper:
@@ -302,6 +305,21 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
                     if err:
                         errors.append(err)
                     progress.advance(task_ap)
+
+        # Ashby
+        if ab_companies:
+            async with AshbyScraper() as ab_scraper:
+                ab_tasks = [
+                    _scrape_company(ab_scraper, c, company_id_map[f"ashby:{c['slug']}"], existing_keys)
+                    for c in ab_companies
+                ]
+                for coro in asyncio.as_completed(ab_tasks):
+                    scraped, new, _, err = await coro
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_ab)
 
     # LinkedIn runs outside the progress bar (best-effort, sequential, rate-limited)
     if li_companies:
