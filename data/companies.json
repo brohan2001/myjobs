@@ -306,42 +306,47 @@
   {
     "name": "Ramp",
     "slug": "ramp",
-    "ats_type": "lever",
+    "ats_type": "ashby",
     "domain": "ramp.com",
     "industry": "fintech",
-    "tier": 1
+    "tier": 1,
+    "ashby_slug": "ramp"
   },
   {
     "name": "Vercel",
     "slug": "vercel",
-    "ats_type": "lever",
+    "ats_type": "greenhouse",
     "domain": "vercel.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "greenhouse_slug": "vercel"
   },
   {
     "name": "Temporal",
     "slug": "temporal",
-    "ats_type": "lever",
+    "ats_type": "ashby",
     "domain": "temporal.io",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "ashby_slug": "temporalio"
   },
   {
     "name": "Linear",
     "slug": "linear",
-    "ats_type": "lever",
+    "ats_type": "ashby",
     "domain": "linear.app",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "ashby_slug": "linear"
   },
   {
     "name": "Pulumi",
     "slug": "pulumi",
-    "ats_type": "lever",
+    "ats_type": "ashby",
     "domain": "pulumi.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "ashby_slug": "pulumi"
   },
   {
     "name": "Cockroach Labs",
