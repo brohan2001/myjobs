@@ -36,7 +36,7 @@ class AmazonScraper(BaseScraper):
                 break
 
             hits = data.get("hits", [])
-            if not hits:
+            if not isinstance(hits, list) or not hits:
                 break
             all_hits.extend(hits)
             offset += len(hits)
