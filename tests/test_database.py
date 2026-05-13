@@ -107,28 +107,32 @@ class TestInsertJobs:
     def test_returns_inserted_count(self, tmp_db):
         with get_conn() as conn:
             cid = upsert_company(conn, _company())
-            count = insert_jobs(conn, [_job(cid, "a"), _job(cid, "b")])
+            count, ids = insert_jobs(conn, [_job(cid, "a"), _job(cid, "b")])
         assert count == 2
+        assert len(ids) == 2
 
     def test_duplicate_external_id_not_reinserted(self, tmp_db):
         with get_conn() as conn:
             cid = upsert_company(conn, _company())
             insert_jobs(conn, [_job(cid, "ext1")])
-            count = insert_jobs(conn, [_job(cid, "ext1")])
+            count, ids = insert_jobs(conn, [_job(cid, "ext1")])
         assert count == 0
+        assert ids == []
 
     def test_missing_posted_at_defaults_to_none(self, tmp_db):
         with get_conn() as conn:
             cid = upsert_company(conn, _company())
             job = _job(cid, "ext1")
             del job["posted_at"]  # omit — insert_jobs should default it to None
-            count = insert_jobs(conn, [job])
+            count, ids = insert_jobs(conn, [job])
         assert count == 1
+        assert len(ids) == 1
 
     def test_empty_list_returns_zero(self, tmp_db):
         with get_conn() as conn:
-            count = insert_jobs(conn, [])
+            count, ids = insert_jobs(conn, [])
         assert count == 0
+        assert ids == []
 
 
 # ── get_existing_keys ─────────────────────────────────────────────────────────

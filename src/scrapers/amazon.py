@@ -35,12 +35,19 @@ class AmazonScraper(BaseScraper):
             except Exception:
                 break
 
-            hits = data.get("hits", [])
-            if not isinstance(hits, list) or not hits:
+            # API returns either {"hits": [job,...]} (old) or {"hits": N, "jobs": [job,...]} (new).
+            hits_field = data.get("hits", [])
+            job_list: list[dict] = (
+                data.get("jobs", [])
+                if isinstance(hits_field, int)
+                else (hits_field if isinstance(hits_field, list) else [])
+            )
+            if not job_list:
                 break
-            all_hits.extend(hits)
-            offset += len(hits)
-            if offset >= data.get("totalHits", 0):
+            all_hits.extend(job_list)
+            offset += len(job_list)
+            total = data.get("totalHits") or (hits_field if isinstance(hits_field, int) else 0)
+            if offset >= total:
                 break
 
         jobs = []

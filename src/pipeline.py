@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from src.config import load_companies
+from src.logger import get_logger, log_scrape_failure
 from src.database import (
     create_daily_run,
     get_conn,
@@ -41,6 +42,7 @@ from src.scrapers.apple import AppleScraper
 from src.scrapers.linkedin import LinkedInBroadScraper, LinkedInScraper
 
 console = Console()
+_log = get_logger("pipeline")
 
 # Max concurrent scrape tasks per ATS batch
 _SCRAPE_CONCURRENCY = asyncio.Semaphore(5)
@@ -59,9 +61,13 @@ async def _scrape_company(scraper, company: dict, company_id: int, existing_keys
                 existing_keys.add((j["external_id"], j["ats_type"]))
             return len(jobs), inserted, inserted_ids, None
         except ScraperError as e:
-            return 0, 0, [], f"{company['ats_type']}/{company['slug']}: {e}"
+            err = f"{company['ats_type']}/{company['slug']}: {e}"
+            log_scrape_failure(_log, company["slug"], company["ats_type"], str(e))
+            return 0, 0, [], err
         except Exception as e:
-            return 0, 0, [], f"{company['ats_type']}/{company['slug']}: unexpected: {e}"
+            err = f"{company['ats_type']}/{company['slug']}: unexpected: {e}"
+            log_scrape_failure(_log, company["slug"], company["ats_type"], f"unexpected: {e}")
+            return 0, 0, [], err
 
 
 async def _scrape_linkedin_company(scraper, company: dict, company_id: int, existing_keys: set) -> tuple[int, int, str | None]:
@@ -76,6 +82,7 @@ async def _scrape_linkedin_company(scraper, company: dict, company_id: int, exis
             existing_keys.add((j["external_id"], j["ats_type"]))
         return len(jobs), inserted, None
     except Exception as e:
+        log_scrape_failure(_log, company["slug"], "linkedin", str(e))
         return 0, 0, f"linkedin/{company['slug']}: {e}"
 
 
@@ -323,6 +330,7 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             console.print(f"[dim]LinkedIn broad search: {broad_new} new jobs[/dim]")
     except Exception as e:
         errors.append(f"linkedin_broad: {e}")
+        _log.error("linkedin_broad_failure", extra={"error": str(e)})
         console.print(f"[yellow]LinkedIn broad search failed (non-fatal): {e}[/yellow]")
 
     console.print(f"[green]Scraped {jobs_scraped} jobs ({jobs_new} new)[/green]")
@@ -334,6 +342,7 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             await _enrich_workday_descriptions(new_workday_ids)
         except Exception as e:
             errors.append(f"workday_enrich: {e}")
+            _log.error("workday_enrich_failure", extra={"error": str(e)})
             console.print(f"[yellow]Workday description enrichment failed (non-fatal): {e}[/yellow]")
 
     # ── 3. PARSE SIGNALS ───────────────────────────────────────────────────
