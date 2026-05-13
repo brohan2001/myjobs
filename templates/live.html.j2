@@ -23,9 +23,11 @@
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
   .header-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .header-spacer { flex: 1; }
-  .sort-group { display: flex; gap: 4px; align-items: center; }
-  .sort-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .sort-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+  .sort-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all .15s; }
+  .sort-btn:hover { border-color: var(--muted); color: var(--text); }
   .sort-btn.active { border-color: var(--accent); color: var(--accent); background: #6366f111; }
+  .filter-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
   .refresh-btn { background: var(--accent); color: #fff; border: none; padding: 8px 18px; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
   .refresh-btn:disabled { opacity: .55; cursor: default; }
   .spinner { width: 13px; height: 13px; border: 2px solid #ffffff55; border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
@@ -40,8 +42,24 @@
   /* Countdown */
   .countdown { font-size: 11px; color: var(--muted); padding: 8px 28px; background: var(--bg); border-bottom: 1px solid var(--border); }
 
-  /* Container */
-  .container { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+  /* Layout: sidebar + main */
+  .layout { display: flex; gap: 0; min-height: calc(100vh - 140px); }
+
+  /* Sidebar */
+  .sidebar { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 12px 8px; overflow-y: auto; max-height: calc(100vh - 140px); position: sticky; top: 0; }
+  .sidebar-all { font-size: 13px; font-weight: 600; padding: 6px 10px; border-radius: 6px; cursor: pointer; color: var(--text); margin-bottom: 8px; }
+  .sidebar-all:hover, .sidebar-all.active { background: #6366f122; color: var(--accent); }
+  .sidebar-section { margin-bottom: 4px; }
+  .sidebar-header { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; padding: 8px 10px 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+  .sidebar-header:hover { color: var(--text); }
+  .sidebar-body { overflow: hidden; }
+  .sidebar-company { font-size: 12px; padding: 4px 10px; border-radius: 5px; cursor: pointer; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; justify-content: space-between; align-items: center; }
+  .sidebar-company:hover { background: var(--surface); color: var(--text); }
+  .sidebar-company.active { background: #6366f122; color: var(--accent); }
+  .job-count-badge { font-size: 10px; opacity: .6; flex-shrink: 0; margin-left: 4px; }
+
+  /* Main content */
+  .main-content { flex: 1; min-width: 0; padding: 20px 20px; }
 
   /* NEW badge */
   .new-badge { position: absolute; top: -8px; left: 14px; background: var(--green); color: #fff; font-size: 10px; font-weight: 800; padding: 1px 8px; border-radius: 99px; letter-spacing: .05em; box-shadow: 0 0 10px #22c55e55; animation: fadeNew 1s ease; }
@@ -79,6 +97,8 @@
   .badge-remote  { background: #06b6d422; color: #22d3ee; border: 1px solid #06b6d455; }
   .badge-src     { background: #37415122; color: #9ca3af; border: 1px solid #37415155; }
   .badge-tier1   { background: #f9731622; color: #fb923c; border: 1px solid #f9731655; }
+  .badge-exp-high { background: #dc262622; color: #f87171; border: 1px solid #dc262655; }
+  .badge-exp-ok   { background: #16a34a22; color: #86efac; border: 1px solid #16a34a55; }
 
   /* Meta */
   .meta { font-size: 12px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
@@ -113,7 +133,8 @@
   .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; font-size: 13px; box-shadow: 0 4px 20px #00000055; transition: opacity .3s; z-index: 100; }
   .toast.hidden { opacity: 0; pointer-events: none; }
 
-  @media (max-width: 600px) {
+  @media (max-width: 700px) {
+    .sidebar { display: none; }
     .card-top { flex-direction: column; }
     .header { flex-direction: column; align-items: flex-start; }
   }
@@ -129,6 +150,9 @@
     <button class="sort-btn active" onclick="setSort('score')">Score</button>
     <button class="sort-btn" onclick="setSort('posted')">Newest</button>
     <button class="sort-btn" onclick="setSort('company')">Company</button>
+    <div class="filter-sep"></div>
+    <button class="sort-btn" id="usOnlyBtn" onclick="toggleFilter('usOnly')">🇺🇸 US Only</button>
+    <button class="sort-btn" id="newGradBtn" onclick="toggleFilter('newGrad')">🎓 New Grad</button>
   </div>
   <button class="refresh-btn" id="refreshBtn" onclick="triggerRefresh()">
     <span id="refreshIcon"></span>Refresh Now
@@ -143,22 +167,30 @@
 
 <div class="countdown" id="countdown"></div>
 
-<div class="container" id="jobsContainer">
-  <div class="empty"><h2>Loading jobs…</h2><p>Fetching from database…</p></div>
+<div class="layout">
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-all active" id="sidebarAll" onclick="selectCompany(null)">All Companies</div>
+  </div>
+  <div class="main-content" id="jobsContainer">
+    <div class="empty"><h2>Loading jobs…</h2><p>Fetching from database…</p></div>
+  </div>
 </div>
 
 <div class="toast hidden" id="toast"></div>
 
 <script>
 const WEIGHTS = { skill: 35, role: 25, visa: 20, recency: 10, company: 10 };
-const AUTO_REFRESH_MS = 10 * 60 * 1000; // 10 minutes
+const AUTO_REFRESH_MS = 10 * 60 * 1000;
 let allJobs = [];
 let sortKey = 'score';
 let nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
 let countdownTimer = null;
 let pollTimer = null;
+let usOnly = false;
+let newGrad = false;
+let activeCompanyId = null;
 
-// ── Relative time ──────────────────────────────────────────────────────────
+// ── Relative time ──────────────────────────────────────────────────────────────
 
 function relTime(iso) {
   if (!iso) return null;
@@ -173,7 +205,7 @@ function relTime(iso) {
   return { text: d + 'd ago', cls: d < 7 ? 'posted-recent' : 'posted-old' };
 }
 
-// ── NEW job tracking (localStorage) ────────────────────────────────────────
+// ── NEW job tracking ───────────────────────────────────────────────────────────
 
 function getSeenIds() {
   try { return new Set(JSON.parse(localStorage.getItem('myjobs_seen') || '[]')); }
@@ -186,13 +218,16 @@ function markSeen(ids) {
   try { localStorage.setItem('myjobs_seen', JSON.stringify([...seen])); } catch {}
 }
 
-// ── Sorting ────────────────────────────────────────────────────────────────
+// ── Sorting ────────────────────────────────────────────────────────────────────
 
 function setSort(key) {
   sortKey = key;
-  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('sortGroup').querySelectorAll('.sort-btn').forEach(b => {
-    if (b.textContent.toLowerCase().startsWith(key === 'posted' ? 'new' : key)) b.classList.add('active');
+  const allSortBtns = Array.from(document.querySelectorAll('#sortGroup .sort-btn'));
+  const keyBtns = allSortBtns.slice(0, 3); // Score, Newest, Company
+  keyBtns.forEach(b => b.classList.remove('active'));
+  const labelMap = { score: 'score', posted: 'newest', company: 'company' };
+  keyBtns.forEach(b => {
+    if (b.textContent.trim().toLowerCase() === labelMap[key]) b.classList.add('active');
   });
   renderJobs(allJobs);
 }
@@ -213,7 +248,66 @@ function sortedJobs(jobs) {
   return copy;
 }
 
-// ── Visa / role helpers ────────────────────────────────────────────────────
+// ── Filter toggles ─────────────────────────────────────────────────────────────
+
+function toggleFilter(name) {
+  if (name === 'usOnly') {
+    usOnly = !usOnly;
+    document.getElementById('usOnlyBtn').classList.toggle('active', usOnly);
+  } else if (name === 'newGrad') {
+    newGrad = !newGrad;
+    document.getElementById('newGradBtn').classList.toggle('active', newGrad);
+  }
+  fetchJobs();
+}
+
+// ── Company sidebar ────────────────────────────────────────────────────────────
+
+function selectCompany(companyId) {
+  activeCompanyId = companyId;
+  document.querySelectorAll('.sidebar-company').forEach(el => el.classList.remove('active'));
+  document.getElementById('sidebarAll').classList.toggle('active', companyId === null);
+  if (companyId !== null) {
+    const el = document.getElementById('co-' + companyId);
+    if (el) el.classList.add('active');
+  }
+  fetchJobs();
+}
+
+async function loadSidebar() {
+  try {
+    const resp = await fetch('/api/companies');
+    if (!resp.ok) return;
+    const companies = await resp.json();
+    const byIndustry = {};
+    companies.forEach(c => {
+      const ind = c.industry || 'other';
+      if (!byIndustry[ind]) byIndustry[ind] = [];
+      byIndustry[ind].push(c);
+    });
+    const sidebar = document.getElementById('sidebar');
+    let html = `<div class="sidebar-all${activeCompanyId === null ? ' active' : ''}" id="sidebarAll" onclick="selectCompany(null)">All Companies</div>`;
+    const industryOrder = ['tech', 'fintech', 'enterprise', 'other'];
+    const sorted = [...industryOrder.filter(i => byIndustry[i]), ...Object.keys(byIndustry).filter(i => !industryOrder.includes(i))];
+    sorted.forEach(industry => {
+      const cos = byIndustry[industry] || [];
+      html += `<div class="sidebar-section">
+        <div class="sidebar-header">${industry.toUpperCase()} <span style="font-size:10px;color:var(--muted)">${cos.length}</span></div>
+        <div class="sidebar-body">`;
+      cos.forEach(c => {
+        const isActive = activeCompanyId === c.id;
+        html += `<div class="sidebar-company${isActive ? ' active' : ''}" id="co-${c.id}" onclick="selectCompany(${c.id})" title="${esc(c.name)}">
+          <span>${esc(c.name)}</span>
+          <span class="job-count-badge">${c.job_count}</span>
+        </div>`;
+      });
+      html += `</div></div>`;
+    });
+    sidebar.innerHTML = html;
+  } catch(e) {}
+}
+
+// ── Visa / role helpers ────────────────────────────────────────────────────────
 
 function visaLabel(s) { return s === 1 ? 'CONFIRMED' : s === -1 ? 'NO SPONSOR' : 'UNCONFIRMED'; }
 function visaClass(s) { return s === 1 ? 'visa-yes' : s === -1 ? 'visa-no' : 'visa-unknown'; }
@@ -226,18 +320,23 @@ function scoreClass(s) { return s >= 70 ? 'high' : s >= 45 ? 'mid' : 'low'; }
 
 function esc(s) {
   const d = document.createElement('div');
-  d.textContent = s;
+  d.textContent = s || '';
   return d.innerHTML;
 }
 
-// ── Render ─────────────────────────────────────────────────────────────────
+function fmtH1b(n) {
+  if (!n || n < 100) return '';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n.toString();
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────────
 
 function renderJobs(jobs) {
   const seenIds = getSeenIds();
   const sorted = sortedJobs(jobs);
   const newIds = jobs.filter(j => !seenIds.has(String(j.id))).map(j => j.id);
 
-  // Stats
   document.getElementById('statTotal').textContent = jobs.length;
   document.getElementById('statNew').textContent = newIds.length;
   const fresh = jobs.filter(j => {
@@ -249,7 +348,7 @@ function renderJobs(jobs) {
 
   if (!sorted.length) {
     document.getElementById('jobsContainer').innerHTML =
-      '<div class="empty"><h2>No shortlisted jobs yet</h2><p>Click <strong>Refresh Now</strong> to run the scraper.</p></div>';
+      '<div class="empty"><h2>No jobs match these filters</h2><p>Try removing a filter or clicking <strong>Refresh Now</strong>.</p></div>';
     return;
   }
 
@@ -262,6 +361,14 @@ function renderJobs(jobs) {
       .map(s => `<span class="skill-chip skill-yes">✓ ${esc(s)}</span>`).join('');
     const missingChips = (job.missing_skills || []).slice(0, 3)
       .map(s => `<span class="skill-chip skill-no">✗ ${esc(s)}</span>`).join('');
+
+    const expBadge = job.exp_years_max != null
+      ? (job.exp_years_max > 3
+          ? `<span class="badge badge-exp-high">${job.exp_years_max}+ YRS EXP</span>`
+          : `<span class="badge badge-exp-ok">≤${job.exp_years_max} YRS EXP</span>`)
+      : '';
+
+    const h1bStr = fmtH1b(job.h1b_petitions_recent);
 
     return `
     <div class="job-card${isNew ? ' is-new' : ''}" data-id="${job.id}">
@@ -280,6 +387,7 @@ function renderJobs(jobs) {
         ${job.role_category ? `<span class="badge ${roleClass(job.role_category)}">${job.role_category.toUpperCase()}</span>` : ''}
         ${job.remote ? '<span class="badge badge-remote">REMOTE</span>' : ''}
         ${job.tier === 1 ? '<span class="badge badge-tier1">TIER 1</span>' : ''}
+        ${expBadge}
         <span class="badge badge-src">${(job.ats_type || '').toUpperCase()}</span>
       </div>
 
@@ -287,6 +395,7 @@ function renderJobs(jobs) {
         ${job.location ? `<span>📍 ${esc(job.location)}</span>` : ''}
         ${rt ? `<span class="posted-time ${rt.cls}">🕐 ${rt.text}</span>` : job.posted_date ? `<span>📅 ${job.posted_date}</span>` : ''}
         ${job.industry ? `<span>🏢 ${esc(job.industry)}</span>` : ''}
+        ${h1bStr ? `<span title="USCIS H-1B petitions (2022-2024)" style="color:#a78bfa">🛂 ${h1bStr} H-1B</span>` : ''}
       </div>
 
       ${skillChips || missingChips ? `<div class="skills-row">${skillChips}${missingChips}</div>` : ''}
@@ -307,7 +416,6 @@ function renderJobs(jobs) {
 
   document.getElementById('jobsContainer').innerHTML = html;
 
-  // Mark new jobs as seen after 8 seconds
   if (newIds.length) {
     setTimeout(() => {
       markSeen(newIds);
@@ -317,11 +425,16 @@ function renderJobs(jobs) {
   }
 }
 
-// ── Fetch jobs from API ────────────────────────────────────────────────────
+// ── Fetch jobs from API ────────────────────────────────────────────────────────
 
 async function fetchJobs() {
   try {
-    const resp = await fetch('/api/jobs');
+    const params = new URLSearchParams();
+    if (usOnly) params.set('us_only', 'true');
+    if (newGrad) params.set('new_grad_only', 'true');
+    if (activeCompanyId !== null) params.set('company_id', activeCompanyId);
+    const url = '/api/jobs' + (params.toString() ? '?' + params.toString() : '');
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     allJobs = await resp.json();
     renderJobs(allJobs);
@@ -331,7 +444,7 @@ async function fetchJobs() {
   }
 }
 
-// ── Trigger pipeline refresh ───────────────────────────────────────────────
+// ── Trigger pipeline refresh ───────────────────────────────────────────────────
 
 let pollingStatus = false;
 
@@ -370,6 +483,7 @@ async function pollStatus() {
         pollingStatus = false;
         nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
         await fetchJobs();
+        await loadSidebar();
         const newCount = document.getElementById('statNew').textContent;
         showToast(newCount + ' new job' + (newCount === '1' ? '' : 's') + ' found');
         return;
@@ -385,7 +499,7 @@ async function pollStatus() {
   }
 }
 
-// ── Countdown & auto-poll ──────────────────────────────────────────────────
+// ── Countdown & auto-poll ──────────────────────────────────────────────────────
 
 function updateCountdown() {
   const remaining = Math.max(0, nextRefreshAt - Date.now());
@@ -412,7 +526,7 @@ function startAutoRefresh() {
   scheduleNext();
 }
 
-// ── Toast ──────────────────────────────────────────────────────────────────
+// ── Toast ──────────────────────────────────────────────────────────────────────
 
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -423,10 +537,10 @@ function showToast(msg) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ── Init ───────────────────────────────────────────────────────────────────
+// ── Init ───────────────────────────────────────────────────────────────────────
 
 (async () => {
-  await fetchJobs();
+  await Promise.all([fetchJobs(), loadSidebar()]);
   startAutoRefresh();
 })();
 </script>

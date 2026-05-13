@@ -8,7 +8,14 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.config import BASE_DIR, SCORE_WEIGHTS
-from src.database import get_conn, get_last_run, get_shortlisted_jobs, init_db
+from src.database import (
+    get_companies_with_jobs,
+    get_conn,
+    get_jobs_by_company,
+    get_last_run,
+    get_shortlisted_jobs,
+    init_db,
+)
 from src.ranker import matched_skills
 
 app = FastAPI(title="myjobs live")
@@ -30,9 +37,24 @@ async def root():
 
 
 @app.get("/api/jobs")
-async def get_jobs(days: int = 14):
+async def get_jobs(
+    days: int = 14,
+    us_only: bool = False,
+    new_grad_only: bool = False,
+    company_id: int | None = None,
+    industry: str | None = None,
+):
     with get_conn() as conn:
-        rows = get_shortlisted_jobs(conn, days=days)
+        if company_id is not None:
+            rows = get_jobs_by_company(conn, company_id)
+        else:
+            rows = get_shortlisted_jobs(
+                conn,
+                days=days,
+                us_only=us_only,
+                new_grad_only=new_grad_only,
+                industry=industry,
+            )
 
     result = []
     for job in rows:
@@ -50,6 +72,13 @@ async def get_jobs(days: int = 14):
     return JSONResponse(result)
 
 
+@app.get("/api/companies")
+async def get_companies():
+    with get_conn() as conn:
+        companies = get_companies_with_jobs(conn)
+    return JSONResponse(companies)
+
+
 @app.post("/api/refresh")
 async def trigger_refresh():
     global _pipeline_task
@@ -65,7 +94,6 @@ async def trigger_refresh():
 async def get_status():
     running = _pipeline_task is not None and not _pipeline_task.done()
 
-    # Check if a completed task raised an exception
     task_error = None
     if _pipeline_task is not None and _pipeline_task.done():
         exc = _pipeline_task.exception()

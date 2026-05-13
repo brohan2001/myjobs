@@ -49,13 +49,15 @@ def show(
     date_: Optional[str] = typer.Option(None, "--date", help="Run date (YYYY-MM-DD). Defaults to today."),
     role: Optional[str] = typer.Option(None, help="Filter by role category"),
     min_score: float = typer.Option(0.0, "--min-score", help="Minimum total score"),
+    us_only: bool = typer.Option(False, "--us-only", help="Show only US/remote positions"),
+    new_grad: bool = typer.Option(False, "--new-grad", help="Show only entry-level/new grad jobs"),
 ) -> None:
     """Show shortlisted jobs in a terminal table."""
     run_date = date_ or date.today().isoformat()
     init_db()
 
     with get_conn() as conn:
-        rows = get_shortlist(conn, run_date, limit=200)
+        rows = get_shortlist(conn, run_date, limit=200, us_only=us_only, new_grad_only=new_grad)
 
     if role:
         rows = [r for r in rows if (r["role_category"] or "").lower() == role.lower()]
@@ -287,6 +289,61 @@ def serve(
         reload=False,
         log_level="warning",
     )
+
+
+@app.command(name="update-h1b")
+def update_h1b() -> None:
+    """Populate H1-B petition counts from data/h1b_sponsors.json into the database."""
+    from src.config import load_h1b_sponsors
+    from src.database import populate_h1b_data
+    init_db()
+    h1b_data = load_h1b_sponsors()
+    if not h1b_data:
+        console.print("[yellow]data/h1b_sponsors.json not found or empty.[/yellow]")
+        console.print("Place the file in data/ with normalized company names as keys.")
+        raise typer.Exit(1)
+    with get_conn() as conn:
+        updated = populate_h1b_data(conn, h1b_data)
+    console.print(f"[green]Updated H1-B data for {updated} companies.[/green]")
+
+
+@app.command(name="verify-api")
+def verify_api() -> None:
+    """Smoke-test the Anthropic API key with a minimal call."""
+    from src.config import ANTHROPIC_API_KEY
+
+    if not ANTHROPIC_API_KEY:
+        console.print("[red]ANTHROPIC_API_KEY is not set.[/red]")
+        console.print("Add it to your [bold].env[/bold] file: ANTHROPIC_API_KEY=sk-ant-...")
+        raise typer.Exit(1)
+
+    try:
+        import anthropic
+    except ImportError:
+        console.print("[red]anthropic package not installed.[/red]")
+        console.print("Run: [bold]pip install -e .[/bold]")
+        raise typer.Exit(1)
+
+    console.print("[dim]Sending smoke-test request to Anthropic API...[/dim]")
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    try:
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "Reply with the single word: OK"}],
+        )
+    except anthropic.AuthenticationError:
+        console.print("[red]Authentication failed — check your API key.[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]API call failed: {exc}[/red]")
+        raise typer.Exit(1)
+
+    reply = msg.content[0].text.strip()
+    usage = msg.usage
+    console.print(f"[green]API key is valid.[/green] Response: [bold]{reply}[/bold]")
+    console.print(f"[dim]Tokens — input: {usage.input_tokens}, output: {usage.output_tokens}[/dim]")
 
 
 if __name__ == "__main__":

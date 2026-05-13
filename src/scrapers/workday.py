@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+import httpx
 from bs4 import BeautifulSoup
 
 from src.scrapers.base import BaseScraper, ScraperError
@@ -55,7 +56,6 @@ class WorkdayScraper(BaseScraper):
             posted_on = posting.get("postedOn", "") or ""
 
             job_url = f"https://{host}/en-US/{board}{external_path}"
-            # Stable external_id derived from the path (unique per company+board)
             external_id = re.sub(r"[^a-zA-Z0-9_-]", "_", external_path)[:80]
             if not external_id:
                 continue
@@ -67,7 +67,7 @@ class WorkdayScraper(BaseScraper):
                 "external_id": external_id,
                 "company_id":  company_id,
                 "title":       title,
-                "description": "",  # Workday requires a second request per job
+                "description": "",
                 "location":    location,
                 "remote":      remote,
                 "url":         job_url,
@@ -79,6 +79,31 @@ class WorkdayScraper(BaseScraper):
         return jobs
 
 
+async def fetch_workday_description(url: str) -> str:
+    """Fetch a single Workday job description page. Uses its own client — called from pipeline."""
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+    except Exception:
+        return ""
+    soup = BeautifulSoup(resp.text, "lxml")
+    desc_div = (
+        soup.find(attrs={"data-automation-id": "jobPostingDescription"})
+        or soup.find("div", class_=re.compile(r"job.*description", re.IGNORECASE))
+        or soup.find("section", attrs={"data-automation-id": re.compile(r"description", re.IGNORECASE)})
+    )
+    return desc_div.get_text(separator=" ", strip=True) if desc_div else ""
+
+
 def _parse_workday_date(posted_on: str) -> tuple[str | None, str | None]:
     if not posted_on:
         return None, None
@@ -87,7 +112,6 @@ def _parse_workday_date(posted_on: str) -> tuple[str | None, str | None]:
         mo, d, y = m.groups()
         iso = f"{y}-{int(mo):02d}-{int(d):02d}"
         return iso, iso
-    # Try ISO format in case Workday changes
     m2 = re.search(r"(\d{4}-\d{2}-\d{2})", posted_on)
     if m2:
         iso = m2.group(1)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -83,6 +84,89 @@ CREATE INDEX IF NOT EXISTS idx_jobs_scraped_at ON jobs(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_company_id ON jobs(company_id);
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE jobs ADD COLUMN posted_at TEXT",
+    "ALTER TABLE companies ADD COLUMN h1b_petitions_recent INTEGER",
+]
+
+# ── US location detection ──────────────────────────────────────────────────────
+
+_NON_US = {
+    "india", "canada", "united kingdom", "ireland", "germany", "australia",
+    "singapore", "poland", "netherlands", "france", "spain", "brazil",
+    "mexico", "japan", "china", "taiwan", "south korea", "hong kong",
+    "israel", "sweden", "denmark", "norway", "finland", "belgium",
+    "switzerland", "austria", "portugal", "romania", "czech republic",
+}
+_US_SIGNALS = {"united states", "usa", ", us", " us ", "remote"}
+_US_STATES = {
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+    "maine", "maryland", "massachusetts", "michigan", "minnesota",
+    "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york",
+    "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+    "pennsylvania", "rhode island", "south carolina", "south dakota",
+    "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+    "west virginia", "wisconsin", "wyoming", "district of columbia",
+    # Common abbreviations as standalone signals
+    "san francisco", "new york city", "nyc", "los angeles", "seattle",
+    "boston", "austin", "chicago", "denver", "atlanta", "raleigh",
+    "pittsburgh", "portland", "phoenix", "dallas", "houston",
+    "mountain view", "palo alto", "sunnyvale", "san jose", "menlo park",
+    "san diego", "santa clara", "redwood city", "bellevue", "kirkland",
+}
+
+
+def is_us_location(loc: str) -> bool:
+    """Return True if the location string appears to be a US/remote position."""
+    if not loc:
+        return True  # blank → assume US (company-specific ATS boards default to US)
+    loc_l = loc.lower()
+    for s in _NON_US:
+        if s in loc_l:
+            return False
+    for s in _US_SIGNALS:
+        if s in loc_l:
+            return True
+    for state in _US_STATES:
+        if state in loc_l:
+            return True
+    return True  # default include — avoid false negatives
+
+
+# ── H1-B data helpers ──────────────────────────────────────────────────────────
+
+def _normalize_company_name(name: str) -> str:
+    name = name.lower().strip()
+    name = re.sub(
+        r"\b(inc|llc|corp|ltd|technologies|systems|networks|labs|software|"
+        r"services|solutions|group|holdings|global|international|enterprises)\b\.?",
+        "",
+        name,
+    )
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def populate_h1b_data(conn: sqlite3.Connection, h1b_data: dict) -> None:
+    """Update companies table with H1-B petition counts from USCIS data."""
+    companies = conn.execute("SELECT id, name, slug FROM companies").fetchall()
+    updated = 0
+    for c in companies:
+        key = _normalize_company_name(c["name"])
+        entry = h1b_data.get(key) or h1b_data.get(c["slug"])
+        if entry:
+            total = entry.get("total", 0)
+            conn.execute(
+                "UPDATE companies SET h1b_petitions_recent=? WHERE id=?",
+                (total, c["id"]),
+            )
+            updated += 1
+    return updated
+
+
+# ── DB helpers ─────────────────────────────────────────────────────────────────
 
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
@@ -98,11 +182,6 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
         raise
     finally:
         conn.close()
-
-
-_MIGRATIONS = [
-    "ALTER TABLE jobs ADD COLUMN posted_at TEXT",
-]
 
 
 def init_db() -> None:
@@ -121,19 +200,27 @@ def upsert_company(conn: sqlite3.Connection, company: dict) -> int:
            VALUES (:name, :slug, :ats_type, :domain, :industry, :tier)""",
         company,
     )
+    # Sync ats_type/slug/domain/tier in case config changed (e.g. linkedin→google)
+    conn.execute(
+        """UPDATE companies SET slug=:slug, ats_type=:ats_type, domain=:domain,
+           industry=:industry, tier=:tier WHERE name=:name""",
+        company,
+    )
     row = conn.execute(
-        "SELECT id FROM companies WHERE slug=? AND ats_type=?",
-        (company["slug"], company["ats_type"]),
+        "SELECT id FROM companies WHERE name=?",
+        (company["name"],),
     ).fetchone()
     return row["id"]
 
 
-def insert_jobs(conn: sqlite3.Connection, jobs: list[dict]) -> int:
+def insert_jobs(conn: sqlite3.Connection, jobs: list[dict]) -> tuple[int, list[int]]:
     inserted = 0
+    inserted_ids: list[int] = []
     for job in jobs:
         try:
             row = dict(job)
             row.setdefault("posted_at", None)
+            row.pop("_company_name", None)
             conn.execute(
                 """INSERT OR IGNORE INTO jobs
                    (external_id, company_id, title, description, location, remote,
@@ -144,9 +231,10 @@ def insert_jobs(conn: sqlite3.Connection, jobs: list[dict]) -> int:
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 inserted += 1
+                inserted_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         except sqlite3.IntegrityError:
             pass
-    return inserted
+    return inserted, inserted_ids
 
 
 def get_new_jobs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -205,16 +293,27 @@ def mark_shortlisted(conn: sqlite3.Connection, job_ids: list[int]) -> None:
     )
 
 
-def get_shortlist(conn: sqlite3.Connection, run_date: str, limit: int = 50) -> list[sqlite3.Row]:
-    return conn.execute(
-        """SELECT j.*, c.name as company_name, c.industry, c.tier, c.domain
-           FROM jobs j JOIN companies c ON j.company_id=c.id
-           WHERE j.status='shortlisted'
-             AND date(j.scraped_at)=?
-           ORDER BY j.total_score DESC
-           LIMIT ?""",
-        (run_date, limit),
-    ).fetchall()
+def get_shortlist(
+    conn: sqlite3.Connection,
+    run_date: str,
+    limit: int = 50,
+    us_only: bool = False,
+    new_grad_only: bool = False,
+) -> list[sqlite3.Row]:
+    sql = """SELECT j.*, c.name as company_name, c.industry, c.tier, c.domain,
+                    c.h1b_petitions_recent
+             FROM jobs j JOIN companies c ON j.company_id=c.id
+             WHERE j.status='shortlisted'
+               AND date(j.scraped_at)=?"""
+    params: list = [run_date]
+    if new_grad_only:
+        sql += " AND (j.early_career=1 OR j.exp_years_max IS NULL OR j.exp_years_max <= 2)"
+    sql += " ORDER BY j.total_score DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    if us_only:
+        rows = [r for r in rows if is_us_location(r["location"] or "")]
+    return rows
 
 
 def update_company_scraped(conn: sqlite3.Connection, slug: str, ats_type: str) -> None:
@@ -289,14 +388,68 @@ def get_daily_run(conn: sqlite3.Connection, run_date: str) -> sqlite3.Row | None
     ).fetchone()
 
 
-def get_shortlisted_jobs(conn: sqlite3.Connection, days: int = 14) -> list[dict]:
+def get_shortlisted_jobs(
+    conn: sqlite3.Connection,
+    days: int = 14,
+    us_only: bool = False,
+    new_grad_only: bool = False,
+    company_id: int | None = None,
+    industry: str | None = None,
+) -> list[dict]:
+    sql = """SELECT j.*, c.name as company_name, c.industry, c.tier, c.domain,
+                    c.h1b_petitions_recent
+             FROM jobs j JOIN companies c ON j.company_id=c.id
+             WHERE j.status='shortlisted'
+               AND julianday('now') - julianday(j.scraped_at) <= ?"""
+    params: list = [days]
+    if new_grad_only:
+        sql += " AND (j.early_career=1 OR j.exp_years_max IS NULL OR j.exp_years_max <= 2)"
+    if company_id is not None:
+        sql += " AND j.company_id=?"
+        params.append(company_id)
+    if industry is not None:
+        sql += " AND c.industry=?"
+        params.append(industry)
+    sql += " ORDER BY j.total_score DESC"
+    rows = conn.execute(sql, params).fetchall()
+    result = [dict(r) for r in rows]
+    if us_only:
+        result = [r for r in result if is_us_location(r.get("location") or "")]
+    return result
+
+
+def get_jobs_by_company(
+    conn: sqlite3.Connection,
+    company_id: int,
+    limit: int = 50,
+) -> list[dict]:
+    """All non-applied/skipped jobs for a company, newest first (ignores shortlist status)."""
     rows = conn.execute(
-        """SELECT j.*, c.name as company_name, c.industry, c.tier, c.domain
+        """SELECT j.*, c.name as company_name, c.industry, c.tier, c.domain,
+                  c.h1b_petitions_recent
            FROM jobs j JOIN companies c ON j.company_id=c.id
-           WHERE j.status='shortlisted'
-             AND julianday('now') - julianday(j.scraped_at) <= ?
-           ORDER BY j.total_score DESC""",
-        (days,),
+           WHERE j.company_id=?
+             AND j.status NOT IN ('applied', 'skipped')
+             AND j.is_duplicate=0
+           ORDER BY COALESCE(j.posted_at, j.scraped_at) DESC
+           LIMIT ?""",
+        (company_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_companies_with_jobs(conn: sqlite3.Connection) -> list[dict]:
+    """Companies that have at least one shortlisted job, grouped by industry."""
+    rows = conn.execute(
+        """SELECT c.id, c.name, c.industry, c.tier, c.slug, c.ats_type,
+                  COUNT(j.id) as job_count
+           FROM companies c
+           JOIN jobs j ON j.company_id=c.id
+           WHERE c.active=1
+             AND j.status='shortlisted'
+             AND j.is_duplicate=0
+           GROUP BY c.id
+           ORDER BY c.tier ASC, c.industry ASC, job_count DESC"""
     ).fetchall()
     return [dict(r) for r in rows]
 

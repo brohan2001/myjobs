@@ -103,3 +103,11 @@ def load_visa_keywords() -> dict[str, list[str]]:
 def load_role_keywords() -> dict[str, list[str]]:
     with open(DATA_DIR / "role_keywords.json") as f:
         return json.load(f)
+
+
+def load_h1b_sponsors() -> dict:
+    h1b_path = DATA_DIR / "h1b_sponsors.json"
+    if not h1b_path.exists():
+        return {}
+    with open(h1b_path) as f:
+        return json.load(f)
