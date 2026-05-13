@@ -86,10 +86,13 @@ myjobs company disable old-company
 | `src/config.py` | Skill groups, role weights, score weights — edit here to tune ranking |
 | `src/ranker.py` | All 5 scoring functions + signal parsing |
 | `src/pipeline.py` | Orchestrates the full daily run (scrape → enrich → parse → rank → shortlist → render) |
+| `src/logger.py` | Structured JSON logger (`get_logger(name)`) + event helpers; emits to stderr |
+| `src/utils/retry.py` | `async_retry()` — exponential backoff + jitter, Retry-After support |
+| `src/scrapers/base.py` | `BaseScraper` ABC; `_request()` uses `async_retry` internally |
 | `src/scrapers/greenhouse.py` | Greenhouse public JSON API client |
 | `src/scrapers/lever.py` | Lever public JSON API client (paginated, cap 500) |
 | `src/scrapers/workday.py` | Workday POST pagination API; descriptions fetched separately by pipeline |
-| `src/scrapers/amazon.py` | Amazon Jobs search JSON API |
+| `src/scrapers/amazon.py` | Amazon Jobs search JSON API (handles both old `hits:[]` and new `hits:N,jobs:[]` formats) |
 | `src/scrapers/google.py` | Google Careers public API (`careers.google.com/api/v3/search`) |
 | `src/scrapers/apple.py` | Apple Jobs public API (`jobs.apple.com/api/role/search`) |
 | `src/scrapers/linkedin.py` | LinkedIn per-company (blocked by login wall) + broad keyword search |
@@ -103,6 +106,8 @@ myjobs company disable old-company
 | `data/role_keywords.json` | Title → role_category keyword mapping |
 | `templates/live.html.j2` | Live web UI (FastAPI) — Jinja-less, pure JS SPA |
 | `templates/daily_report.html.j2` | Static HTML report template |
+| `tests/fixtures/` | Static ATS API response payloads for parser regression tests |
+| `scripts/capture_fixtures.py` | One-time script to re-capture live fixture data |
 
 ---
 
@@ -111,11 +116,11 @@ myjobs company disable old-company
 | ATS | Count | Key companies | Notes |
 |-----|-------|---------------|-------|
 | Greenhouse | 55 | Anthropic, OpenAI, Stripe, Databricks, Airbnb, Lyft, Reddit, Discord… | Fully working |
-| Workday | 35 | Microsoft, Cisco, Oracle, Goldman Sachs, Nvidia, Salesforce, Uber, JPMorgan, Capital One… | Working; descriptions enriched async post-scrape |
-| Lever | 6 | Ramp, Vercel, Temporal, Linear, Pulumi, Wealthfront | Fully working, paginated |
-| Amazon | 1 | Amazon | Working (custom JSON API) |
-| Google | 1 | Google | Working (public careers API, full descriptions) |
-| Apple | 1 | Apple | Working (public jobs API) |
+| Workday | 35 | Microsoft, Cisco, Oracle, Goldman Sachs, Nvidia, Salesforce, Uber, JPMorgan, Capital One… | **Broken** — all tenants returning 422/502 as of 2026-05; needs Phase 4 fix |
+| Lever | 6 | Ramp, Vercel, Temporal, Linear, Pulumi, Wealthfront | Mostly working; Ramp/Vercel/Temporal/Linear/Pulumi now return 0 (moved off Lever); Wealthfront still active |
+| Amazon | 1 | Amazon | Working; API changed format to `{"hits": N, "jobs": [...]}` — scraper handles both |
+| Google | 1 | Google | **Broken** — Careers API v3 endpoint returning 404 as of 2026-05; needs Phase 4 fix |
+| Apple | 1 | Apple | **Broken** — Jobs API endpoint redirecting to 404 as of 2026-05; needs Phase 4 fix |
 | LinkedIn | 3 | Meta, Arista Networks, Juniper Networks | Mostly blocked by LinkedIn login wall; broad keyword search also runs |
 
 **Note on Meta:** `metacareers.com` uses an authenticated GraphQL API — no clean scraping option. Kept on LinkedIn (returns 0 most of the time). Revisit if a public endpoint appears.
@@ -216,6 +221,22 @@ Plan: use Claude API with prompt caching — base resume content as cached syste
 
 ---
 
+## Phase 0 — Operational safety (complete)
+
+Built before any schema changes to lock down current parser behaviour:
+
+- **`src/utils/retry.py`** — `async_retry()`: exponential backoff with jitter, `Retry-After` header support, configurable retryable status codes. Integrated into `BaseScraper._request`.
+- **`src/logger.py`** — JSON structured logging to stderr. `LOG_LEVEL` env var controls verbosity. Structured event helpers: `log_scrape_failure`, `log_empty_response`, `log_rate_limited`, `log_schema_drift`.
+- **`tests/fixtures/`** — Static API response payloads for parser regression tests. 3 live-captured (Greenhouse/Lever/Amazon), 3 synthetic (Workday/Google/Apple — all broken at capture time). Re-capture with `python scripts/capture_fixtures.py` after deleting a fixture file.
+- **`tests/test_parsers.py`** — 30 parser stability tests (5 × 6 ATS types). Run `pytest tests/test_parsers.py` to guard parsing regressions.
+
+Known broken scrapers discovered during Phase 0 (all need Phase 4 investigation):
+- Workday: all tenants return 422/502
+- Google: v3 careers API endpoint → 404
+- Apple: jobs API endpoint → 301 → 404
+
+---
+
 ## Adding a new ATS scraper
 
 1. Create `src/scrapers/myats.py` inheriting `BaseScraper`
@@ -223,3 +244,4 @@ Plan: use Claude API with prompt caching — base resume content as cached syste
 3. Wire into `src/pipeline.py` alongside the other ATS blocks
 4. Add `"ats_type": "myats"` entries to `data/companies.json`
 5. If the ATS needs post-scrape description enrichment, follow the Workday pattern (`fetch_workday_description` + `_enrich_workday_descriptions` in pipeline)
+6. Add a fixture in `tests/fixtures/` and a test class in `tests/test_parsers.py`

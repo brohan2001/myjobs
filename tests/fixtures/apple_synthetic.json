@@ -1,0 +1,19 @@
+{
+  "searchResults": [
+    {
+      "positionId": "200590001",
+      "postingTitle": "Software Engineer - Apple Pay",
+      "jobSummary": "Apple is seeking a talented Software Engineer to join the Apple Pay team. You will build and maintain payment infrastructure. We offer visa sponsorship for qualified candidates.",
+      "location": {"name": "Cupertino, CA"},
+      "postingDate": "2026-05-01T00:00:00Z"
+    },
+    {
+      "positionId": "200590002",
+      "postingTitle": "iOS Engineer, New Grad",
+      "jobSummary": "Join Apple's iOS platform team. Entry-level role for recent graduates. 0-2 years of experience required. Build features used by millions of iPhone users.",
+      "location": {"name": "Austin, TX"},
+      "postingDate": "2026-04-28"
+    }
+  ],
+  "totalRecords": 2
+}

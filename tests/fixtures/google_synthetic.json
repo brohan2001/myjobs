@@ -1,0 +1,25 @@
+{
+  "jobs": [
+    {
+      "job_id": "jobs--123456789012345",
+      "title": "Software Engineer, University Graduate",
+      "description": "<p>Join Google as a Software Engineer. You will design, develop, and maintain systems that serve billions of users. <b>Minimum qualifications:</b> Bachelor's degree in Computer Science or related field. Experience with Python or Java.</p>",
+      "locations": [
+        {"display": "Mountain View, CA, USA"},
+        {"display": "New York, NY, USA"}
+      ],
+      "published": "2026-05-01T00:00:00Z",
+      "apply_url": "https://careers.google.com/jobs/results/123456789012345"
+    },
+    {
+      "job_id": "jobs--987654321098765",
+      "title": "Site Reliability Engineer",
+[redacted]
+      "locations": [
+        {"display": "Remote, USA"}
+      ],
+      "published": "2026-04-29T00:00:00Z",
+      "apply_url": "https://careers.google.com/jobs/results/987654321098765"
+    }
+  ]
+}
