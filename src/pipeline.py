@@ -40,7 +40,12 @@ from src.scrapers.amazon import AmazonScraper
 from src.scrapers.google import GoogleScraper
 from src.scrapers.apple import AppleScraper
 from src.scrapers.ashby import AshbyScraper
-from src.scrapers.linkedin import LinkedInBroadScraper, LinkedInScraper
+from src.scrapers.microsoft import MicrosoftScraper
+from src.scrapers.workable import WorkableScraper
+from src.scrapers.rippling import RipplingScraper
+from src.scrapers.smartrecruiters import SmartRecruitersScraper
+from src.scrapers.linkedin import LinkedInBroadScraper, LinkedInScraper, MetaScraper
+from src.scrapers.serp_fallback import SerpFallbackScraper
 
 console = Console()
 _log = get_logger("pipeline")
@@ -192,11 +197,18 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     go_companies = [c for c in companies if c["ats_type"] == "google"]
     ap_companies = [c for c in companies if c["ats_type"] == "apple"]
     ab_companies = [c for c in companies if c["ats_type"] == "ashby"]
+    ms_companies = [c for c in companies if c["ats_type"] == "microsoft"]
+    meta_companies = [c for c in companies if c["ats_type"] == "meta"]
+    wb_companies = [c for c in companies if c["ats_type"] == "workable"]
+    rp_companies = [c for c in companies if c["ats_type"] == "rippling"]
+    sr_companies = [c for c in companies if c["ats_type"] == "smartrecruiters"]
+    serp_companies = [c for c in companies if c["ats_type"] == "serp"]
 
     console.print(
         f"[dim]Companies: {len(gh_companies)} Greenhouse, {len(lv_companies)} Lever, "
         f"{len(wd_companies)} Workday, {len(az_companies)} Amazon, {len(li_companies)} LinkedIn, "
-        f"{len(go_companies)} Google, {len(ap_companies)} Apple, {len(ab_companies)} Ashby[/dim]"
+        f"{len(go_companies)} Google, {len(ap_companies)} Apple, {len(ab_companies)} Ashby, "
+        f"{len(ms_companies)} Microsoft, {len(meta_companies)} Meta[/dim]"
     )
 
     with get_conn() as conn:
@@ -225,6 +237,11 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
         task_go = progress.add_task("[red]Google    ", total=max(len(go_companies), 1))
         task_ap = progress.add_task("[white]Apple     ", total=max(len(ap_companies), 1))
         task_ab = progress.add_task("[magenta]Ashby     ", total=max(len(ab_companies), 1))
+        task_ms = progress.add_task("[blue]Microsoft ", total=max(len(ms_companies), 1))
+        task_wb = progress.add_task("[green4]Workable  ", total=max(len(wb_companies), 1))
+        task_rp = progress.add_task("[bright_magenta]Rippling  ", total=max(len(rp_companies), 1))
+        task_sr = progress.add_task("[cyan3]SmartRecr ", total=max(len(sr_companies), 1))
+        task_serp = progress.add_task("[yellow3]SERP      ", total=max(len(serp_companies), 1))
 
         # Greenhouse
         async with GreenhouseScraper() as gh_scraper:
@@ -321,18 +338,67 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
                         errors.append(err)
                     progress.advance(task_ab)
 
-    # LinkedIn runs outside the progress bar (best-effort, sequential, rate-limited)
-    if li_companies:
-        console.print(f"[dim]LinkedIn: scraping {len(li_companies)} companies (rate-limited)...[/dim]")
-        async with LinkedInScraper() as li_scraper:
-            for c in li_companies:
-                cid = company_id_map[f"linkedin:{c['slug']}"]
-                scraped, new, err = await _scrape_linkedin_company(li_scraper, c, cid, existing_keys)
-                jobs_scraped += scraped
-                jobs_new += new
-                if err:
-                    errors.append(err)
-                await asyncio.sleep(random.uniform(5, 10))
+        # Microsoft
+        if ms_companies:
+            async with MicrosoftScraper() as ms_scraper:
+                for c in ms_companies:
+                    cid = company_id_map[f"microsoft:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(ms_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_ms)
+
+        # Workable
+        if wb_companies:
+            async with WorkableScraper() as wb_scraper:
+                for c in wb_companies:
+                    cid = company_id_map[f"workable:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(wb_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_wb)
+
+        # Rippling
+        if rp_companies:
+            async with RipplingScraper() as rp_scraper:
+                for c in rp_companies:
+                    cid = company_id_map[f"rippling:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(rp_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_rp)
+
+        # SmartRecruiters
+        if sr_companies:
+            async with SmartRecruitersScraper() as sr_scraper:
+                for c in sr_companies:
+                    cid = company_id_map[f"smartrecruiters:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(sr_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_sr)
+
+        # SERP fallback (Meta only — Google restored to Playwright scraper)
+        if serp_companies:
+            async with SerpFallbackScraper() as serp_scraper:
+                for c in serp_companies:
+                    cid = company_id_map[f"serp:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(serp_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_serp)
+
+    # Meta + LinkedIn (Arista/Juniper) now route to SERP — no separate scrapers needed
 
     # Broad LinkedIn keyword search (best-effort, may be rate-limited)
     console.print("[dim]LinkedIn broad search (software engineer new grad/entry level)...[/dim]")
