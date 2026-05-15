@@ -92,7 +92,7 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 def load_companies() -> list[dict]:
     with open(DATA_DIR / "companies.json") as f:
-        return json.load(f)
+        return [c for c in json.load(f) if c.get("enabled", True)]
 
 
 def load_visa_keywords() -> dict[str, list[str]]:
