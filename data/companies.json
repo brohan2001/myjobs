@@ -10,7 +10,7 @@
   {
     "name": "OpenAI",
     "slug": "openai",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "openai.com",
     "industry": "tech",
     "tier": 1
@@ -42,7 +42,7 @@
   {
     "name": "Palantir",
     "slug": "palantir",
-    "ats_type": "greenhouse",
+    "ats_type": "lever",
     "domain": "palantir.com",
     "industry": "tech",
     "tier": 1
@@ -58,7 +58,7 @@
   {
     "name": "Notion",
     "slug": "notion",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "notion.so",
     "industry": "tech",
     "tier": 1
@@ -74,7 +74,7 @@
   {
     "name": "Plaid",
     "slug": "plaid",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "plaid.com",
     "industry": "fintech",
     "tier": 1
@@ -106,7 +106,7 @@
   {
     "name": "Snowflake",
     "slug": "snowflake",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "snowflake.com",
     "industry": "tech",
     "tier": 2
@@ -138,7 +138,7 @@
   {
     "name": "Rippling",
     "slug": "rippling",
-    "ats_type": "greenhouse",
+    "ats_type": "rippling",
     "domain": "rippling.com",
     "industry": "tech",
     "tier": 2
@@ -154,7 +154,7 @@
   {
     "name": "Sentry",
     "slug": "sentry",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "sentry.io",
     "industry": "tech",
     "tier": 2
@@ -186,7 +186,7 @@
   {
     "name": "Cohere",
     "slug": "cohere",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "cohere.com",
     "industry": "tech",
     "tier": 2
@@ -194,7 +194,7 @@
   {
     "name": "PostHog",
     "slug": "posthog",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "posthog.com",
     "industry": "tech",
     "tier": 2
@@ -202,7 +202,7 @@
   {
     "name": "Hugging Face",
     "slug": "huggingface",
-    "ats_type": "greenhouse",
+    "ats_type": "workable",
     "domain": "huggingface.co",
     "industry": "tech",
     "tier": 2
@@ -218,7 +218,7 @@
   {
     "name": "Zapier",
     "slug": "zapier",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "zapier.com",
     "industry": "tech",
     "tier": 2
@@ -234,14 +234,16 @@
   {
     "name": "Zendesk",
     "slug": "zendesk",
-    "ats_type": "greenhouse",
+    "ats_type": "workday",
+    "workday_host": "zendesk.wd1.myworkdayjobs.com",
+    "workday_board": "zendesk",
     "domain": "zendesk.com",
     "industry": "enterprise",
     "tier": 2
   },
   {
     "name": "Hubspot",
-    "slug": "hubspot",
+    "slug": "hubspotjobs",
     "ats_type": "greenhouse",
     "domain": "hubspot.com",
     "industry": "enterprise",
@@ -290,10 +292,12 @@
   {
     "name": "Snyk",
     "slug": "snyk",
-    "ats_type": "greenhouse",
+    "ats_type": "workday",
     "domain": "snyk.io",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "workday_host": "snyk.wd3.myworkdayjobs.com",
+    "workday_board": "Snyk"
   },
   {
     "name": "LaunchDarkly",
@@ -323,12 +327,11 @@
   },
   {
     "name": "Temporal",
-    "slug": "temporal",
-    "ats_type": "ashby",
+    "slug": "temporaltechnologies",
+    "ats_type": "greenhouse",
     "domain": "temporal.io",
     "industry": "tech",
-    "tier": 2,
-    "ashby_slug": "temporalio"
+    "tier": 2
   },
   {
     "name": "Linear",
@@ -341,12 +344,11 @@
   },
   {
     "name": "Pulumi",
-    "slug": "pulumi",
-    "ats_type": "ashby",
+    "slug": "pulumicorporation",
+    "ats_type": "greenhouse",
     "domain": "pulumi.com",
     "industry": "tech",
-    "tier": 2,
-    "ashby_slug": "pulumi"
+    "tier": 2
   },
   {
     "name": "Cockroach Labs",
@@ -359,7 +361,7 @@
   {
     "name": "Supabase",
     "slug": "supabase",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "supabase.com",
     "industry": "tech",
     "tier": 2
@@ -367,10 +369,7 @@
   {
     "name": "Microsoft",
     "slug": "microsoft",
-    "ats_type": "workday",
-    "workday_host": "microsoft.wd5.myworkdayjobs.com",
-    "workday_slug": "Microsoft",
-    "workday_board": "External",
+    "ats_type": "microsoft",
     "domain": "microsoft.com",
     "industry": "tech",
     "tier": 1
@@ -379,9 +378,9 @@
     "name": "Cisco",
     "slug": "cisco",
     "ats_type": "workday",
-    "workday_host": "cisco.wd5.myworkdayjobs.com",
+    "workday_host": "ciscocareers.wd5.myworkdayjobs.com",
     "workday_slug": "Cisco",
-    "workday_board": "Cisco",
+    "workday_board": "External",
     "domain": "cisco.com",
     "industry": "tech",
     "tier": 1
@@ -406,7 +405,8 @@
     "workday_board": "Global",
     "domain": "dell.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "enabled": false
   },
   {
     "name": "Capital One",
@@ -434,9 +434,9 @@
     "name": "Visa",
     "slug": "visa",
     "ats_type": "workday",
-    "workday_host": "visa.wd1.myworkdayjobs.com",
-    "workday_slug": "Visa",
-    "workday_board": "External",
+    "workday_host": "visa.wd5.myworkdayjobs.com",
+    "workday_slug": "visa",
+    "workday_board": "Visa",
     "domain": "visa.com",
     "industry": "fintech",
     "tier": 1
@@ -469,7 +469,7 @@
     "ats_type": "workday",
     "workday_host": "redhat.wd5.myworkdayjobs.com",
     "workday_slug": "RedHat",
-    "workday_board": "External",
+    "workday_board": "jobs",
     "domain": "redhat.com",
     "industry": "tech",
     "tier": 2
@@ -480,7 +480,7 @@
     "ats_type": "workday",
     "workday_host": "salesforce.wd12.myworkdayjobs.com",
     "workday_slug": "Salesforce",
-    "workday_board": "External",
+    "workday_board": "External_Career_Site",
     "domain": "salesforce.com",
     "industry": "enterprise",
     "tier": 1
@@ -491,7 +491,7 @@
     "ats_type": "workday",
     "workday_host": "nvidia.wd5.myworkdayjobs.com",
     "workday_slug": "Nvidia",
-    "workday_board": "University_Recruiting",
+    "workday_board": "NVIDIAExternalCareerSite",
     "domain": "nvidia.com",
     "industry": "tech",
     "tier": 1
@@ -524,7 +524,7 @@
     "ats_type": "workday",
     "workday_host": "walmart.wd5.myworkdayjobs.com",
     "workday_slug": "WalmartExternal",
-    "workday_board": "External",
+    "workday_board": "WalmartExternal",
     "domain": "walmart.com",
     "industry": "enterprise",
     "tier": 2
@@ -544,7 +544,7 @@
     "name": "BlackRock",
     "slug": "blackrock",
     "ats_type": "workday",
-    "workday_host": "blackrock.wd1.myworkdayjobs.com",
+    "workday_host": "blackrock.wd5.myworkdayjobs.com",
     "workday_slug": "BlackRock",
     "workday_board": "External",
     "domain": "blackrock.com",
@@ -603,11 +603,11 @@
   {
     "name": "Meta",
     "slug": "meta",
-    "ats_type": "linkedin",
-    "linkedin_company_id": "10667",
+    "ats_type": "serp",
     "domain": "meta.com",
     "industry": "tech",
-    "tier": 1
+    "tier": 1,
+    "serp_query": "site:metacareers.com \"software engineer\" OR \"engineer\""
   },
   {
     "name": "Apple",
@@ -639,8 +639,8 @@
   {
     "name": "Arista Networks",
     "slug": "arista",
-    "ats_type": "linkedin",
-    "linkedin_company_id": "16513",
+    "ats_type": "smartrecruiters",
+    "sr_id": "AristaNetworks",
     "domain": "arista.com",
     "industry": "tech",
     "tier": 1
@@ -648,8 +648,10 @@
   {
     "name": "Juniper Networks",
     "slug": "juniper",
-    "ats_type": "linkedin",
-    "linkedin_company_id": "3356",
+    "ats_type": "workday",
+    "workday_host": "hpe.wd5.myworkdayjobs.com",
+    "workday_slug": "Jobsathpe",
+    "workday_board": "Jobsathpe",
     "domain": "juniper.net",
     "industry": "tech",
     "tier": 2
@@ -660,7 +662,7 @@
     "ats_type": "workday",
     "workday_host": "crowdstrike.wd5.myworkdayjobs.com",
     "workday_slug": "CrowdStrike",
-    "workday_board": "External",
+    "workday_board": "crowdstrikecareers",
     "domain": "crowdstrike.com",
     "industry": "tech",
     "tier": 1
@@ -685,18 +687,18 @@
     "workday_board": "External",
     "domain": "mathworks.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "enabled": false
   },
   {
     "name": "Veeva Systems",
     "slug": "veeva",
     "ats_type": "workday",
-    "workday_host": "veeva.wd5.myworkdayjobs.com",
-    "workday_slug": "Veeva",
-    "workday_board": "External",
     "domain": "veeva.com",
     "industry": "enterprise",
-    "tier": 2
+    "tier": 2,
+    "workday_host": "veeva.wd1.myworkdayjobs.com",
+    "workday_board": "Veeva_Careers"
   },
   {
     "name": "CoreWeave",
@@ -720,7 +722,7 @@
     "ats_type": "workday",
     "workday_host": "adobe.wd5.myworkdayjobs.com",
     "workday_slug": "Adobe",
-    "workday_board": "External",
+    "workday_board": "external_experienced",
     "domain": "adobe.com",
     "industry": "tech",
     "tier": 1
@@ -749,11 +751,8 @@
   },
   {
     "name": "SAS Institute",
-    "slug": "sasinstitute",
-    "ats_type": "workday",
-    "workday_host": "sas.wd1.myworkdayjobs.com",
-    "workday_slug": "SAS",
-    "workday_board": "External",
+    "slug": "sas",
+    "ats_type": "greenhouse",
     "domain": "sas.com",
     "industry": "enterprise",
     "tier": 2
@@ -799,7 +798,7 @@
   {
     "name": "Confluent",
     "slug": "confluent",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "confluent.io",
     "industry": "tech",
     "tier": 1
@@ -810,7 +809,8 @@
     "ats_type": "greenhouse",
     "domain": "hashicorp.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "enabled": false
   },
   {
     "name": "Discord",
@@ -855,7 +855,7 @@
   {
     "name": "Benchling",
     "slug": "benchling",
-    "ats_type": "greenhouse",
+    "ats_type": "ashby",
     "domain": "benchling.com",
     "industry": "tech",
     "tier": 2
@@ -898,10 +898,7 @@
   {
     "name": "Okta",
     "slug": "okta",
-    "ats_type": "workday",
-    "workday_host": "okta.wd5.myworkdayjobs.com",
-    "workday_slug": "Okta",
-    "workday_board": "External",
+    "ats_type": "greenhouse",
     "domain": "okta.com",
     "industry": "tech",
     "tier": 1
@@ -923,7 +920,7 @@
     "ats_type": "workday",
     "workday_host": "workday.wd5.myworkdayjobs.com",
     "workday_slug": "Workday",
-    "workday_board": "External",
+    "workday_board": "Workday",
     "domain": "workday.com",
     "industry": "enterprise",
     "tier": 1

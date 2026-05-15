@@ -10,15 +10,27 @@ from src.scrapers.base import BaseScraper, ScraperError
 
 _PAGE_LIMIT = 20
 _MAX_JOBS = 300
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+_CFFI_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": _UA,
+}
 
 
 class WorkdayScraper(BaseScraper):
-    """Scrape Workday job boards.
+    """Scrape Workday job boards via TLS-spoofed Chrome requests.
 
-    Direct POST to /wday/cxs/.../jobs now returns 422 due to Cloudflare bot
-    protection. We navigate the page with Playwright so the JS challenge is
-    solved, then call the same endpoint via page.evaluate() (fetch inside the
-    browser's own JS context), which inherits the valid session cookies.
+    Strategy (fastest-first):
+    1. curl_cffi with impersonate="chrome" — spoofs Chrome TLS fingerprint,
+       bypasses Cloudflare Bot Management that blocks plain httpx (422/403).
+    2. Playwright fallback — runs the fetch inside the browser JS context.
+       Used only if curl_cffi also fails.
     """
 
     def __init__(self):
@@ -33,7 +45,19 @@ class WorkdayScraper(BaseScraper):
             from playwright.async_api import async_playwright
             self._pw_ctx = async_playwright()
             self._pw = await self._pw_ctx.__aenter__()
-            self._browser = await self._pw.chromium.launch(headless=True)
+            self._browser = await self._pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-setuid-sandbox",
+                    "--disable-infobars",
+                    "--window-position=0,0",
+                    "--ignore-certifcate-errors",
+                    "--ignore-certifcate-errors-spki-list",
+                ],
+            )
         except Exception:
             self._browser = None
         return self
@@ -53,24 +77,21 @@ class WorkdayScraper(BaseScraper):
 
     async def fetch_jobs(self, company: dict, company_id: int) -> list[dict]:
         host = company.get("workday_host", "")
-        slug = company.get("workday_slug", "")
         board = company.get("workday_board", "External")
 
-        if not host or not slug:
+        if not host:
             return []
 
-        api_url = f"https://{host}/wday/cxs/{slug}/{board}/jobs"
+        tenant = host.split(".")[0]
+        api_url = f"https://{host}/wday/cxs/{tenant}/{board}/jobs"
         board_url = f"https://{host}/en-US/{board}"
 
-        # Try direct httpx first (fast path — works when Workday isn't blocking)
-        try:
-            raw = await self._fetch_direct(api_url)
-            if raw is not None:
-                return self._parse_postings(raw, host, board, company_id)
-        except Exception:
-            pass
+        # Primary: curl_cffi with Chrome TLS fingerprint
+        raw = await self._fetch_cffi(api_url)
+        if raw is not None:
+            return self._parse_postings(raw, host, board, company_id)
 
-        # Playwright fallback — runs the fetch inside the browser's JS context
+        # Fallback: Playwright (runs fetch inside browser JS context)
         if self._browser:
             try:
                 raw = await self._fetch_via_playwright(board_url, api_url)
@@ -83,52 +104,105 @@ class WorkdayScraper(BaseScraper):
 
     # ── private helpers ───────────────────────────────────────────────────────
 
-    async def _fetch_direct(self, api_url: str) -> list[dict] | None:
-        """Try the Workday cxs API directly with httpx. Returns None on 422."""
+    async def _fetch_cffi(self, api_url: str) -> list[dict] | None:
+        """POST to Workday with Chrome TLS fingerprint via curl_cffi."""
+        try:
+            from curl_cffi.requests import AsyncSession
+        except ImportError:
+            return None
+
         all_postings: list[dict] = []
         offset = 0
 
-        while True:
-            try:
-                resp = await self._post(
-                    api_url,
-                    json={"appliedFacets": {}, "limit": _PAGE_LIMIT, "offset": offset, "searchText": ""},
-                    headers={"Content-Type": "application/json"},
-                )
-            except ScraperError as e:
-                if "422" in str(e):
-                    return None  # signal: try Playwright
-                break
+        # Rate-limit: honour the same interval as the base scraper
+        elapsed = __import__("time").monotonic() - self._last_request
+        wait = self._min_interval - elapsed
+        if wait > 0:
+            await asyncio.sleep(wait)
 
-            try:
-                data = resp.json()
-            except Exception:
-                break
+        try:
+            async with AsyncSession(impersonate="chrome") as session:
+                while True:
+                    payload = {
+                        "appliedFacets": {},
+                        "limit": _PAGE_LIMIT,
+                        "offset": offset,
+                        "searchText": "",
+                    }
+                    resp = await session.post(
+                        api_url,
+                        json=payload,
+                        headers=_CFFI_HEADERS,
+                        timeout=20,
+                    )
+                    self._last_request = __import__("time").monotonic()
 
-            # 422 can also arrive as a 200 with an errorCode field
-            if data.get("errorCode") == "HTTP_422":
-                return None
+                    if resp.status_code in (403, 422, 429, 503):
+                        return None
+                    if resp.status_code != 200:
+                        return None
 
-            postings = data.get("jobPostings", [])
-            total = data.get("total", 0)
-            all_postings.extend(postings)
-            offset += len(postings)
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        break
 
-            if not postings or offset >= total or offset >= _MAX_JOBS:
-                break
+                    if data.get("errorCode") == "HTTP_422":
+                        return None
+
+                    postings = data.get("jobPostings", [])
+                    total = data.get("total", 0)
+                    all_postings.extend(postings)
+                    offset += len(postings)
+
+                    if not postings or offset >= _MAX_JOBS:
+                        break
+                    if total > 0 and offset >= total:
+                        break
+
+        except Exception:
+            return None
 
         return all_postings if all_postings else None
+
+    # JS to override automation-detection signals before page load
+    _STEALTH_JS = """
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        window.chrome = {runtime: {}};
+        const origQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (params) =>
+            params.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : origQuery(params);
+    """
 
     async def _fetch_via_playwright(self, board_url: str, api_url: str) -> list[dict] | None:
         """Navigate the Workday board with Playwright and call the API via
         page.evaluate() so the request runs inside the browser JS context."""
-        page = await self._browser.new_page()
+        context = await self._browser.new_context(
+            user_agent=_UA,
+            locale="en-US",
+            viewport={"width": 1280, "height": 800},
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        await context.add_init_script(self._STEALTH_JS)
+        page = await context.new_page()
         all_postings: list[dict] = []
 
         try:
-            # Navigate so Cloudflare/Workday sets valid session cookies
-            await page.goto(board_url, wait_until="load", timeout=30_000)
-            await asyncio.sleep(2)
+            await page.goto(board_url, wait_until="networkidle", timeout=60_000)
+            await asyncio.sleep(5)
+
+            title = await page.title()
+            if "unavailable" in title.lower() or "error" in title.lower():
+                alt_url = board_url.replace("/en-US/", "/")
+                await page.goto(alt_url, wait_until="networkidle", timeout=45_000)
+                await asyncio.sleep(3)
 
             offset = 0
             while offset < _MAX_JOBS:
@@ -139,7 +213,11 @@ class WorkdayScraper(BaseScraper):
                         try {
                             const r = await fetch(url, {
                                 method: 'POST',
-                                headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'application/json',
+                                    'Accept-Language': 'en-US,en;q=0.9'
+                                },
                                 body: JSON.stringify(body)
                             });
                             if (!r.ok) return null;
@@ -158,11 +236,14 @@ class WorkdayScraper(BaseScraper):
                 all_postings.extend(postings)
                 offset += len(postings)
 
-                if not postings or offset >= total:
+                if not postings:
+                    break
+                if total > 0 and offset >= total:
                     break
 
         finally:
             await page.close()
+            await context.close()
 
         return all_postings if all_postings else None
 
@@ -201,11 +282,7 @@ async def fetch_workday_description(url: str) -> str:
     """Fetch a single Workday job description page."""
     headers = {
         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": _UA,
     }
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
