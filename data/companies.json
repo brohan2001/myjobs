@@ -378,9 +378,9 @@
     "name": "Cisco",
     "slug": "cisco",
     "ats_type": "workday",
-    "workday_host": "ciscocareers.wd5.myworkdayjobs.com",
-    "workday_slug": "Cisco",
-    "workday_board": "External",
+    "workday_host": "cisco.wd5.myworkdayjobs.com",
+    "workday_slug": "cisco",
+    "workday_board": "Cisco_Careers",
     "domain": "cisco.com",
     "industry": "tech",
     "tier": 1
@@ -577,9 +577,9 @@
     "name": "Palo Alto Networks",
     "slug": "paloaltonetworks",
     "ats_type": "workday",
-    "workday_host": "paloaltonetworks.wd1.myworkdayjobs.com",
-    "workday_slug": "PaloAltoNetworks",
-    "workday_board": "External",
+    "workday_host": "paloaltonetworks.wd5.myworkdayjobs.com",
+    "workday_slug": "paloaltonetworks",
+    "workday_board": "panwexternalcareers",
     "domain": "paloaltonetworks.com",
     "industry": "tech",
     "tier": 1
@@ -736,7 +736,8 @@
     "workday_board": "External",
     "domain": "splunk.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "enabled": false
   },
   {
     "name": "Uber",

@@ -31,7 +31,12 @@ class WorkdayScraper(BaseScraper):
        bypasses Cloudflare Bot Management that blocks plain httpx (422/403).
     2. Playwright fallback — runs the fetch inside the browser JS context.
        Used only if curl_cffi also fails.
+    3. FlareSolverr fallback — self-hosted Chrome proxy that bypasses
+       Cloudflare. Used only if both cffi and Playwright fail. If FlareSolverr
+       is not running the call fails silently and fetch_jobs returns [].
     """
+
+    _FLARESOLVERR_URL = "http://localhost:8191/v1"
 
     def __init__(self):
         super().__init__(rate_limit_rps=1 / 5)
@@ -99,6 +104,12 @@ class WorkdayScraper(BaseScraper):
                     return self._parse_postings(raw, host, board, company_id)
             except Exception:
                 pass
+
+        # Tertiary fallback: FlareSolverr (self-hosted Cloudflare bypass proxy)
+        body = {"appliedFacets": {}, "limit": _PAGE_LIMIT, "offset": 0, "searchText": ""}
+        raw = await self._fetch_via_flaresolverr(api_url, body)
+        if raw is not None:
+            return self._parse_postings(raw, host, board, company_id)
 
         return []
 
@@ -246,6 +257,73 @@ class WorkdayScraper(BaseScraper):
             await context.close()
 
         return all_postings if all_postings else None
+
+    async def _fetch_via_flaresolverr(self, api_url: str, body: dict) -> list[dict] | None:
+        """POST to Workday via a local FlareSolverr instance.
+
+        FlareSolverr renders the request inside a real Chrome browser, bypassing
+        Cloudflare Bot Management that defeats both curl_cffi and Playwright.
+
+        Returns the jobPostings list on success, or None if FlareSolverr is not
+        available or the response cannot be parsed.  Never raises.
+        """
+        import json as _json
+
+        payload = {
+            "cmd": "request.post",
+            "url": api_url,
+            "postData": _json.dumps(body),
+            "maxTimeout": 60000,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=70.0) as client:
+                resp = await client.post(self._FLARESOLVERR_URL, json=payload)
+        except (httpx.ConnectError, OSError):
+            # FlareSolverr not running — fail silently
+            return None
+        except Exception:
+            return None
+
+        try:
+            outer = resp.json()
+        except Exception:
+            return None
+
+        if outer.get("status") != "ok":
+            return None
+
+        solution = outer.get("solution", {})
+        if solution.get("status") != 200:
+            return None
+
+        raw_body = solution.get("response", "")
+        if not raw_body:
+            return None
+
+        # FlareSolverr renders via Chrome so the body may be a plain JSON
+        # string or an HTML page that embeds the JSON (e.g. wrapped in <pre>).
+        # Try direct JSON parse first; fall back to extracting from HTML.
+        data: dict | None = None
+        try:
+            data = _json.loads(raw_body)
+        except Exception:
+            # Attempt to extract JSON from an HTML-wrapped response
+            m = re.search(r"\{.*\"jobPostings\".*\}", raw_body, re.DOTALL)
+            if m:
+                try:
+                    data = _json.loads(m.group(0))
+                except Exception:
+                    pass
+
+        if not data:
+            return None
+
+        if data.get("errorCode") == "HTTP_422":
+            return None
+
+        postings = data.get("jobPostings", [])
+        return postings if postings else None
 
     def _parse_postings(self, postings: list[dict], host: str, board: str, company_id: int) -> list[dict]:
         jobs = []

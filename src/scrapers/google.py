@@ -4,6 +4,7 @@ import asyncio
 import re
 from datetime import datetime
 
+import httpx
 from bs4 import BeautifulSoup
 
 from src.scrapers.base import BaseScraper
@@ -131,3 +132,55 @@ def _parse_dom_jobs(html: str, company_id: int, seen_ids: set[str]) -> list[dict
             "ats_type":    "google",
         })
     return jobs
+
+
+async def fetch_google_description(url: str) -> str:
+    """Fetch job description from a Google Careers job detail page."""
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "User-Agent": _UA,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+    except Exception:
+        return ""
+
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Try known Google Careers description container classes
+    desc_div = (
+        soup.find("div", class_="aG5W3")
+        or soup.find("div", class_="KwJkGe")
+        or soup.find("div", class_="gc-formatted-body")
+        or soup.find(attrs={"data-module-name": "jobDetails"})
+    )
+    if desc_div:
+        return desc_div.get_text(separator=" ", strip=True)
+
+    # Fallback: look for sections with qualification/description headings
+    text_parts: list[str] = []
+    for heading in soup.find_all(re.compile(r"^h[1-4]$")):
+        heading_text = heading.get_text(strip=True).lower()
+        if any(kw in heading_text for kw in ("qualif", "responsib", "about the job", "preferred")):
+            sibling = heading.find_next_sibling()
+            while sibling and sibling.name not in ("h1", "h2", "h3", "h4"):
+                text_parts.append(sibling.get_text(separator=" ", strip=True))
+                sibling = sibling.find_next_sibling()
+
+    if text_parts:
+        return " ".join(text_parts)
+
+    # Last resort: largest <div> block in the main content area
+    main = soup.find("main") or soup.find("article") or soup.body
+    if main:
+        divs = main.find_all("div", recursive=True)
+        if divs:
+            biggest = max(divs, key=lambda d: len(d.get_text()))
+            text = biggest.get_text(separator=" ", strip=True)
+            if len(text) > 200:
+                return text
+
+    return ""

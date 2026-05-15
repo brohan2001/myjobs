@@ -5,6 +5,11 @@ from bs4 import BeautifulSoup
 from src.scrapers.base import BaseScraper, ScraperError
 
 _API = "https://boards.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 class GreenhouseScraper(BaseScraper):
@@ -13,8 +18,14 @@ class GreenhouseScraper(BaseScraper):
         url = _API.format(slug=slug)
         try:
             resp = await self._get(url)
-        except ScraperError:
-            raise
+        except ScraperError as e:
+            if "403" not in str(e):
+                raise
+            # Some boards (e.g. Coinbase) have Cloudflare in front of their
+            # Greenhouse board. Retry with a Chrome TLS fingerprint.
+            resp = await self._get_cffi(url)
+            if resp is None:
+                raise
 
         data = resp.json()
         raw_jobs = data.get("jobs", [])
@@ -25,7 +36,7 @@ class GreenhouseScraper(BaseScraper):
             remote = 1 if "remote" in location.lower() else 0
             raw_ts = j.get("updated_at") or ""
             posted_date = raw_ts[:10] or None
-            posted_at = raw_ts or None  # full ISO datetime, e.g. "2026-05-06T14:23:00.000Z"
+            posted_at = raw_ts or None
 
             jobs.append({
                 "external_id": str(j["id"]),
@@ -40,6 +51,38 @@ class GreenhouseScraper(BaseScraper):
                 "ats_type":    "greenhouse",
             })
         return jobs
+
+    async def _get_cffi(self, url: str):
+        """GET with Chrome TLS fingerprint via curl_cffi. Returns None on failure."""
+        try:
+            from curl_cffi.requests import AsyncSession
+        except ImportError:
+            return None
+        try:
+            async with AsyncSession(impersonate="chrome") as session:
+                resp = await session.get(
+                    url,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": _UA,
+                    },
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    return None
+                # Wrap in a minimal response-like object with .json()
+                return _CffiResponse(resp)
+        except Exception:
+            return None
+
+
+class _CffiResponse:
+    """Minimal wrapper so curl_cffi response looks like httpx response to callers."""
+    def __init__(self, resp):
+        self._resp = resp
+
+    def json(self):
+        return self._resp.json()
 
 
 def _strip_html(html: str) -> str:

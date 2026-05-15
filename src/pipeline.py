@@ -36,6 +36,8 @@ from src.scrapers.base import ScraperError
 from src.scrapers.greenhouse import GreenhouseScraper
 from src.scrapers.lever import LeverScraper
 from src.scrapers.workday import WorkdayScraper, fetch_workday_description
+from src.scrapers.google import fetch_google_description
+from src.scrapers.smartrecruiters import fetch_smartrecruiters_description
 from src.scrapers.amazon import AmazonScraper
 from src.scrapers.google import GoogleScraper
 from src.scrapers.apple import AppleScraper
@@ -171,6 +173,78 @@ async def _enrich_workday_descriptions(job_ids: list[int]) -> None:
                     conn.execute("UPDATE jobs SET description=? WHERE id=?", (desc, jid))
 
 
+async def _enrich_google_descriptions(job_ids: list[int]) -> None:
+    """Fetch Google Careers detail pages for newly inserted jobs. Runs in parallel with concurrency=5."""
+    if not job_ids:
+        return
+
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(job_ids))
+        rows = conn.execute(
+            f"SELECT id, url FROM jobs WHERE id IN ({placeholders}) AND (description IS NULL OR description='')",
+            job_ids,
+        ).fetchall()
+
+    if not rows:
+        return
+
+    sem = asyncio.Semaphore(5)
+
+    async def fetch_one(job_id: int, url: str) -> tuple[int, str]:
+        async with sem:
+            desc = await fetch_google_description(url)
+            return job_id, desc
+
+    tasks = [fetch_one(r["id"], r["url"]) for r in rows[:50]]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    with get_conn() as conn:
+        for result in results:
+            if isinstance(result, tuple):
+                jid, desc = result
+                if desc:
+                    conn.execute("UPDATE jobs SET description=? WHERE id=?", (desc, jid))
+
+
+async def _enrich_sr_descriptions(job_ids: list[int]) -> None:
+    """Fetch SmartRecruiters detail pages for newly inserted jobs. Runs in parallel with concurrency=5."""
+    if not job_ids:
+        return
+
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(job_ids))
+        rows = conn.execute(
+            f"SELECT id, url FROM jobs WHERE id IN ({placeholders}) AND (description IS NULL OR description='')",
+            job_ids,
+        ).fetchall()
+
+    if not rows:
+        return
+
+    sem = asyncio.Semaphore(5)
+
+    async def fetch_one(job_id: int, url: str) -> tuple[int, str]:
+        # URL format: https://jobs.smartrecruiters.com/{sr_id}/{job_id_str}
+        parts = url.rstrip("/").rsplit("/", 2)
+        if len(parts) < 3:
+            return job_id, ""
+        sr_id = parts[-2]
+        job_id_str = parts[-1]
+        async with sem:
+            desc = await fetch_smartrecruiters_description(sr_id, job_id_str)
+            return job_id, desc
+
+    tasks = [fetch_one(r["id"], r["url"]) for r in rows[:50]]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    with get_conn() as conn:
+        for result in results:
+            if isinstance(result, tuple):
+                jid, desc = result
+                if desc:
+                    conn.execute("UPDATE jobs SET description=? WHERE id=?", (desc, jid))
+
+
 async def run_daily(shortlist_limit: int = 50) -> Path:
     run_date = date.today().isoformat()
     start_time = time.monotonic()
@@ -222,6 +296,8 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     jobs_scraped = 0
     jobs_new = 0
     new_workday_ids: list[int] = []
+    new_google_ids: list[int] = []
+    new_sr_ids: list[int] = []
 
     with Progress(
         SpinnerColumn(),
@@ -304,9 +380,10 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             async with GoogleScraper() as go_scraper:
                 for c in go_companies:
                     cid = company_id_map[f"google:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(go_scraper, c, cid, existing_keys)
+                    scraped, new, ids, err = await _scrape_company(go_scraper, c, cid, existing_keys)
                     jobs_scraped += scraped
                     jobs_new += new
+                    new_google_ids.extend(ids)
                     if err:
                         errors.append(err)
                     progress.advance(task_go)
@@ -379,9 +456,10 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             async with SmartRecruitersScraper() as sr_scraper:
                 for c in sr_companies:
                     cid = company_id_map[f"smartrecruiters:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(sr_scraper, c, cid, existing_keys)
+                    scraped, new, ids, err = await _scrape_company(sr_scraper, c, cid, existing_keys)
                     jobs_scraped += scraped
                     jobs_new += new
+                    new_sr_ids.extend(ids)
                     if err:
                         errors.append(err)
                     progress.advance(task_sr)
@@ -428,6 +506,26 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             errors.append(f"workday_enrich: {e}")
             _log.error("workday_enrich_failure", extra={"error": str(e)})
             console.print(f"[yellow]Workday description enrichment failed (non-fatal): {e}[/yellow]")
+
+    # ── 2c. ENRICH GOOGLE DESCRIPTIONS ────────────────────────────────────
+    if new_google_ids:
+        console.print(f"[dim]Enriching descriptions for {min(len(new_google_ids), 50)} Google jobs...[/dim]")
+        try:
+            await _enrich_google_descriptions(new_google_ids)
+        except Exception as e:
+            errors.append(f"google_enrich: {e}")
+            _log.error("google_enrich_failure", extra={"error": str(e)})
+            console.print(f"[yellow]Google description enrichment failed (non-fatal): {e}[/yellow]")
+
+    # ── 2d. ENRICH SMARTRECRUITERS DESCRIPTIONS ───────────────────────────
+    if new_sr_ids:
+        console.print(f"[dim]Enriching descriptions for {min(len(new_sr_ids), 50)} SmartRecruiters jobs...[/dim]")
+        try:
+            await _enrich_sr_descriptions(new_sr_ids)
+        except Exception as e:
+            errors.append(f"sr_enrich: {e}")
+            _log.error("sr_enrich_failure", extra={"error": str(e)})
+            console.print(f"[yellow]SmartRecruiters description enrichment failed (non-fatal): {e}[/yellow]")
 
     # ── 3. PARSE SIGNALS ───────────────────────────────────────────────────
     with get_conn() as conn:
