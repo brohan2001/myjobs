@@ -26,10 +26,11 @@
   {
     "name": "Coinbase",
     "slug": "coinbase",
-    "ats_type": "greenhouse",
+    "ats_type": "serp",
     "domain": "coinbase.com",
     "industry": "fintech",
-    "tier": 1
+    "tier": 1,
+    "serp_query": "site:coinbase.com/careers \"software engineer\" OR \"backend\" OR \"infrastructure\" OR \"data\""
   },
   {
     "name": "Databricks",
@@ -284,10 +285,11 @@
   {
     "name": "Retool",
     "slug": "retool",
-    "ats_type": "greenhouse",
+    "ats_type": "serp",
     "domain": "retool.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "serp_query": "site:jobs.gem.com/retool \"software engineer\" OR \"backend\" OR \"infrastructure\" OR \"data\""
   },
   {
     "name": "Snyk",
@@ -402,7 +404,7 @@
     "ats_type": "workday",
     "workday_host": "dell.wd1.myworkdayjobs.com",
     "workday_slug": "Dell",
-    "workday_board": "Global",
+    "workday_board": "External",
     "domain": "dell.com",
     "industry": "tech",
     "tier": 2,
@@ -422,13 +424,13 @@
   {
     "name": "American Express",
     "slug": "amex",
-    "ats_type": "workday",
-    "workday_host": "aexp.wd5.myworkdayjobs.com",
-    "workday_slug": "AEXP",
-    "workday_board": "External",
+    "ats_type": "oracle_cloud",
     "domain": "americanexpress.com",
     "industry": "fintech",
-    "tier": 1
+    "tier": 1,
+    "orc_host": "egug.fa.us2.oraclecloud.com",
+    "orc_site": "CX_1",
+    "orc_careers_url": "https://careers.americanexpress.com"
   },
   {
     "name": "Visa",
@@ -445,9 +447,9 @@
     "name": "Mastercard",
     "slug": "mastercard",
     "ats_type": "workday",
-    "workday_host": "mastercard.wd5.myworkdayjobs.com",
+    "workday_host": "mastercard.wd1.myworkdayjobs.com",
     "workday_slug": "Mastercard",
-    "workday_board": "External",
+    "workday_board": "CorporateCareers",
     "domain": "mastercard.com",
     "industry": "fintech",
     "tier": 1
@@ -499,21 +501,19 @@
   {
     "name": "ServiceNow",
     "slug": "servicenow",
-    "ats_type": "workday",
-    "workday_host": "servicenow.wd5.myworkdayjobs.com",
-    "workday_slug": "ServiceNow",
-    "workday_board": "External",
+    "ats_type": "smartrecruiters",
     "domain": "servicenow.com",
     "industry": "enterprise",
-    "tier": 1
+    "tier": 1,
+    "sr_id": "ServiceNow"
   },
   {
     "name": "Fidelity",
     "slug": "fidelity",
     "ats_type": "workday",
-    "workday_host": "fidelity.wd5.myworkdayjobs.com",
+    "workday_host": "fmr.wd1.myworkdayjobs.com",
     "workday_slug": "FidelityInvestments",
-    "workday_board": "External",
+    "workday_board": "FidelityCareers",
     "domain": "fidelity.com",
     "industry": "fintech",
     "tier": 2
@@ -533,7 +533,7 @@
     "name": "Morgan Stanley",
     "slug": "morganstanley",
     "ats_type": "workday",
-    "workday_host": "morganstanley.wd5.myworkdayjobs.com",
+    "workday_host": "ms.wd5.myworkdayjobs.com",
     "workday_slug": "MorganStanley",
     "workday_board": "External",
     "domain": "morganstanley.com",
@@ -544,9 +544,9 @@
     "name": "BlackRock",
     "slug": "blackrock",
     "ats_type": "workday",
-    "workday_host": "blackrock.wd5.myworkdayjobs.com",
+    "workday_host": "blackrock.wd1.myworkdayjobs.com",
     "workday_slug": "BlackRock",
-    "workday_board": "External",
+    "workday_board": "BlackRock_Professional",
     "domain": "blackrock.com",
     "industry": "fintech",
     "tier": 1
@@ -607,7 +607,7 @@
     "domain": "meta.com",
     "industry": "tech",
     "tier": 1,
-    "serp_query": "site:metacareers.com \"software engineer\" OR \"engineer\""
+    "serp_query": "site:metacareers.com/profile/job_details \"software engineer\" OR \"backend\" OR \"infrastructure\" OR \"data\""
   },
   {
     "name": "Apple",
@@ -620,21 +620,22 @@
   {
     "name": "JPMorgan Chase",
     "slug": "jpmorgan",
-    "ats_type": "workday",
-    "workday_host": "jpmc.wd5.myworkdayjobs.com",
-    "workday_slug": "JPMC",
-    "workday_board": "External",
+    "ats_type": "oracle_cloud",
     "domain": "jpmorgan.com",
     "industry": "fintech",
-    "tier": 1
+    "tier": 1,
+    "orc_host": "jpmc.fa.oraclecloud.com",
+    "orc_site": "CX_1001",
+    "orc_careers_url": "https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience"
   },
   {
     "name": "Bloomberg",
     "slug": "bloomberg",
-    "ats_type": "greenhouse",
+    "ats_type": "avature",
     "domain": "bloomberg.com",
     "industry": "fintech",
-    "tier": 1
+    "tier": 1,
+    "avature_host": "bloomberg.avature.net"
   },
   {
     "name": "Arista Networks",
@@ -673,7 +674,7 @@
     "ats_type": "workday",
     "workday_host": "bnymellon.wd1.myworkdayjobs.com",
     "workday_slug": "BNYMellon",
-    "workday_board": "External",
+    "workday_board": "BNYMellonCareers",
     "domain": "bnymellon.com",
     "industry": "fintech",
     "tier": 2
@@ -688,7 +689,8 @@
     "domain": "mathworks.com",
     "industry": "tech",
     "tier": 2,
-    "enabled": false
+    "enabled": false,
+    "disabled": true
   },
   {
     "name": "Veeva Systems",
@@ -737,7 +739,8 @@
     "domain": "splunk.com",
     "industry": "tech",
     "tier": 2,
-    "enabled": false
+    "enabled": false,
+    "disabled": true
   },
   {
     "name": "Uber",
@@ -864,10 +867,12 @@
   {
     "name": "Cohesity",
     "slug": "cohesity",
-    "ats_type": "greenhouse",
+    "ats_type": "workday",
     "domain": "cohesity.com",
     "industry": "tech",
-    "tier": 2
+    "tier": 2,
+    "workday_host": "cohesity.wd1.myworkdayjobs.com",
+    "workday_board": "External"
   },
   {
     "name": "Pendo",

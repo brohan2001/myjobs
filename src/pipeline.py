@@ -48,6 +48,8 @@ from src.scrapers.rippling import RipplingScraper
 from src.scrapers.smartrecruiters import SmartRecruitersScraper
 from src.scrapers.linkedin import LinkedInBroadScraper, LinkedInScraper, MetaScraper
 from src.scrapers.serp_fallback import SerpFallbackScraper
+from src.scrapers.avature import AvatureScraper
+from src.scrapers.oracle_cloud import OracleCloudScraper
 
 console = Console()
 _log = get_logger("pipeline")
@@ -277,6 +279,8 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     rp_companies = [c for c in companies if c["ats_type"] == "rippling"]
     sr_companies = [c for c in companies if c["ats_type"] == "smartrecruiters"]
     serp_companies = [c for c in companies if c["ats_type"] == "serp"]
+    av_companies = [c for c in companies if c["ats_type"] == "avature"]
+    orc_companies = [c for c in companies if c["ats_type"] == "oracle_cloud"]
 
     console.print(
         f"[dim]Companies: {len(gh_companies)} Greenhouse, {len(lv_companies)} Lever, "
@@ -318,6 +322,8 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
         task_rp = progress.add_task("[bright_magenta]Rippling  ", total=max(len(rp_companies), 1))
         task_sr = progress.add_task("[cyan3]SmartRecr ", total=max(len(sr_companies), 1))
         task_serp = progress.add_task("[yellow3]SERP      ", total=max(len(serp_companies), 1))
+        task_av = progress.add_task("[dark_orange]Avature   ", total=max(len(av_companies), 1))
+        task_orc = progress.add_task("[gold1]Oracle Cld", total=max(len(orc_companies), 1))
 
         # Greenhouse
         async with GreenhouseScraper() as gh_scraper:
@@ -475,6 +481,30 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
                     if err:
                         errors.append(err)
                     progress.advance(task_serp)
+
+        # Avature (Bloomberg)
+        if av_companies:
+            async with AvatureScraper() as av_scraper:
+                for c in av_companies:
+                    cid = company_id_map[f"avature:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(av_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_av)
+
+        # Oracle Recruiting Cloud (JPMC, AmEx)
+        if orc_companies:
+            async with OracleCloudScraper() as orc_scraper:
+                for c in orc_companies:
+                    cid = company_id_map[f"oracle_cloud:{c['slug']}"]
+                    scraped, new, _, err = await _scrape_company(orc_scraper, c, cid, existing_keys)
+                    jobs_scraped += scraped
+                    jobs_new += new
+                    if err:
+                        errors.append(err)
+                    progress.advance(task_orc)
 
     # Meta + LinkedIn (Arista/Juniper) now route to SERP — no separate scrapers needed
 
