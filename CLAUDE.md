@@ -8,7 +8,7 @@ Daily pipeline that:
 3. Scores every job on 5 factors (skill match, role priority, visa, recency, company tier)
 4. Shortlists the top 50 and renders a ranked HTML report + live web UI
 
-**Phase 2 (not yet built):** Claude API-based resume and cover letter generation per job.
+**Phase 2 (complete):** `myjobs generate` — Claude API generates tailored resume bullets and a cover letter per job, with prompt caching on the base resume.
 
 ---
 
@@ -91,6 +91,7 @@ python scripts/discover_workday_urls.py --apply  # patch companies.json
 
 | File | Purpose |
 |------|---------|
+| `src/ai/generator.py` | Phase 2: Claude API resume bullets + cover letter generator with prompt caching |
 | `src/config.py` | Skill groups, role weights, score weights — edit here to tune ranking |
 | `src/ranker.py` | All 5 scoring functions + signal parsing |
 | `src/pipeline.py` | Orchestrates the full daily run (scrape → enrich → parse → rank → shortlist → render) |
@@ -162,18 +163,18 @@ All return HTTP 422 `{"errorCode":"HTTP_422"}` from `myworkdayjobs.com`. This is
 | Company | Workday host |
 |---------|-------------|
 | Cohesity | cohesity.wd1.myworkdayjobs.com/External |
-| Snyk | snyk.wd1.myworkdayjobs.com |
-| Oracle | oracle.wd1.myworkdayjobs.com |
-| Goldman Sachs | goldmansachs.wd1.myworkdayjobs.com |
-| Qualcomm | qualcomm.wd5.myworkdayjobs.com |
-| Akamai | akamai.wd1.myworkdayjobs.com |
+| Snyk | snyk.wd3.myworkdayjobs.com/Snyk |
+| Oracle | oracle.wd1.myworkdayjobs.com/External |
+| Goldman Sachs | goldmansachs.wd1.myworkdayjobs.com/External |
+| Qualcomm | qualcomm.wd5.myworkdayjobs.com/External |
+| Akamai | akamai.wd5.myworkdayjobs.com/External |
 | BNY Mellon | bnymellon.wd1.myworkdayjobs.com/BNYMellonCareers |
-| Veeva Systems | veeva.wd1.myworkdayjobs.com |
-| Uber | uber.wd5.myworkdayjobs.com |
-| Lenovo | lenovoglobal.wd3.myworkdayjobs.com |
-| Fortinet | fortinet.wd1.myworkdayjobs.com |
-| Intuit | intuit.wd1.myworkdayjobs.com |
-| NetApp | netapp.wd1.myworkdayjobs.com |
+| Veeva Systems | veeva.wd1.myworkdayjobs.com/Veeva_Careers |
+| Uber | uber.wd5.myworkdayjobs.com/External |
+| Lenovo | lenovohr.wd3.myworkdayjobs.com/External |
+| Fortinet | fortinet.wd1.myworkdayjobs.com/External |
+| Intuit | intuit.wd5.myworkdayjobs.com/External |
+| NetApp | netapp.wd1.myworkdayjobs.com/External |
 
 **Phase 4 plan:** Run `python scripts/check_scrapers.py --fresh` periodically. When the 422s resolve, these will auto-recover. If they don't recover within a few weeks, investigate FlareSolverr proxy as fallback.
 
@@ -282,12 +283,27 @@ sqlite3 jobs.db "SELECT company_name, title, total_score, visa_signal FROM jobs 
 
 ---
 
-## Phase 2 — Resume generation (not yet built)
+## Phase 2 — Resume generation (complete)
 
-Requires `ANTHROPIC_API_KEY` in `.env`. Copy `.env.example` to `.env` and fill in the key.
-Run `myjobs verify-api` to test the key.
+Requires `ANTHROPIC_API_KEY` in `.env` with API credits. Copy `.env.example` to `.env` and fill in the key.
+Run `myjobs verify-api` to test the key (distinguishes invalid key vs. zero credits).
 
-Plan: use Claude API with prompt caching — base resume content as cached system prompt prefix, job description as per-job user message. Batch 50 jobs with `asyncio.Semaphore(3)`. Output JSON → HTML files alongside the report.
+```bash
+myjobs generate              # top 10 jobs from today
+myjobs generate --top 20     # more jobs
+myjobs generate --days 3     # look back 3 days for shortlisted jobs
+```
+
+Output per run: `output/YYYY-MM-DD/applications/`
+- `materials.json` — full bundle with all results + token usage
+- `{company}_{title}.md` — per-job markdown (resume bullets + cover letter)
+
+### Architecture (`src/ai/generator.py`)
+- **Prompt caching**: system prompt = candidate profile + base resume text, marked `cache_control: ephemeral`. At ~1200+ tokens, this qualifies for Anthropic's cache. Subsequent jobs with the same role reuse the cached prefix — only the per-job user message is freshly billed.
+- **Resume routing**: selects the correct resume PDF by `role_category` via `RESUME_MAP` in `config.py`
+- **Concurrency**: `asyncio.Semaphore(3)` — 3 concurrent Claude requests
+- **Model**: `claude-sonnet-4-6`
+- **Output per job**: 6–8 tailored resume bullets + 3-paragraph cover letter (≤200 words)
 
 ---
 

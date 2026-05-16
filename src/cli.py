@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -334,7 +335,14 @@ def verify_api() -> None:
             messages=[{"role": "user", "content": "Reply with the single word: OK"}],
         )
     except anthropic.AuthenticationError:
-        console.print("[red]Authentication failed — check your API key.[/red]")
+        console.print("[red]Authentication failed — API key is invalid or revoked.[/red]")
+        raise typer.Exit(1)
+    except anthropic.BadRequestError as exc:
+        if "credit balance" in str(exc).lower():
+            console.print("[yellow]API key is valid but your credit balance is too low.[/yellow]")
+            console.print("Add credits at [bold]console.anthropic.com → Plans & Billing[/bold].")
+        else:
+            console.print(f"[red]API call failed: {exc}[/red]")
         raise typer.Exit(1)
     except Exception as exc:
         console.print(f"[red]API call failed: {exc}[/red]")
@@ -344,6 +352,95 @@ def verify_api() -> None:
     usage = msg.usage
     console.print(f"[green]API key is valid.[/green] Response: [bold]{reply}[/bold]")
     console.print(f"[dim]Tokens — input: {usage.input_tokens}, output: {usage.output_tokens}[/dim]")
+
+
+# ── generate ──────────────────────────────────────────────────────────────────
+
+@app.command()
+def generate(
+    top: int = typer.Option(10, help="Number of top shortlisted jobs to process"),
+    days: int = typer.Option(1, help="Look back N days for shortlisted jobs (0 = all time)"),
+    out: Optional[str] = typer.Option(None, help="Override output directory"),
+) -> None:
+    """Generate tailored resume bullets + cover letters for top shortlisted jobs via Claude API."""
+    from src.ai.generator import generate_for_shortlist
+    from src.database import get_shortlisted_jobs
+
+    init_db()
+    with get_conn() as conn:
+        days_window = days if days > 0 else 3650
+        jobs = get_shortlisted_jobs(conn, days=days_window)
+
+    if not jobs:
+        console.print(f"[yellow]No shortlisted jobs found in the last {days} day(s). Run [bold]myjobs run[/bold] first.[/yellow]")
+        raise typer.Exit()
+
+    console.print(f"[dim]Found {len(jobs)} shortlisted jobs. Generating materials for top {top}...[/dim]")
+
+    try:
+        results = asyncio.run(generate_for_shortlist(jobs, top_n=top))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    today = date.today().isoformat()
+    out_dir = Path(out) if out else OUTPUT_DIR / today / "applications"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    bundle_path = out_dir / "materials.json"
+    with open(bundle_path, "w") as f:
+        json.dump(results, f, indent=2, default=str)
+
+    for r in results:
+        if r.get("error"):
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "_", f"{r['company_name']}_{r['title']}".lower())[:60]
+        md_path = out_dir / f"{slug}.md"
+        with open(md_path, "w") as f:
+            f.write(f"# {r['company_name']} — {r['title']}\n\n")
+            f.write(f"**Score:** {r['total_score']:.1f}  |  **Role:** {r['role_category']}  |  [Job link]({r['url']})\n\n")
+            f.write("## Tailored Resume Bullets\n\n")
+            for bullet in r.get("resume_bullets", []):
+                f.write(f"- {bullet}\n")
+            f.write("\n## Cover Letter\n\n")
+            f.write(r.get("cover_letter", ""))
+            f.write("\n")
+
+    errors = [r for r in results if r.get("error")]
+    success = [r for r in results if not r.get("error")]
+
+    total_cache_read  = sum(r.get("tokens", {}).get("cache_read",  0) for r in success)
+    total_cache_write = sum(r.get("tokens", {}).get("cache_write", 0) for r in success)
+    total_output      = sum(r.get("tokens", {}).get("output",      0) for r in success)
+
+    table = Table(title="Generated Application Materials", box=box.ROUNDED, header_style="bold cyan")
+    table.add_column("#",        width=3,  no_wrap=True)
+    table.add_column("Company",  width=18, no_wrap=True)
+    table.add_column("Title",    min_width=30)
+    table.add_column("Score",    width=6,  no_wrap=True)
+    table.add_column("Bullets",  width=8,  no_wrap=True)
+    table.add_column("Letter",   width=7,  no_wrap=True)
+
+    for i, r in enumerate(results, 1):
+        if r.get("error"):
+            table.add_row(str(i), r.get("company_name", "—")[:18], r.get("title", "")[:50], "ERR", "—", "[red]FAIL[/]")
+        else:
+            table.add_row(
+                str(i),
+                (r.get("company_name") or "")[:18],
+                (r.get("title") or "")[:50],
+                f"{r['total_score']:.1f}",
+                str(len(r.get("resume_bullets", []))),
+                "[green]yes[/]",
+            )
+
+    console.print(table)
+    console.print(f"\n[green]Generated {len(success)}/{len(results)} successfully.[/green]")
+    console.print(f"[dim]Output: {out_dir}/[/dim]")
+    console.print(f"[dim]Tokens — cache write: {total_cache_write:,}  cache read: {total_cache_read:,}  output: {total_output:,}[/dim]")
+    if errors:
+        for r in errors:
+            console.print(f"[red]  Failed: {r.get('company_name')} — {r.get('title')}: {r.get('error')}[/red]")
 
 
 if __name__ == "__main__":
