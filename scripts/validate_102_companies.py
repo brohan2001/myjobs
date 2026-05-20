@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Validate that all companies in companies.json return ≥1 job.
+Validate that the 102 curated companies return ≥1 job via the jobseek pipeline.
+Reads company slugs from scripts/scraping_status.json and boards from data/boards.csv.
+
 Run from project root: python scripts/validate_102_companies.py
 
 Exit code 0 = all passed, 1 = some failures.
@@ -8,234 +10,185 @@ Exit code 0 = all passed, 1 = some failures.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import load_companies
-from src.scrapers.greenhouse import GreenhouseScraper
-from src.scrapers.lever import LeverScraper
-from src.scrapers.workday import WorkdayScraper
-from src.scrapers.amazon import AmazonScraper
-from src.scrapers.apple import AppleScraper
-from src.scrapers.ashby import AshbyScraper
-from src.scrapers.microsoft import MicrosoftScraper
-from src.scrapers.workable import WorkableScraper
-from src.scrapers.rippling import RipplingScraper
-from src.scrapers.smartrecruiters import SmartRecruitersScraper
-from src.scrapers.serp_fallback import SerpFallbackScraper
+from src.companies import load_boards
+from src.core.monitor import monitor_one_stream
+from src.core.monitors import monitor_needs_browser
+from src.shared.http import create_http_client
 
-# Timeouts per ATS type (seconds)
-_TIMEOUTS = {
-    "greenhouse": 30,
-    "lever":      30,
+STATUS_JSON = Path(__file__).parent / "scraping_status.json"
+
+Result = dict  # {company, slug, ats_type, enabled, checked_at, jobs, status, error}
+
+_TIMEOUTS: dict[str, int] = {
+    "workday":    120,  # multi-site discovery can be slow
+    "api_sniffer": 60,
+    "dom":        60,
+    "eightfold":  45,
     "ashby":      45,
     "amazon":     45,
-    "microsoft":  45,
-    "workday":    60,
     "apple":      60,
-    "workable":   30,
-    "rippling":         45,
-    "smartrecruiters":  30,
-    "serp":             60,
+    "microsoft":  45,
 }
-
-_DUMMY_CID = 999  # dummy company_id for validation
-
-Result = dict  # {name, ats, count, elapsed, error}
+_DEFAULT_TIMEOUT = 35
 
 
-async def _test_one(scraper, company: dict, timeout: int) -> Result:
-    name = company["name"]
-    ats = company["ats_type"]
-    t0 = time.monotonic()
+async def _test_board(board, http, pw=None) -> tuple[int, str | None]:
+    """Test one board; returns (job_count, error_or_None).
+
+    Breaks after the first non-empty batch — we only need to confirm ≥1 job.
+    """
+    timeout = _TIMEOUTS.get(board.monitor_type, _DEFAULT_TIMEOUT)
+    count = 0
     try:
-        jobs = await asyncio.wait_for(
-            scraper.fetch_jobs(company, _DUMMY_CID),
-            timeout=timeout,
-        )
-        count = len(jobs) if jobs else 0
-        error = ""
+        async def _collect():
+            nonlocal count
+            async for batch in monitor_one_stream(
+                board.board_url, board.monitor_type, board.monitor_config, http, pw=pw
+            ):
+                n = len(batch.jobs_by_url) if batch.jobs_by_url else len(batch.urls)
+                count += n
+                if count > 0:
+                    break  # confirmed ≥1 job — no need to fetch all pages
+
+        await asyncio.wait_for(_collect(), timeout=timeout)
+        if count == 0:
+            return 0, "0 jobs returned"
+        return count, None
     except asyncio.TimeoutError:
-        count = 0
-        error = f"TIMEOUT after {timeout}s"
+        return count, f"TIMEOUT after {timeout}s"
     except Exception as e:
-        count = 0
-        error = str(e)[:120]
-    elapsed = time.monotonic() - t0
-    return {"name": name, "ats": ats, "count": count, "elapsed": elapsed, "error": error}
+        return count, str(e)[:200]
 
 
-async def _run_group_concurrent(
-    scraper_cls, companies: list[dict], sem_limit: int = 10
-) -> list[Result]:
-    """Run a group of companies through a shared scraper instance concurrently."""
-    results = []
-    sem = asyncio.Semaphore(sem_limit)
+async def _test_company(slug: str, boards: list, sem: asyncio.Semaphore, http, pw=None) -> Result:
+    """Test all boards for a company; pass if any returns ≥1 job."""
+    company_name = boards[0].company.name if boards[0].company else slug
+    best_count = 0
+    best_error: str | None = None
+    primary_type = boards[0].monitor_type
 
-    async with scraper_cls() as scraper:
-        async def run_one(c):
-            async with sem:
-                ats = c["ats_type"]
-                return await _test_one(scraper, c, _TIMEOUTS.get(ats, 60))
+    async with sem:
+        for board in boards:
+            count, error = await _test_board(board, http, pw=pw)
+            if count > best_count:
+                best_count = count
+                primary_type = board.monitor_type
+            if error is not None:
+                best_error = error  # always capture the last real error
+            if count > 0:
+                best_error = None
+                break  # company passes — no need to test remaining boards
 
-        tasks = [run_one(c) for c in companies]
-        results = await asyncio.gather(*tasks)
-
-    return list(results)
-
-
-async def _run_group_sequential(scraper_cls, companies: list[dict]) -> list[Result]:
-    """Run a group of companies through a shared scraper instance sequentially."""
-    results = []
-    async with scraper_cls() as scraper:
-        for c in companies:
-            ats = c["ats_type"]
-            r = await _test_one(scraper, c, _TIMEOUTS.get(ats, 60))
-            results.append(r)
-    return results
-
-
-def _print_row(r: Result, status: str) -> None:
-    icon = "✓" if status == "PASS" else "✗"
-    jobs_str = f"{r['count']:>4} jobs" if r["count"] else "   0 jobs"
-    elapsed_str = f"{r['elapsed']:>5.1f}s"
-    err = f"  [{r['error']}]" if r["error"] else ""
-    print(f"  {icon} {r['name']:<35} {r['ats']:<12} {jobs_str}  {elapsed_str}{err}")
+    return {
+        "company": company_name,
+        "slug": slug,
+        "ats_type": primary_type,
+        "enabled": True,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "jobs": best_count,
+        "status": "pass" if best_count > 0 else "fail",
+        "error": best_error if best_count == 0 else None,
+    }
 
 
 async def main() -> int:
-    companies = load_companies()
+    with open(STATUS_JSON) as f:
+        existing: dict = json.load(f)
 
-    # Group by ATS type
-    by_type: dict[str, list[dict]] = {}
-    for c in companies:
-        by_type.setdefault(c["ats_type"], []).append(c)
+    target_slugs = set(existing.keys())
 
-    all_results: list[Result] = []
-    total = len(companies)
+    all_boards = load_boards()
+    by_company: dict[str, list] = {}
+    for board in all_boards:
+        if board.company_slug in target_slugs:
+            by_company.setdefault(board.company_slug, []).append(board)
 
+    missing = target_slugs - set(by_company.keys())
+    if missing:
+        print(f"WARNING: {len(missing)} slugs not found in boards.csv: {sorted(missing)}")
+
+    total = len(by_company)
     print(f"\n{'='*70}")
-    print(f"  Validating {total} companies across {len(by_type)} ATS types")
+    print(f"  Validating {total} companies via jobseek monitors")
     print(f"{'='*70}\n")
 
-    # ── Greenhouse (concurrent) ───────────────────────────────────────────────
-    gh = by_type.get("greenhouse", [])
-    if gh:
-        print(f"[Greenhouse — {len(gh)} companies]")
-        results = await _run_group_concurrent(GreenhouseScraper, gh, sem_limit=10)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    needs_browser = any(
+        monitor_needs_browser(b.monitor_type, b.monitor_config)
+        for boards in by_company.values()
+        for b in boards
+    )
 
-    # ── Ashby (sequential — rate-sensitive, returns 429 under concurrent load) ─
-    ab = by_type.get("ashby", [])
-    if ab:
-        print(f"\n[Ashby — {len(ab)} companies]")
-        results = await _run_group_sequential(AshbyScraper, ab)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    # Ashby and Workday are rate-sensitive — run sequentially to avoid 429s / rate limits
+    sequential_slugs = {
+        slug for slug, boards in by_company.items()
+        if any(b.monitor_type in ("ashby", "workday") for b in boards)
+    }
+    concurrent_slugs = set(by_company.keys()) - sequential_slugs
 
-    # ── Lever (sequential) ────────────────────────────────────────────────────
-    lv = by_type.get("lever", [])
-    if lv:
-        print(f"\n[Lever — {len(lv)} companies]")
-        results = await _run_group_sequential(LeverScraper, lv)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    sem = asyncio.Semaphore(10)
+    http = create_http_client()
+    results: dict[str, Result] = {}
 
-    # ── Amazon (sequential) ───────────────────────────────────────────────────
-    az = by_type.get("amazon", [])
-    if az:
-        print(f"\n[Amazon — {len(az)} companies]")
-        results = await _run_group_sequential(AmazonScraper, az)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    def _print_result(r: Result) -> None:
+        icon = "✓" if r["status"] == "pass" else "✗"
+        jobs_str = f"{r['jobs']:>4}" if r["jobs"] else "   0"
+        print(f"  {icon} {r['company']:<35} {r['ats_type']:<18} {jobs_str} jobs")
 
-    # ── Microsoft (sequential) ────────────────────────────────────────────────
-    ms = by_type.get("microsoft", [])
-    if ms:
-        print(f"\n[Microsoft — {len(ms)} companies]")
-        results = await _run_group_sequential(MicrosoftScraper, ms)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    async def run_all(pw=None):
+        # Concurrent for non-rate-sensitive monitors
+        tasks = [
+            _test_company(slug, by_company[slug], sem, http, pw=pw)
+            for slug in concurrent_slugs
+        ]
+        for coro in asyncio.as_completed(tasks):
+            r = await coro
+            results[r["slug"]] = r
+            _print_result(r)
 
-    # ── Apple (sequential) ────────────────────────────────────────────────────
-    ap = by_type.get("apple", [])
-    if ap:
-        print(f"\n[Apple — {len(ap)} companies]")
-        results = await _run_group_sequential(AppleScraper, ap)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+        # Sequential for rate-sensitive monitors (Ashby, Workday)
+        for slug in sorted(sequential_slugs):
+            r = await _test_company(slug, by_company[slug], sem, http, pw=pw)
+            results[r["slug"]] = r
+            _print_result(r)
 
-    # ── Workday (sequential — one shared Playwright browser) ─────────────────
-    wd = by_type.get("workday", [])
-    if wd:
-        print(f"\n[Workday — {len(wd)} companies]")
-        results = await _run_group_sequential(WorkdayScraper, wd)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    if needs_browser:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as pw:
+            await run_all(pw=pw)
+    else:
+        await run_all()
 
-    # ── Workable (sequential) ─────────────────────────────────────────────────
-    wb = by_type.get("workable", [])
-    if wb:
-        print(f"\n[Workable — {len(wb)} companies]")
-        results = await _run_group_sequential(WorkableScraper, wb)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
+    await http.aclose()
 
-    # ── Rippling (sequential) ─────────────────────────────────────────────────
-    rp = by_type.get("rippling", [])
-    if rp:
-        print(f"\n[Rippling — {len(rp)} companies]")
-        results = await _run_group_sequential(RipplingScraper, rp)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
-
-    # ── SmartRecruiters (sequential) ──────────────────────────────────────────
-    sr = by_type.get("smartrecruiters", [])
-    if sr:
-        print(f"\n[SmartRecruiters — {len(sr)} companies]")
-        results = await _run_group_sequential(SmartRecruitersScraper, sr)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
-
-    # ── SERP fallback (Google, Meta) ──────────────────────────────────────────
-    serp = by_type.get("serp", [])
-    if serp:
-        print(f"\n[SERP — {len(serp)} companies]")
-        results = await _run_group_sequential(SerpFallbackScraper, serp)
-        for r in results:
-            _print_row(r, "PASS" if r["count"] > 0 else "FAIL")
-        all_results.extend(results)
-
-    # ── Summary ───────────────────────────────────────────────────────────────
-    passed = [r for r in all_results if r["count"] > 0]
-    failed = [r for r in all_results if r["count"] == 0]
+    passed = [r for r in results.values() if r["status"] == "pass"]
+    failed = [r for r in results.values() if r["status"] == "fail"]
 
     print(f"\n{'='*70}")
     print(f"RESULT: {len(passed)}/{total} Companies Passed (>0 jobs found)")
     print(f"{'='*70}")
 
     if failed:
-        print(f"\nFailed companies ({len(failed)}):")
-        for r in sorted(failed, key=lambda x: x["ats"]):
+        print(f"\nFailed ({len(failed)}):")
+        for r in sorted(failed, key=lambda x: x["ats_type"]):
             err = f" — {r['error']}" if r["error"] else " — 0 jobs returned"
-            print(f"  ✗ {r['name']:<35} {r['ats']:<12}{err}")
+            print(f"  ✗ {r['company']:<35} {r['ats_type']:<18}{err}")
 
+    # Update status file — preserve disabled entries, overwrite checked ones
+    final = dict(existing)
+    final.update(results)
+    with open(STATUS_JSON, "w") as f:
+        json.dump(final, f, indent=2)
+    print(f"\nUpdated {STATUS_JSON}")
     print()
+
     return 0 if not failed else 1
 
 
