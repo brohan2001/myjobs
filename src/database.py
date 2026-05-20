@@ -514,6 +514,11 @@ def upsert_company_from_board(conn: sqlite3.Connection, company_slug: str, compa
         (str(industry), tier, company_slug),
     )
     row = conn.execute("SELECT id FROM companies WHERE slug=?", (company_slug,)).fetchone()
+    if row is None:
+        # Two CSV rows share the same name but different slugs (e.g. "goldmansachs" and
+        # "goldman-sachs"). INSERT OR IGNORE was a no-op due to the UNIQUE(name) constraint.
+        # Fall back to the existing row by name so both slugs share one company_id.
+        row = conn.execute("SELECT id FROM companies WHERE name=?", (company_name,)).fetchone()
     return row["id"]
 
 
