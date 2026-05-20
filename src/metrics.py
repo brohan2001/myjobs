@@ -28,3 +28,11 @@ http_retry_attempts_total = _NoopCounter()
 http_retry_empty_200_total = _NoopCounter()
 http_retry_transient_403_total = _NoopCounter()
 api_sniffer_fallback_failed_total = _NoopCounter()
+browser_navigate_fallback_total = _NoopCounter()
+browser_content_retry_total = _NoopCounter()
+browser_headless_coerced_total = _NoopCounter()
+
+
+def __getattr__(name: str) -> _NoopCounter:
+    """Return a no-op counter for any unknown metric (forward-compat with new monitors)."""
+    return _NoopCounter()
