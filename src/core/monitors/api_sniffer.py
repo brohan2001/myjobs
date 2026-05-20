@@ -1,0 +1,1566 @@
+"""API sniffer monitor.
+
+Discovers job listings by capturing XHR/fetch requests that career pages make
+to internal APIs.  Works for React SPAs, custom platforms, and any site that
+loads job data via JSON APIs.
+
+Supports two modes:
+
+- **Rich mode** (``fields`` configured): returns ``list[DiscoveredJob]``
+- **URL-only mode** (no ``fields``): returns ``set[str]``
+
+When replaying from stored config (``api_url`` present), opens the page to
+establish cookies/auth context, then replays the API via in-browser fetch.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import random
+import re
+from math import ceil
+from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+
+import httpx
+import structlog
+
+from src.core.monitors import DiscoveredJob, register
+
+try:
+    from src.metrics import api_sniffer_fallback_failed_total
+except ImportError:
+    # The slim ``jobseek-crawler-setup`` (ws CLI) wheel does not ship
+    # ``src/metrics.py``. Fall back to a no-op counter so this module
+    # stays importable from the ws install (which never scrapes
+    # Prometheus anyway).
+    class _NoopCounter:
+        def labels(self, **_kwargs):
+            return self
+
+        def inc(self, *_args, **_kwargs):
+            pass
+
+    api_sniffer_fallback_failed_total = _NoopCounter()  # type: ignore[assignment]
+
+from src.shared.api_sniff import (
+    JOB_KEYWORDS,
+    TITLE_FIELDS,
+    auto_map_fields,
+    capture_exchanges,
+    clean_headers,
+    detect_cms,
+    detect_job_list,
+    extract_items,
+    extract_urls,
+    extract_urls_via_dom_crossref,
+    find_arrays,
+    find_total_count,
+    find_url_field,
+    infer_pagination,
+    make_browser_fetcher,
+    make_http_fetcher,
+    paginate_all,
+    scan_page_scripts,
+    set_body_param,
+    set_url_param,
+    trigger_interactions,
+)
+from src.shared.http_retry import PaginationFetchError, is_retryable_status
+from src.shared.nextdata import extract_field, resolve_path
+from src.shared.truncation import truncated_rich_result, truncated_url_result
+
+if TYPE_CHECKING:
+    # httpx is imported at runtime above (used in http_fetch_with_retry).
+    from src.core.monitor import MonitorResult
+
+log = structlog.get_logger()
+
+
+MAX_ITEMS = 10_000
+
+
+class ApiSnifferFallbackError(RuntimeError):
+    """Raised when every replay path in ``_discover_replay`` has failed.
+
+    Propagates up through ``monitor_one`` → ``_process_one_board_streaming``
+    so the board-level ``_RECORD_FAILURE`` runs, incrementing
+    ``consecutive_failures`` and auto-disabling at 5.  Without this,
+    a persistently-broken sniffer board (e.g. expired CSOD JWT, geo-locked
+    DiDi, CSRF-protected Workday) would silently log an empty check each
+    cycle and never trip the disable threshold.
+    """
+
+    def __init__(self, message: str, *, board_url: str, api_url: str) -> None:
+        super().__init__(message)
+        self.board_url = board_url
+        self.api_url = api_url
+
+
+# ---------------------------------------------------------------------------
+# AES response decryption
+# ---------------------------------------------------------------------------
+
+
+def _decrypt_aes_cbc(ciphertext: str, key: str, iv_mode: str = "suffix") -> object:
+    """Decrypt an AES-CBC encrypted string and return parsed JSON.
+
+    *iv_mode* controls how the IV is derived:
+    - ``"suffix"`` (default): last 16 chars of *ciphertext* are the IV
+      (as UTF-8 bytes), remainder is the base64-encoded ciphertext.
+    - ``"fixed:<iv>"``: use a fixed IV string.
+
+    Returns the parsed JSON object, or *None* on failure.
+    """
+    import base64
+
+    try:
+        from Crypto.Cipher import AES as _AES
+        from Crypto.Util.Padding import unpad
+    except ImportError:
+        from Cryptodome.Cipher import AES as _AES
+        from Cryptodome.Util.Padding import unpad
+
+    key_bytes = key.encode("utf-8")
+
+    if iv_mode == "suffix":
+        iv_bytes = ciphertext[-16:].encode("utf-8")
+        ct_b64 = ciphertext[:-16]
+    elif iv_mode.startswith("fixed:"):
+        iv_bytes = iv_mode[6:].encode("utf-8")
+        ct_b64 = ciphertext
+    else:
+        return None
+
+    decoded = base64.b64decode(ct_b64)
+    cipher = _AES.new(key_bytes, _AES.MODE_CBC, iv_bytes)
+    decrypted = unpad(cipher.decrypt(decoded), _AES.block_size)
+    return json.loads(" " + decrypted.decode("utf-8"))
+
+
+def _apply_response_decrypt(data: object, decrypt_cfg: dict) -> object:
+    """Decrypt the ``Data`` field of *data* if *decrypt_cfg* is present.
+
+    *decrypt_cfg* must contain ``key`` and optionally ``iv_mode`` (default
+    ``"suffix"``).  The decrypted content replaces ``Data`` in the returned dict.
+    """
+    if not isinstance(data, dict):
+        return data
+    encrypted = data.get("Data")
+    if not encrypted or not isinstance(encrypted, str):
+        return data
+    key = decrypt_cfg["key"]
+    iv_mode = decrypt_cfg.get("iv_mode", "suffix")
+    try:
+        decrypted = _decrypt_aes_cbc(encrypted, key, iv_mode)
+        return {**data, "Data": decrypted}
+    except Exception:
+        log.debug("api_sniffer.decrypt_failed", key_len=len(key))
+        return data
+
+
+MAX_PAGES = 50
+_HTTP_MAX_PAGES = 200  # higher limit for plain httpx (no Playwright overhead)
+
+# Defaults for Playwright navigation — configurable via monitor_config
+_DEFAULT_WAIT = "load"
+_DEFAULT_TIMEOUT = 20_000
+_DEFAULT_SETTLE = 3  # seconds to wait after navigation for XHRs to complete
+
+
+def _derive_url_match(api_url: str) -> str | None:
+    """Derive an ``api_url_match`` glob from a URL with rotating-token segments.
+
+    Replaces path segments that look like rotating tokens (contain mixed
+    alphanumeric chars + separators, e.g. ``apigw-x0cceuow60``) with ``*``.
+    Returns ``None`` if no token-like segment is found.
+
+    Called during ``can_handle`` (probe) so the pattern is stored in config.
+    """
+    parsed = urlparse(api_url)
+    segments = parsed.path.strip("/").split("/")
+    has_token = False
+    pattern_segments = []
+    for seg in segments:
+        is_versioned = bool(re.match(r"^v\d+$", seg, re.I))
+        has_mixed = bool(re.search(r"[a-z]", seg, re.I)) and bool(re.search(r"\d", seg))
+        has_separator = bool(re.search(r"[-_]", seg)) and len(seg) > 8
+        if not is_versioned and (has_mixed and has_separator):
+            pattern_segments.append("*")
+            has_token = True
+        else:
+            pattern_segments.append(seg)
+    if not has_token:
+        return None
+    return f"{parsed.netloc}/{'/'.join(pattern_segments)}"
+
+
+def _merge_params(url: str, params: dict) -> str:
+    """Merge extra query params into a URL."""
+    parsed = urlparse(url)
+    existing = parse_qs(parsed.query, keep_blank_values=True)
+    existing.update({k: [v] if isinstance(v, str) else v for k, v in params.items()})
+    new_query = urlencode(existing, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+# ---------------------------------------------------------------------------
+# can_handle
+# ---------------------------------------------------------------------------
+
+
+async def can_handle(
+    url: str,
+    client: httpx.AsyncClient,
+    pw=None,
+    diagnostics: dict | None = None,
+) -> dict | None:
+    """Detect whether *url* loads job data via XHR/fetch APIs.
+
+    Returns a metadata dict suitable for use as monitor_config, or None
+    if no job-list API is detected.  Requires Playwright (*pw*).
+
+    When *diagnostics* is provided, it is populated with exchange summaries,
+    script URL discoveries, and CMS detection results — even when detection
+    fails.  This allows callers to show diagnostic output to the user.
+    """
+    if pw is None:
+        return None
+
+    from src.shared.browser import dismiss_overlays, navigate, open_page
+
+    try:
+        async with open_page(pw, {}) as page:
+            page_host = urlparse(url).netloc
+            exchanges = await capture_exchanges(page, page_host)
+
+            await navigate(page, url, {"wait": _DEFAULT_WAIT, "timeout": _DEFAULT_TIMEOUT})
+            await asyncio.sleep(_DEFAULT_SETTLE)
+
+            await dismiss_overlays(page)
+            await trigger_interactions(page, exchanges)
+
+            # Scan page scripts and detect CMS while page is still open
+            if diagnostics is not None:
+                try:
+                    diagnostics["script_urls"] = await scan_page_scripts(page)
+                except Exception:
+                    log.debug("api_sniffer.scan_scripts_failed", exc_info=True)
+                    diagnostics["script_urls"] = []
+
+                try:
+                    diagnostics["cms"] = await detect_cms(page)
+                except Exception:
+                    log.debug("api_sniffer.detect_cms_failed", exc_info=True)
+                    diagnostics["cms"] = None
+
+            result = detect_job_list(exchanges, url)
+            if result is None:
+                # Populate exchange diagnostics even on failure
+                if diagnostics is not None:
+                    diagnostics["exchanges"] = [
+                        {
+                            "method": ex.method,
+                            "url": ex.url[:120],
+                            "status": ex.status,
+                            "phase": ex.phase,
+                            "arrays": len(find_arrays(ex.body) if ex.body else []),
+                            "best_items": max(
+                                (
+                                    len(items)
+                                    for _, items in (find_arrays(ex.body) if ex.body else [])
+                                ),
+                                default=0,
+                            ),
+                        }
+                        for ex in exchanges
+                    ]
+                return None
+
+            ex = result.candidate.exchange
+            page_size = len(result.candidate.items)
+
+            # Infer pagination if two matching exchanges exist
+            result.pagination = infer_pagination(exchanges, ex.url, page_size)
+
+            # Auto-map fields
+            fields = auto_map_fields(result.candidate.items)
+
+            # Split captured URL into clean base + params
+            parsed_url = urlparse(ex.url)
+            raw_params = parse_qs(parsed_url.query, keep_blank_values=True)
+
+            # Params managed by pagination config — don't duplicate
+            pag_params = set()
+            if result.pagination:
+                pag_params.add(result.pagination.param_name)
+
+            # Separate meaningful params from the URL
+            clean_params: dict[str, str | list[str]] = {}
+            for k, vals in raw_params.items():
+                if k in pag_params:
+                    continue
+                # Drop empty-valued params
+                non_empty = [v for v in vals if v]
+                if not non_empty:
+                    continue
+                clean_params[k] = non_empty[0] if len(non_empty) == 1 else non_empty
+
+            base_url = urlunparse(parsed_url._replace(query=""))
+
+            # Derive api_url_match for URLs with token-like path segments.
+            # Stored in config so that _discover_live_url can re-capture the
+            # URL at runtime if the token rotates.
+            api_url_match = _derive_url_match(base_url)
+
+            # Build metadata
+            meta: dict = {
+                "api_url": base_url,
+                "method": ex.method,
+                "json_path": result.candidate.json_path,
+                "items": page_size,
+                "score": result.candidate.score,
+                "browser": True,
+            }
+            if api_url_match:
+                meta["api_url_match"] = api_url_match
+            if clean_params:
+                meta["params"] = clean_params
+            if result.url_field:
+                meta["url_field"] = result.url_field
+            else:
+                # No URL field — try DOM cross-reference to derive url_template
+                try:
+                    from src.shared.api_sniff import ID_FIELDS as _ID_FIELDS
+
+                    dom_urls = await extract_urls_via_dom_crossref(
+                        page,
+                        result.candidate.items,
+                        url,
+                    )
+                    if dom_urls:
+                        # Derive template from the first URL + first item
+                        first_item = result.candidate.items[0]
+                        id_field = None
+                        for key in first_item:
+                            if _ID_FIELDS.match(key):
+                                id_field = key
+                                break
+                        if id_field:
+                            first_id = str(first_item[id_field])
+                            first_url = dom_urls[0]
+                            # Replace the ID with a {id_field} placeholder
+                            template = first_url.replace(first_id, "{" + id_field + "}")
+                            meta["url_template"] = template
+                except Exception:
+                    log.debug("api_sniffer.dom_crossref_failed", exc_info=True)
+
+            if result.total_count:
+                meta["total"] = result.total_count
+            if ex.post_data:
+                meta["post_data"] = ex.post_data
+            if result.pagination:
+                pag = result.pagination
+                meta["pagination"] = {
+                    "param_name": pag.param_name,
+                    "style": pag.style,
+                    "start_value": pag.start_value,
+                    "increment": pag.increment,
+                    "location": pag.location,
+                }
+
+            # Include request headers (cleaned)
+            headers = clean_headers(ex.request_headers)
+            if headers:
+                meta["request_headers"] = headers
+
+            if fields:
+                meta["fields"] = fields
+
+            # Collect alternative high-scoring endpoints for user review
+            from src.shared.api_sniff import ArrayCandidate as _AC
+            from src.shared.api_sniff import score_candidate as _sc
+
+            alt_candidates: list[dict] = []
+            for alt_ex in exchanges:
+                if alt_ex.body is None or alt_ex.url == ex.url:
+                    continue
+                for alt_path, alt_items in find_arrays(alt_ex.body):
+                    ac = _AC(exchange=alt_ex, json_path=alt_path, items=alt_items)
+                    _sc(ac, url)
+                    if ac.score >= 50 and len(alt_items) >= 3:
+                        alt_total = find_total_count(alt_ex.body, alt_path)
+                        alt_candidates.append(
+                            {
+                                "url": alt_ex.url[:200],
+                                "json_path": alt_path,
+                                "items": len(alt_items),
+                                "score": ac.score,
+                                "total": alt_total,
+                            }
+                        )
+            if alt_candidates:
+                alt_candidates.sort(key=lambda c: c["score"], reverse=True)
+                meta["alternatives"] = alt_candidates[:3]
+
+            return meta
+
+    except Exception:
+        log.debug("api_sniffer.can_handle_failed", url=url, exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# discover
+# ---------------------------------------------------------------------------
+
+
+async def discover(
+    board: dict,
+    client: httpx.AsyncClient,
+    pw=None,
+) -> list[DiscoveredJob] | set[str] | MonitorResult:
+    """Discover jobs via API sniffing.
+
+    - **HTTP mode** (config has ``api_url``, no ``browser``): plain httpx
+      fetch — no Playwright needed.
+    - **Replay mode** (config has ``api_url`` + ``browser: true``): navigate
+      to board_url to establish cookies, then replay via in-browser fetch.
+    - **Auto-discover mode** (no ``api_url``): full capture + detect pipeline.
+    """
+    metadata = board.get("metadata") or {}
+    board_url = board["board_url"]
+    api_url = metadata.get("api_url")
+
+    # Plain HTTP mode — no Playwright needed (pw passed for api_url_match fallback)
+    if api_url and not metadata.get("browser"):
+        return await _discover_http(board, client, metadata, pw=pw)
+
+    if api_url:
+        # Replay mode — browser preferred, HTTP fallback
+        if pw is not None:
+            return await _discover_replay(board_url, metadata, pw, client=client)
+        else:
+            log.warning("api_sniffer.no_playwright_fallback_http", board_url=board_url)
+            return await _discover_http(board, client, metadata, pw=pw)
+
+    if pw is None:
+        log.error("api_sniffer.no_playwright", board_url=board_url)
+        return set()
+    return await _discover_auto(board_url, metadata, pw)
+
+
+# ---------------------------------------------------------------------------
+# Plain HTTP helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_HREF_RE = re.compile(r'href=["\']([^"\'#][^"\']*)["\']')
+_HTML_WITH_LINKS_RE = re.compile(r"<[a-z][\s\S]*?href=", re.IGNORECASE)
+
+
+def score_array(path: str, items: list[dict], api_url: str) -> int:
+    """Score an array-of-dicts as a likely job list.
+
+    Uses lightweight heuristics: job keywords in path/URL, presence of
+    title and URL fields, and item count as a minor factor.
+    """
+    score = 0
+    sample_keys: set[str] = set()
+    for it in items[:5]:
+        sample_keys.update(it.keys())
+
+    # Job keywords in array path
+    if JOB_KEYWORDS.search(path):
+        score += 30
+    # Job keywords in API URL
+    if JOB_KEYWORDS.search(api_url):
+        score += 5
+    # Has title-like field
+    if any(TITLE_FIELDS.match(k) for k in sample_keys):
+        score += 20
+    # Has URL-like field
+    if find_url_field(items):
+        score += 15
+    # Reasonable array size (not a tiny filter list)
+    if len(items) >= 3:
+        score += 5
+    return score
+
+
+def pick_best_array(
+    arrays: list[tuple[str, list[dict]]],
+    api_url: str,
+) -> tuple[str, list[dict]]:
+    """Pick the best candidate array from *arrays* using job-list scoring."""
+    return max(arrays, key=lambda x: (score_array(x[0], x[1], api_url), len(x[1])))
+
+
+def find_html_strings(obj: object, path: str = "") -> list[tuple[str, str]]:
+    """Find string values in a JSON structure that look like HTML with links.
+
+    Returns ``[(dot_path, html_string), ...]`` sorted by string length
+    (longest first — likely the main content).
+    """
+    results: list[tuple[str, str]] = []
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            child = f"{path}.{key}" if path else key
+            if isinstance(val, str) and len(val) > 100 and _HTML_WITH_LINKS_RE.search(val):
+                results.append((child, val))
+            elif isinstance(val, (dict, list)):
+                results.extend(find_html_strings(val, child))
+    elif isinstance(obj, list):
+        for i, val in enumerate(obj):
+            results.extend(find_html_strings(val, f"{path}[{i}]"))
+    results.sort(key=lambda x: len(x[1]), reverse=True)
+    return results
+
+
+# Retry budget for the api_sniffer monitor's first-page + HTML-pagination
+# httpx fetches. Matches ``fetch_with_retry`` defaults: 3 total attempts
+# with exponential backoff and full jitter starting at 1s — symmetric
+# with the accenture monitor (#2735) for cross-monitor consistency.
+_API_SNIFFER_FETCH_RETRIES = 3
+_API_SNIFFER_FETCH_BASE_DELAY = 1.0
+
+
+async def http_fetch_with_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: dict | None = None,
+    body: str | None = None,
+    *,
+    retries: int = _API_SNIFFER_FETCH_RETRIES,
+    base_delay: float = _API_SNIFFER_FETCH_BASE_DELAY,
+) -> dict | None:
+    """Fetch JSON via httpx with bounded retries (#2733).
+
+    Returns:
+        - Parsed JSON dict on HTTP 200.
+        - ``None`` on 404 / 410 (legitimate end-of-pagination, or stale
+          rotating-token URL — the caller's ``api_url_match`` browser
+          fallback path interprets ``None`` as "go look up the live URL").
+        - ``None`` on other non-retryable 4xx (auth, forbidden, bad
+          request) with a warning, mirroring the lenient stop semantic
+          used by ``fetch_with_retry`` on the dom/sitemap path.
+
+    Raises:
+        :class:`PaginationFetchError` after exhausting *retries* on
+        retryable HTTP statuses (5xx including Cloudflare 520-526/530,
+        plus 408/425/429) or arbitrary network exceptions (timeout,
+        connection reset, JSON parse error). The caller is expected to
+        propagate so ``_process_one_board_streaming`` records the run
+        as a failure rather than a partial success — closing the same
+        silent-truncation hole the dom/sitemap fix (#2722) and PCSX/
+        accenture follow-ups (#2734/#2735) addressed for their paths.
+
+        Note on JSON parse failures: ``resp.json()`` raising (malformed
+        body, captcha HTML, anti-bot challenge served as 200) takes the
+        retry path. Captcha responses won't recover within the retry
+        budget — that's accepted: failing loud is preferable to
+        silently treating a captcha page as end-of-pagination. The
+        ``last_error`` field on the raised exception ("JSONDecodeError")
+        is what an operator pattern-matches in logs to recognise this
+        case.
+
+    Backoff: ``base_delay × 2^attempt × (0.5 + random())`` — exponential
+    with full jitter.
+    """
+    from src.shared.tdm import TDMReservedError
+    from src.shared.tdm import check_response as _tdm_check
+
+    last_exc: BaseException | None = None
+    last_status: int | None = None
+
+    for attempt in range(retries):
+        try:
+            kw: dict = {"headers": headers or {}, "timeout": 30}
+            if method.upper() == "POST" and body:
+                kw["content"] = body
+                kw["headers"].setdefault("content-type", "application/json")
+            resp = await client.request(method.upper(), url, **kw)
+            resp.raise_for_status()
+            # TDM-Reservation respect (#2842). Header-only on the JSON
+            # API path. Runs after ``raise_for_status`` so we only check
+            # successful responses (errors fall through to the existing
+            # ``HTTPStatusError`` branch).
+            _tdm_check(resp)
+            return resp.json()
+        except TDMReservedError:
+            # Publisher policy declaration — propagate, never retry.
+            raise
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            last_status = status
+            last_exc = exc
+            if status in (404, 410):
+                return None
+            if not is_retryable_status(status):
+                # Other 4xx (auth, forbidden, bad-request) — not transient,
+                # not "end of pagination" canonically. Lenient stop with
+                # a warning so anomalies surface in logs.
+                log.warning(
+                    "api_sniffer.http_fetch_non_retryable_status",
+                    url=url,
+                    status=status,
+                )
+                return None
+            # else retryable — fall through to backoff
+        except Exception as exc:  # noqa: BLE001 — timeout, network, parse error
+            last_exc = exc
+            last_status = None
+
+        if attempt < retries - 1:
+            delay = base_delay * (2**attempt) * (0.5 + random.random())
+            log.info(
+                "api_sniffer.http_fetch_backoff",
+                url=url,
+                attempt=attempt + 1,
+                delay_s=round(delay, 2),
+                last_status=last_status,
+                last_error=type(last_exc).__name__ if last_exc else None,
+            )
+            await asyncio.sleep(delay)
+
+    raise PaginationFetchError(
+        url,
+        attempts=retries,
+        last_status=last_status,
+        last_error=type(last_exc).__name__ if last_exc else None,
+    )
+
+
+async def http_fetch(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: dict | None = None,
+    body: str | None = None,
+) -> dict | None:
+    """Lenient JSON fetcher: returns parsed JSON or ``None`` on any error.
+
+    Thin wrapper over :func:`http_fetch_with_retry` that catches
+    :class:`PaginationFetchError` and returns ``None`` so legacy callers
+    (the api_sniffer scraper at ``scrapers/api_sniffer.py:440``) keep
+    their existing "any failure → None" contract while still benefiting
+    from the bounded retry budget.
+
+    New monitor / pagination callers should prefer
+    :func:`http_fetch_with_retry` directly so persistent transient
+    failures fail loudly rather than silently truncating to the empty
+    result set (#2733).
+    """
+    try:
+        return await http_fetch_with_retry(client, method, url, headers, body)
+    except PaginationFetchError as exc:
+        log.warning(
+            "api_sniffer.http_fetch_failed",
+            url=url,
+            attempts=exc.attempts,
+            last_status=exc.last_status,
+            last_error=exc.last_error,
+        )
+        return None
+
+
+def _extract_urls_from_html(
+    html: str,
+    board_url: str,
+    url_regex: str | None = None,
+) -> set[str]:
+    """Extract URLs from an HTML string via regex.
+
+    Default regex captures all ``href`` attribute values.  A custom
+    *url_regex* (with one capture group) can be supplied to match other
+    patterns.
+    """
+    pattern = re.compile(url_regex) if url_regex else _DEFAULT_HREF_RE
+    urls: set[str] = set()
+    for match in pattern.finditer(html):
+        raw = match.group(1)
+        if raw.startswith(("javascript:", "mailto:")):
+            continue
+        urls.add(urljoin(board_url, raw))
+    return urls
+
+
+async def _discover_http(
+    board: dict,
+    client: httpx.AsyncClient,
+    config: dict,
+    pw=None,
+) -> list[DiscoveredJob] | set[str] | MonitorResult:
+    """Discover jobs via plain httpx — no Playwright needed.
+
+    After fetching JSON from *api_url*, the content at *json_path* is
+    inspected:
+
+    - **string** → HTML mode: extract URLs via regex.
+    - **list** → items mode: use standard item extraction.
+
+    When *json_path* is omitted, auto-detects the best candidate in the
+    response (largest array-of-dicts, or longest HTML string with links).
+    Also auto-detects *total_path*, *url_field*, and *fields* when not
+    explicitly configured.
+
+    If the initial fetch fails and ``api_url_match`` is configured with
+    *pw* available, opens a browser to discover the live URL and retries
+    via HTTP.
+    """
+    board_url = board["board_url"]
+    api_url = config["api_url"]
+    params = config.get("params")
+    if params:
+        api_url = _merge_params(api_url, params)
+    method = config.get("method", "GET")
+    json_path = config.get("json_path")
+    url_field = config.get("url_field")
+    url_template = config.get("url_template")
+    url_regex = config.get("url_regex")
+    total_path = config.get("total_path")
+    post_data = config.get("post_data") or config.get("post_body")
+    request_headers = config.get("request_headers") or config.get("headers") or {}
+    fields_map: dict[str, str] = config.get("fields") or {}
+    pagination_config = config.get("pagination")
+
+    headers = clean_headers(request_headers)
+
+    # -- first page --------------------------------------------------------
+    # Strict variant raises on persistent transient (5xx, network) so the
+    # whole board run is recorded as a failure instead of silently
+    # returning "no items" — the same shape of bug as #2722. ``None`` is
+    # reserved for 404/410 (URL stale → browser fallback below) and other
+    # non-retryable 4xx (lenient stop).
+    api_url_match = config.get("api_url_match")
+    data = await http_fetch_with_retry(client, method, api_url, headers, post_data)
+
+    if data is None and api_url_match and pw is not None:
+        # Stored URL may be stale (rotating token).  Open browser to discover
+        # the live URL, then retry via plain HTTP.
+        from src.shared.browser import BROWSER_KEYS, open_page
+
+        wait = config.get("wait", _DEFAULT_WAIT)
+        timeout = config.get("timeout", _DEFAULT_TIMEOUT)
+        settle = config.get("settle", _DEFAULT_SETTLE)
+        browser_config = {k: v for k, v in config.items() if k in BROWSER_KEYS}
+
+        route_params = config.get("route_params")
+        async with open_page(pw, browser_config, use_proxy=bool(config.get("proxy"))) as page:
+            fresh_url, captured_data = await _discover_live_url(
+                page,
+                board_url,
+                api_url,
+                api_url_match,
+                wait,
+                timeout,
+                settle,
+                route_params=route_params,
+            )
+        if captured_data is not None:
+            # Use the response the page's own JS already fetched
+            log.info("api_sniffer.using_captured_response", url=fresh_url[:80])
+            api_url = fresh_url
+            data = captured_data
+        elif fresh_url != api_url:
+            # URL changed but no response captured — retry via HTTP.
+            # Strict variant: a persistent 5xx on the freshly-discovered
+            # URL raises, so we don't silently return empty for a real
+            # outage. End-of-pagination (404) still falls through.
+            log.info("api_sniffer.http_retry_live_url", old=api_url[:80], new=fresh_url[:80])
+            api_url = fresh_url
+            data = await http_fetch_with_retry(client, method, api_url, headers, post_data)
+
+    if data is None:
+        return list() if fields_map else set()
+
+    # -- decrypt encrypted response field ----------------------------------
+    decrypt_cfg = config.get("response_decrypt")
+    if decrypt_cfg:
+        data = _apply_response_decrypt(data, decrypt_cfg)
+
+    # -- auto-detect json_path when not configured -------------------------
+    content: object = None
+    if json_path is not None:
+        content = resolve_path(data, json_path) if json_path else data
+        # json_path_values: treat a dict-of-items as its values list.
+        # Some APIs (e.g. TalentClue) return {"jobs": {"<id>": {...}}}
+        # rather than {"jobs": [{...}]}.
+        if config.get("json_path_values") and isinstance(content, dict):
+            content = list(content.values())
+    else:
+        # Try arrays first (items mode), then HTML strings
+        arrays = find_arrays(data)
+        if arrays:
+            best_path, best_items = pick_best_array(arrays, api_url)
+            json_path = best_path
+            content = best_items
+            log.info("api_sniffer.auto_json_path", path=json_path, items=len(best_items))
+        else:
+            html_hits = find_html_strings(data)
+            if html_hits:
+                json_path = html_hits[0][0]
+                content = html_hits[0][1]
+                log.info("api_sniffer.auto_json_path_html", path=json_path)
+            else:
+                json_path = ""
+                content = data
+
+    # -- auto-detect total_path when not configured ------------------------
+    total: int | None = None
+    if total_path:
+        raw_total = resolve_path(data, total_path)
+        if isinstance(raw_total, (int, float)):
+            total = int(raw_total)
+    elif json_path:
+        total = find_total_count(data, json_path)
+        if total is not None:
+            log.info("api_sniffer.auto_total", total=total)
+
+    # -- HTML string mode --------------------------------------------------
+    if isinstance(content, str):
+        all_urls = _extract_urls_from_html(content, board_url, url_regex)
+        log.info(
+            "api_sniffer.http_html_page",
+            page=1,
+            urls=len(all_urls),
+            total=total,
+        )
+
+        if pagination_config and all_urls:
+            page_size = pagination_config.get("page_size", len(all_urls))
+            page_cap = pagination_config.get("max_pages", _HTTP_MAX_PAGES)
+            max_pages = page_cap
+            if total and page_size:
+                max_pages = min(ceil(total / page_size), page_cap)
+
+            pag_param = pagination_config["param_name"]
+            pag_start = pagination_config.get("start_value", 0)
+            pag_increment = pagination_config.get("increment", 1)
+            pag_location = pagination_config.get("location", "query")
+
+            current_value = pag_start + pag_increment
+            pages_fetched = 1
+
+            while pages_fetched < max_pages:
+                if pag_location == "query":
+                    fetch_url = set_url_param(api_url, pag_param, current_value)
+                    fetch_body = post_data
+                else:
+                    fetch_url = api_url
+                    fetch_body = set_body_param(post_data, pag_param, current_value)
+
+                # Strict pagination semantic (#2733). ``http_fetch_with_retry``
+                # returns ``None`` only on legitimate 404/410 end-of-pagination
+                # or non-retryable 4xx; persistent 5xx / network errors raise
+                # ``PaginationFetchError``, which propagates out of
+                # ``_discover_http`` -> ``discover`` ->
+                # ``_process_one_board_streaming``'s ``except Exception``
+                # so the run is recorded as a failure. No silent truncation.
+                page_data = await http_fetch_with_retry(
+                    client,
+                    method,
+                    fetch_url,
+                    headers,
+                    fetch_body,
+                )
+                if page_data is None:
+                    break
+
+                page_content = resolve_path(page_data, json_path) if json_path else page_data
+                if not isinstance(page_content, str) or not page_content.strip():
+                    break
+
+                new_urls = _extract_urls_from_html(page_content, board_url, url_regex)
+                if not new_urls - all_urls:
+                    break
+                all_urls |= new_urls
+
+                pages_fetched += 1
+                current_value += pag_increment
+
+            log.info(
+                "api_sniffer.http_html_done",
+                pages=pages_fetched,
+                urls=len(all_urls),
+            )
+
+        return all_urls
+
+    # -- list/items mode ---------------------------------------------------
+    if isinstance(content, list):
+        from src.shared.api_sniff import ArrayCandidate, Exchange, JobListResult, PaginationInfo
+
+        items = [item for item in content if isinstance(item, dict)]
+
+        if pagination_config and items:
+            pag = PaginationInfo(
+                param_name=pagination_config["param_name"],
+                style=pagination_config.get("style", "page"),
+                start_value=pagination_config.get("start_value", 0),
+                increment=pagination_config.get("increment", 1),
+                location=pagination_config.get("location", "query"),
+            )
+            ex = Exchange(
+                method=method,
+                url=api_url,
+                request_headers=request_headers,
+                post_data=post_data,
+                status=200,
+                body=data,
+                content_type="application/json",
+                phase="load",
+            )
+            cand = ArrayCandidate(exchange=ex, json_path=json_path or "$", items=items)
+            job_result = JobListResult(
+                candidate=cand,
+                url_field=url_field,
+                total_count=total,
+                pagination=pag,
+            )
+            page_cap = pagination_config.get("max_pages", _HTTP_MAX_PAGES)
+            items = await paginate_all(make_http_fetcher(client), job_result, page_cap)
+
+        # MAX_ITEMS cap (#3216 / #3267). Don't slice silently: keep every
+        # item so the URLs the monitor *did* collect are still inserted,
+        # but flag the cycle as truncated so the board processor skips
+        # ``_MARK_GONE_BY_TIMESTAMP`` and the unseen tail beyond the cap
+        # is not tombstoned. Matches the pattern used by the 29 monitors
+        # migrated in #3266 (lever, workday, greenhouse, ...).
+        max_items = config.get("max_items", MAX_ITEMS)
+        truncated = len(items) > max_items
+        if truncated:
+            log.warning("api_sniffer.truncated", total=len(items), cap=max_items)
+
+        log.info("api_sniffer.http_items_done", items=len(items))
+
+        # -- auto-detect url_field when not configured ---------------------
+        if not url_field and not url_template and items:
+            url_field = find_url_field(items)
+            if url_field:
+                log.info("api_sniffer.auto_url_field", field=url_field)
+
+        # -- auto-detect fields when not configured ------------------------
+        if not fields_map and items:
+            fields_map = auto_map_fields(items)
+            if fields_map:
+                log.info("api_sniffer.auto_fields", fields=list(fields_map.keys()))
+
+        if fields_map:
+            jobs = _extract_rich(items, fields_map, url_field, url_template, board_url, root=data)
+            return truncated_rich_result(jobs) if truncated else jobs
+        if url_template:
+            urls_from_tpl = _extract_urls_from_template(items, url_template, board_url)
+            return truncated_url_result(urls_from_tpl) if truncated else urls_from_tpl
+        # Support nested url_field paths (e.g. "data.apply_url")
+        if url_field and ("." in url_field or "[" in url_field):
+            urls: set[str] = set()
+            for item in items:
+                raw = extract_field(item, url_field)
+                if isinstance(raw, str) and raw:
+                    urls.add(urljoin(board_url, raw))
+            return truncated_url_result(urls) if truncated else urls
+        urls = set(extract_urls(items, url_field, board_url))
+        return truncated_url_result(urls) if truncated else urls
+
+    log.warning(
+        "api_sniffer.unexpected_content_type",
+        json_path=json_path,
+        content_type=type(content).__name__,
+    )
+    return list() if fields_map else set()
+
+
+async def _discover_live_url(
+    page,
+    board_url: str,
+    api_url: str,
+    api_url_match: str,
+    wait: str,
+    timeout: int,
+    settle: float,
+    route_params: dict[str, str] | None = None,
+) -> tuple[str, object | None]:
+    """Navigate and capture the live API URL + response matching *api_url_match*.
+
+    When APIs use rotating tokens in the URL (e.g. ``gateway.example.com/TOKEN/v1/jobs``),
+    the stored ``api_url`` goes stale. This helper navigates the page, intercepts
+    responses matching the glob, and returns ``(updated_api_url, response_json)``.
+
+    When *route_params* is provided, matching requests are intercepted via
+    ``page.route()`` and their query parameters are overridden before the
+    page's own JS sends them.  This lets us e.g. increase ``pageSize`` to
+    fetch all items in one request — using the page's native request
+    mechanism (bypasses bot protection that blocks injected ``fetch()``).
+
+    Falls back to ``(api_url, None)`` if no match.
+    """
+    from fnmatch import fnmatch
+
+    from src.shared.browser import navigate
+
+    live_response = None  # Playwright Response object
+
+    def _on_response(resp):
+        nonlocal live_response
+        if live_response:
+            return
+        parsed = urlparse(resp.url)
+        if fnmatch(f"{parsed.netloc}{parsed.path}", api_url_match):
+            live_response = resp
+
+    page.on("response", _on_response)
+
+    # Optionally modify the page's own outgoing requests
+    if route_params:
+
+        async def _modify_request(route):
+            parsed = urlparse(route.request.url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            for k, v in route_params.items():
+                params[k] = [str(v)]
+            new_query = urlencode(params, doseq=True)
+            new_url = urlunparse(parsed._replace(query=new_query))
+            log.debug("api_sniffer.route_modified", params=route_params)
+            await route.continue_(url=new_url)
+
+        # Convert fnmatch glob to a Playwright glob (** prefix for protocol+host)
+        await page.route(f"**/{api_url_match.split('/', 1)[-1]}*", _modify_request)
+
+    try:
+        await navigate(page, board_url, {"wait": wait, "timeout": timeout})
+    except Exception:
+        log.warning("api_sniffer.navigation_failed", board_url=board_url, exc_info=True)
+    await asyncio.sleep(settle)
+
+    if live_response:
+        live_url = live_response.url
+        live_base = urlunparse(urlparse(live_url)._replace(query=""))
+        stored_base = urlunparse(urlparse(api_url)._replace(query=""))
+        updated_url = api_url
+        if live_base != stored_base:
+            log.info(
+                "api_sniffer.live_url_updated",
+                stored=stored_base[:80],
+                live=live_base[:80],
+            )
+            updated_url = api_url.replace(stored_base, live_base)
+
+        # Try to read the response body (already available, page's JS fetched it)
+        try:
+            data = await live_response.json()
+            log.info("api_sniffer.live_response_captured", url=live_url[:80])
+            return updated_url, data
+        except Exception:
+            log.debug("api_sniffer.live_response_read_failed", exc_info=True)
+            return updated_url, None
+
+    return api_url, None
+
+
+async def _discover_replay(
+    board_url: str,
+    config: dict,
+    pw,
+    client=None,
+) -> list[DiscoveredJob] | set[str] | MonitorResult:
+    """Replay a stored API call, optionally paginating.
+
+    Supports HTTP fallback: if the in-browser fetch fails and *client* is
+    provided, retries with plain httpx.  Browser config keys (``headless``,
+    ``user_agent``) are forwarded to Playwright.
+    """
+    from src.shared.api_sniff import ArrayCandidate, Exchange, JobListResult, PaginationInfo
+    from src.shared.browser import BROWSER_KEYS, navigate, open_page
+
+    api_url = config["api_url"]
+    params = config.get("params")
+    if params:
+        api_url = _merge_params(api_url, params)
+    method = config.get("method", "GET")
+    json_path = config.get("json_path", "$")
+    url_field = config.get("url_field")
+    url_template = config.get("url_template")
+    post_data = config.get("post_data")
+    request_headers = config.get("request_headers", {})
+    fields_map: dict[str, str] = config.get("fields") or {}
+    pagination_config = config.get("pagination")
+    api_url_match = config.get("api_url_match")
+    route_params = config.get("route_params")
+
+    wait = config.get("wait", _DEFAULT_WAIT)
+    timeout = config.get("timeout", _DEFAULT_TIMEOUT)
+    settle = config.get("settle", _DEFAULT_SETTLE)
+
+    browser_config = {k: v for k, v in config.items() if k in BROWSER_KEYS}
+
+    async with open_page(pw, browser_config, use_proxy=bool(config.get("proxy"))) as page:
+        # route_params requires upfront navigation to intercept the page's
+        # own request and modify its params.  Otherwise, navigate just to
+        # establish cookies, then try the stored URL via replay first.
+        captured_data = None
+        if api_url_match and route_params:
+            api_url, captured_data = await _discover_live_url(
+                page,
+                board_url,
+                api_url,
+                api_url_match,
+                wait,
+                timeout,
+                settle,
+                route_params=route_params,
+            )
+        else:
+            # Navigate to board_url to establish cookies/auth context.
+            # Capture exchanges so we can refresh stale auth headers from
+            # the requests the page's own JS fires during load.
+            api_parsed = urlparse(api_url)
+            nav_exchanges = await capture_exchanges(page, api_parsed.netloc)
+            try:
+                await navigate(page, board_url, {"wait": wait, "timeout": timeout})
+            except Exception:
+                log.warning("api_sniffer.navigation_failed", board_url=board_url, exc_info=True)
+            await asyncio.sleep(settle)
+
+            # If the page hit the same API endpoint, use its fresh headers
+            # (auth tokens / session headers refreshed by the page's JS).
+            for ex in nav_exchanges:
+                ex_parsed = urlparse(ex.url)
+                if ex_parsed.netloc == api_parsed.netloc and ex_parsed.path == api_parsed.path:
+                    request_headers = ex.request_headers
+                    log.info("api_sniffer.headers_refreshed", url=ex.url[:80])
+                    break
+
+        # Replay the API call — try browser first, fall back to HTTP
+        headers = clean_headers(request_headers)
+        fetch_fn = make_browser_fetcher(page)
+        using_http = False
+        data = captured_data  # may already have data from route_params capture
+        if data is None:
+            try:
+                data = await fetch_fn(method, api_url, headers, post_data)
+            except Exception:
+                # Stored URL may be stale — try live URL discovery
+                if api_url_match:
+                    log.info("api_sniffer.retry_with_live_url", pattern=api_url_match)
+                    fresh_url, fresh_data = await _discover_live_url(
+                        page,
+                        board_url,
+                        api_url,
+                        api_url_match,
+                        wait,
+                        timeout,
+                        settle,
+                        route_params=route_params,
+                    )
+                    if fresh_data is not None:
+                        api_url = fresh_url
+                        data = fresh_data
+                    elif fresh_url != api_url:
+                        api_url = fresh_url
+                        with contextlib.suppress(Exception):
+                            data = await fetch_fn(method, api_url, headers, post_data)
+
+            if data is None and client is not None:
+                log.warning(
+                    "api_sniffer.browser_fetch_failed_fallback_http",
+                    api_url=api_url,
+                    exc_info=not using_http,
+                )
+                fetch_fn = make_http_fetcher(client)
+                using_http = True
+                try:
+                    data = await fetch_fn(method, api_url, headers, post_data)
+                except Exception as exc:
+                    # Every replay path has now failed: in-browser fetch, live-URL
+                    # rediscovery (if any), and HTTP fallback.  Propagate so the
+                    # board processor records a failure and the consecutive-failure
+                    # counter can trip the auto-disable at 5.
+                    log.warning(
+                        "api_sniffer.http_fallback_failed",
+                        api_url=api_url,
+                        board_url=board_url,
+                        exc_info=True,
+                    )
+                    api_sniffer_fallback_failed_total.labels(reason="http_fallback").inc()
+                    raise ApiSnifferFallbackError(
+                        f"api_sniffer fallback exhausted for {api_url}: {exc}",
+                        board_url=board_url,
+                        api_url=api_url,
+                    ) from exc
+
+            if data is None:
+                # Browser fetch returned None and no HTTP client was available
+                # (or the fallback path consumed the exception without data).
+                log.warning(
+                    "api_sniffer.replay_failed",
+                    api_url=api_url,
+                    board_url=board_url,
+                    exc_info=True,
+                )
+                api_sniffer_fallback_failed_total.labels(reason="replay_failed").inc()
+                raise ApiSnifferFallbackError(
+                    f"api_sniffer replay failed for {api_url} (no data returned)",
+                    board_url=board_url,
+                    api_url=api_url,
+                )
+
+        # Decrypt encrypted response field
+        decrypt_cfg = config.get("response_decrypt")
+        if decrypt_cfg:
+            data = _apply_response_decrypt(data, decrypt_cfg)
+
+        # json_path_values: treat a dict-of-items at json_path as its values list.
+        # Some APIs (e.g. TalentClue) return {"jobs": {"<id>": {...}}} rather
+        # than {"jobs": [{...}]}; coerce before extract_items.
+        items: list[dict] | None = None
+        if config.get("json_path_values") and json_path:
+            resolved = resolve_path(data, json_path)
+            if isinstance(resolved, dict):
+                items = [v for v in resolved.values() if isinstance(v, dict)]
+
+        if items is None:
+            items = extract_items(data, json_path)
+        if not items:
+            log.warning("api_sniffer.no_items", api_url=api_url, json_path=json_path)
+            return list() if fields_map else set()
+
+        # Paginate if configured
+        if pagination_config and len(items) > 0:
+            pag = PaginationInfo(
+                param_name=pagination_config["param_name"],
+                style=pagination_config["style"],
+                start_value=pagination_config["start_value"],
+                increment=pagination_config["increment"],
+                location=pagination_config["location"],
+            )
+            ex = Exchange(
+                method=method,
+                url=api_url,
+                request_headers=request_headers,
+                post_data=post_data,
+                status=200,
+                body=data,
+                content_type="application/json",
+                phase="load",
+            )
+            total_count = find_total_count(data, json_path)
+            cand = ArrayCandidate(exchange=ex, json_path=json_path, items=items)
+            job_result = JobListResult(
+                candidate=cand,
+                url_field=url_field,
+                total_count=total_count,
+                pagination=pag,
+            )
+            default_cap = _HTTP_MAX_PAGES if using_http else MAX_PAGES
+            max_pg = pagination_config.get("max_pages", default_cap)
+            # When total_count is known, raise cap to _HTTP_MAX_PAGES so
+            # APIs with small page sizes are not silently truncated.
+            if total_count and max_pg < _HTTP_MAX_PAGES:
+                needed = (total_count + len(items) - 1) // len(items)
+                if needed > max_pg:
+                    max_pg = min(needed, _HTTP_MAX_PAGES)
+            items = await paginate_all(fetch_fn, job_result, max_pg)
+
+        # MAX_ITEMS cap (#3216 / #3267). Don't slice silently: keep every
+        # item so the URLs the monitor *did* collect are still inserted,
+        # but flag the cycle as truncated so the board processor skips
+        # ``_MARK_GONE_BY_TIMESTAMP`` and the unseen tail beyond the cap
+        # is not tombstoned. Matches the pattern used by the 29 monitors
+        # migrated in #3266 (lever, workday, greenhouse, ...).
+        truncated = len(items) > MAX_ITEMS
+        if truncated:
+            log.warning("api_sniffer.truncated", total=len(items), cap=MAX_ITEMS)
+
+        # Build URL map via DOM cross-ref if no url_field and no url_template
+        url_map: dict[str, str] | None = None
+        if not url_field and not url_template:
+            try:
+                from src.shared.api_sniff import ID_FIELDS as _ID_FIELDS
+
+                dom_urls = await extract_urls_via_dom_crossref(page, items, board_url)
+                if dom_urls:
+                    id_f = None
+                    for key in items[0]:
+                        if _ID_FIELDS.match(key):
+                            id_f = key
+                            break
+                    if id_f:
+                        url_map = {}
+                        for item, u in zip(items, dom_urls, strict=False):
+                            url_map[str(item.get(id_f, ""))] = u
+            except Exception:
+                log.debug("api_sniffer.dom_crossref_degraded", exc_info=True)
+
+        if fields_map:
+            jobs = _extract_rich(
+                items,
+                fields_map,
+                url_field,
+                url_template,
+                board_url,
+                url_map=url_map,
+                root=data,
+            )
+            return truncated_rich_result(jobs) if truncated else jobs
+
+        # URL-only mode
+        if url_template:
+            urls_from_tpl = _extract_urls_from_template(items, url_template, board_url)
+            return truncated_url_result(urls_from_tpl) if truncated else urls_from_tpl
+        urls = extract_urls(items, url_field, board_url)
+        if not urls and url_map:
+            urls_from_map = set(url_map.values())
+            return truncated_url_result(urls_from_map) if truncated else urls_from_map
+        if not urls:
+            try:
+                urls = await extract_urls_via_dom_crossref(page, items, board_url)
+            except Exception:
+                log.debug("api_sniffer.dom_crossref_degraded", exc_info=True)
+        urls_set = set(urls)
+        return truncated_url_result(urls_set) if truncated else urls_set
+
+
+async def _discover_auto(
+    board_url: str,
+    config: dict,
+    pw,
+) -> list[DiscoveredJob] | set[str] | MonitorResult:
+    """Full auto-discover: capture exchanges, detect, paginate."""
+    from src.shared.browser import BROWSER_KEYS, dismiss_overlays, navigate, open_page
+
+    fields_map: dict[str, str] = config.get("fields") or {}
+
+    wait = config.get("wait", _DEFAULT_WAIT)
+    timeout = config.get("timeout", _DEFAULT_TIMEOUT)
+    settle = config.get("settle", _DEFAULT_SETTLE)
+
+    browser_config = {k: v for k, v in config.items() if k in BROWSER_KEYS}
+
+    async with open_page(pw, browser_config, use_proxy=bool(config.get("proxy"))) as page:
+        page_host = urlparse(board_url).netloc
+        exchanges = await capture_exchanges(page, page_host)
+
+        try:
+            await navigate(page, board_url, {"wait": wait, "timeout": timeout})
+        except Exception:
+            log.warning("api_sniffer.navigation_failed", board_url=board_url, exc_info=True)
+
+        await asyncio.sleep(settle)
+        await dismiss_overlays(page)
+        await trigger_interactions(page, exchanges)
+
+        result = detect_job_list(exchanges, board_url)
+        if result is None:
+            log.warning("api_sniffer.no_api_detected", board_url=board_url)
+            return list() if fields_map else set()
+
+        page_size = len(result.candidate.items)
+        result.pagination = infer_pagination(
+            exchanges,
+            result.candidate.exchange.url,
+            page_size,
+        )
+
+        items = await paginate_all(make_browser_fetcher(page), result, MAX_PAGES)
+
+        # MAX_ITEMS cap (#3216 / #3267 / #3336). Don't slice silently: keep
+        # every item so the URLs the monitor *did* collect are still
+        # inserted, but flag the cycle as truncated so the board processor
+        # skips ``_MARK_GONE_BY_TIMESTAMP`` and the unseen tail beyond the
+        # cap is not tombstoned. Matches the pattern used by the 29
+        # monitors migrated in #3266 and the sibling
+        # ``_discover_http`` / ``_discover_replay`` paths wired in #3334.
+        truncated = len(items) > MAX_ITEMS
+        if truncated:
+            log.warning("api_sniffer.truncated", total=len(items), cap=MAX_ITEMS)
+
+        # Auto-map fields if not configured
+        if not fields_map:
+            fields_map = auto_map_fields(items)
+
+        url_field = result.url_field
+
+        # Build URL map via DOM cross-ref if no url_field
+        url_map: dict[str, str] | None = None
+        if not url_field and items:
+            from src.shared.api_sniff import ID_FIELDS as _ID_FIELDS
+
+            dom_urls = await extract_urls_via_dom_crossref(page, items, board_url)
+            if dom_urls:
+                id_f = None
+                for key in items[0]:
+                    if _ID_FIELDS.match(key):
+                        id_f = key
+                        break
+                if id_f:
+                    url_map = {}
+                    for item, u in zip(items, dom_urls, strict=False):
+                        url_map[str(item.get(id_f, ""))] = u
+
+        if fields_map:
+            # First-page body is the best available root; lookup tables
+            # typically sit at response level, not per item.
+            root = result.candidate.exchange.body if result and result.candidate else None
+            jobs = _extract_rich(
+                items,
+                fields_map,
+                url_field,
+                None,
+                board_url,
+                url_map=url_map,
+                root=root,
+            )
+            return truncated_rich_result(jobs) if truncated else jobs
+
+        urls = extract_urls(items, url_field, board_url)
+        if not urls and url_map:
+            urls_from_map = set(url_map.values())
+            return truncated_url_result(urls_from_map) if truncated else urls_from_map
+        if not urls:
+            urls = await extract_urls_via_dom_crossref(page, items, board_url)
+        urls_set = set(urls)
+        return truncated_url_result(urls_set) if truncated else urls_set
+
+
+# ---------------------------------------------------------------------------
+# Extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_rich(
+    items: list[dict],
+    fields_map: dict[str, str | list[str]],
+    url_field: str | None,
+    url_template: str | None,
+    board_url: str,
+    url_map: dict[str, str] | None = None,
+    *,
+    root: dict | None = None,
+) -> list[DiscoveredJob]:
+    """Extract DiscoveredJob objects from items using field mapping.
+
+    *url_map* is an optional pre-built mapping from item ID to URL
+    (e.g. from DOM cross-reference).
+
+    *root* is the top-level response object; required by field specs
+    that use ``lookup_from`` (sibling-table joins for ATS payloads that
+    ship a compact listing alongside a shared lookup dict). Callers that
+    paginate and stitch items from multiple responses should pass the
+    first page's root — the lookup tables are response-level constants
+    in the ATSes we've seen.
+    """
+    from urllib.parse import urljoin
+
+    # Build id_field lookup for url_map
+    id_field = None
+    if url_map and items:
+        from src.shared.api_sniff import ID_FIELDS as _ID_FIELDS
+
+        for key in items[0]:
+            if _ID_FIELDS.match(key):
+                id_field = key
+                break
+
+    jobs: list[DiscoveredJob] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        # Build URL
+        url = None
+        if url_template:
+            try:
+                # Use a safe dict that returns empty string for missing keys
+                safe = {k: v for k, v in item.items() if isinstance(v, (str, int, float))}
+                url = url_template.format_map(safe)
+            except (KeyError, IndexError, ValueError):
+                pass
+        if not url and url_map and id_field:
+            item_id = str(item.get(id_field, ""))
+            url = url_map.get(item_id)
+        if not url and url_field:
+            needs_extract = "." in url_field or "[" in url_field
+            raw = extract_field(item, url_field) if needs_extract else item.get(url_field)
+            if isinstance(raw, str) and raw:
+                url = urljoin(board_url, raw)
+        if not url:
+            # Try to find any URL in the item
+            for val in item.values():
+                if isinstance(val, str) and val.startswith(("http://", "https://")):
+                    url = val
+                    break
+        if not url:
+            continue
+
+        kwargs: dict[str, object] = {"url": url}
+        metadata_fields: dict[str, object] = {}
+        extras: dict[str, object] = {}
+
+        for target, spec in fields_map.items():
+            if isinstance(spec, list):
+                # Multi-field concatenation: extract each path and join
+                parts: list[str] = []
+                for s in spec:
+                    v = extract_field(item, s, root=root)
+                    if v is not None:
+                        parts.append(v if isinstance(v, str) else " ".join(v))
+                value = "\n\n".join(parts) if parts else None
+            else:
+                value = extract_field(item, spec, root=root)
+            if value is None:
+                continue
+            if target.startswith("metadata."):
+                metadata_fields[target.removeprefix("metadata.")] = value
+            elif target in (
+                "title",
+                "description",
+                "employment_type",
+                "job_location_type",
+                "date_posted",
+            ):
+                kwargs[target] = value
+            elif target == "locations":
+                kwargs["locations"] = value if isinstance(value, list) else [value]
+            elif target in ("skills", "responsibilities", "qualifications"):
+                extras[target] = value if isinstance(value, list) else [value]
+            elif target == "valid_through":
+                extras["valid_through"] = value
+            elif target == "base_salary":
+                kwargs["base_salary"] = value
+            else:
+                metadata_fields[target] = value
+
+        if metadata_fields:
+            kwargs["metadata"] = metadata_fields
+        if extras:
+            kwargs["extras"] = extras
+
+        jobs.append(DiscoveredJob(**kwargs))
+
+    return jobs
+
+
+def _extract_urls_from_template(
+    items: list[dict],
+    url_template: str,
+    board_url: str,
+) -> set[str]:
+    """Build URL-only set from items using a URL template."""
+    from urllib.parse import urljoin
+
+    urls: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            url = url_template.format_map(item)
+            urls.add(urljoin(board_url, url))
+        except (KeyError, IndexError, ValueError):
+            continue
+    return urls
+
+
+register("api_sniffer", discover, cost=80, can_handle=can_handle)

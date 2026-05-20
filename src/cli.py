@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import re
 import subprocess
@@ -14,7 +15,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
-from src.config import OUTPUT_DIR, load_companies
+from src.config import OUTPUT_DIR
 from src.database import (
     get_all_active_companies,
     get_applications,
@@ -35,11 +36,11 @@ console = Console()
 @app.command()
 def run(
     top: int = typer.Option(50, help="Number of jobs to shortlist"),
-    scrape_only: bool = typer.Option(False, "--scrape-only", help="Skip rendering the report"),
+    board: Optional[str] = typer.Option(None, "--board", help="Only run a single board slug (debug mode)"),
 ) -> None:
-    """Run the full daily pipeline: scrape → parse → rank → shortlist → report."""
+    """Run the full daily pipeline: monitor → scrape → rank → shortlist → report."""
     from src.pipeline import run_daily
-    asyncio.run(run_daily(shortlist_limit=top))
+    asyncio.run(run_daily(shortlist_limit=top, board_slug=board))
 
 
 # ── show ──────────────────────────────────────────────────────────────────────
@@ -78,10 +79,11 @@ def show(
     )
     table.add_column("#",        width=3,  no_wrap=True)
     table.add_column("Score",    width=6,  no_wrap=True)
-    table.add_column("Title",    min_width=30)
+    table.add_column("Title",    min_width=28)
     table.add_column("Company",  width=18, no_wrap=True)
     table.add_column("Role",     width=10, no_wrap=True)
     table.add_column("Visa",     width=11, no_wrap=True)
+    table.add_column("Salary",   width=14, no_wrap=True)
     table.add_column("Posted",   width=10, no_wrap=True)
     table.add_column("Link",     min_width=20)
 
@@ -90,13 +92,22 @@ def show(
         visa = {1: "[green]CONFIRMED[/]", 0: "[yellow]UNKNOWN[/]", -1: "[red]NO[/]"}.get(
             row["visa_signal"], "?"
         )
+        sal_min = row["salary_min_usd"] if "salary_min_usd" in row.keys() else None
+        sal_max = row["salary_max_usd"] if "salary_max_usd" in row.keys() else None
+        if sal_min:
+            sal_str = f"${sal_min//1000}k"
+            if sal_max:
+                sal_str += f"–${sal_max//1000}k"
+        else:
+            sal_str = "—"
         table.add_row(
             str(i),
             score,
-            row["title"][:50],
+            row["title"][:46],
             (row["company_name"] or "")[:18],
             (row["role_category"] or "other").upper()[:10],
             visa,
+            sal_str,
             row["posted_date"] or "—",
             row["url"],
         )
@@ -206,45 +217,154 @@ def stats() -> None:
 company_app = typer.Typer(help="Manage the company list")
 app.add_typer(company_app, name="company")
 
+_DATA_DIR = Path(__file__).parent.parent / "data"
+_COMPANIES_CSV = _DATA_DIR / "companies.csv"
+_BOARDS_CSV    = _DATA_DIR / "boards.csv"
+_COMPANY_FIELDS = ["slug", "name", "website", "industry", "tier", "enabled", "h1b_petitions_recent"]
+_BOARD_FIELDS   = ["company_slug", "board_slug", "board_url", "monitor_type", "monitor_config", "scraper_type", "scraper_config"]
+
+_ATS_TO_MONITOR = {
+    "greenhouse":     ("greenhouse", "skip"),
+    "lever":          ("lever",      "skip"),
+    "ashby":          ("ashby",      "skip"),
+    "smartrecruiters":("smartrecruiters", "skip"),
+    "workable":       ("workable",   "skip"),
+    "workday":        ("workday",    "workday"),
+}
+
+_INDUSTRY_CODES = {"tech": 1, "fintech": 2, "enterprise": 1, "media": 6, "telecom": 7}
+
+
+def _board_url_for(ats: str, slug: str) -> str:
+    urls = {
+        "greenhouse":     f"https://job-boards.greenhouse.io/{slug}",
+        "lever":          f"https://jobs.lever.co/{slug}",
+        "ashby":          f"https://jobs.ashbyhq.com/{slug}",
+        "smartrecruiters":f"https://careers.smartrecruiters.com/{slug}",
+        "workable":       f"https://apply.workable.com/{slug}/",
+    }
+    return urls.get(ats, "")
+
+
+def _read_csv(path: Path, fields: list[str]) -> list[dict]:
+    if not path.exists():
+        return []
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _write_csv(path: Path, fields: list[str], rows: list[dict]) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
 
 @company_app.command("add")
 def company_add(
     name: str = typer.Option(..., help="Company display name"),
-    slug: str = typer.Option(..., help="ATS slug (e.g. 'stripe')"),
-    ats: str  = typer.Option(..., help="ATS type: greenhouse | lever"),
+    slug: str = typer.Option(..., help="Company slug (e.g. 'stripe')"),
+    ats: str  = typer.Option(..., help="Monitor type: greenhouse | lever | ashby | workday | smartrecruiters"),
     tier: int = typer.Option(2, help="Tier: 1=top, 2=mid, 3=other"),
-    industry: str = typer.Option("tech", help="Industry: tech | fintech | enterprise"),
+    industry: str = typer.Option("tech", help="Industry code: tech | fintech | enterprise | media | telecom"),
+    website: str = typer.Option("", help="Company website URL"),
+    workday_host: str = typer.Option("", help="Workday host (e.g. stripe.wd1.myworkdayjobs.com)"),
+    workday_board: str = typer.Option("", help="Workday board/site name"),
 ) -> None:
-    """Add a company to the target list."""
-    init_db()
-    with get_conn() as conn:
-        upsert_company(conn, {
-            "name": name, "slug": slug, "ats_type": ats,
-            "domain": None, "industry": industry, "tier": tier,
-        })
+    """Add a company and synthesize a board row in companies.csv and boards.csv."""
+    industry_code = _INDUSTRY_CODES.get(industry.lower(), 1)
+    new_company = {
+        "slug": slug, "name": name, "website": website,
+        "industry": industry_code, "tier": tier, "enabled": "true",
+        "h1b_petitions_recent": "",
+    }
+
+    # Build board row
+    monitor_type, scraper_type = _ATS_TO_MONITOR.get(ats, ("", ""))
+    if not monitor_type:
+        console.print(f"[yellow]Unknown ATS '{ats}' — adding company without a board row.[/yellow]")
+        board_row = None
+    elif ats == "workday":
+        if not workday_host or not workday_board:
+            console.print("[red]--workday-host and --workday-board required for workday ATS.[/red]")
+            raise typer.Exit(1)
+        import re as _re
+        m = _re.search(r"\.(wd\d+)\.", workday_host)
+        wi = m.group(1) if m else "wd1"
+        board_row = {
+            "company_slug": slug,
+            "board_slug": f"{slug}-workday",
+            "board_url": f"https://{workday_host}/{workday_board}",
+            "monitor_type": "workday",
+            "monitor_config": json.dumps({"company": slug, "wd_instance": wi, "site": workday_board}),
+            "scraper_type": "workday",
+            "scraper_config": "",
+        }
+    else:
+        board_url = _board_url_for(ats, slug)
+        board_row = {
+            "company_slug": slug,
+            "board_slug": f"{slug}-{ats}",
+            "board_url": board_url,
+            "monitor_type": monitor_type,
+            "monitor_config": json.dumps({"token": slug}),
+            "scraper_type": scraper_type,
+            "scraper_config": "",
+        }
+
+    # Update companies.csv
+    companies = _read_csv(_COMPANIES_CSV, _COMPANY_FIELDS)
+    for i, r in enumerate(companies):
+        if r["slug"] == slug:
+            companies[i] = new_company
+            break
+    else:
+        companies.append(new_company)
+    _write_csv(_COMPANIES_CSV, _COMPANY_FIELDS, companies)
+
+    # Update boards.csv
+    if board_row:
+        boards = _read_csv(_BOARDS_CSV, _BOARD_FIELDS)
+        boards = [b for b in boards if b.get("board_slug") != board_row["board_slug"]]
+        boards.append(board_row)
+        _write_csv(_BOARDS_CSV, _BOARD_FIELDS, boards)
+
     console.print(f"[green]Added {name} ({ats}/{slug}, tier {tier})[/green]")
+    if board_row:
+        console.print(f"[dim]Board: {board_row['board_url']}[/dim]")
+    else:
+        console.print(f"[yellow]Edit data/boards.csv manually to add board config for {slug}.[/yellow]")
 
 
 @company_app.command("list")
-def company_list() -> None:
-    """List all active companies."""
-    init_db()
-    with get_conn() as conn:
-        rows = get_all_active_companies(conn)
+def company_list(
+    enabled_only: bool = typer.Option(True, "--enabled-only/--all", help="Show only enabled companies"),
+    top: int = typer.Option(50, help="Max rows to display"),
+) -> None:
+    """List companies from data/companies.csv."""
+    from src.companies import load_companies as _load
 
-    table = Table(title="Target Companies", box=box.ROUNDED, header_style="bold cyan")
-    table.add_column("Name",     min_width=20)
-    table.add_column("Slug",     width=16)
-    table.add_column("ATS",      width=12)
+    companies = _load(enabled_only=enabled_only)[:top]
+    if not companies:
+        console.print("[yellow]No companies found in data/companies.csv.[/yellow]")
+        raise typer.Exit()
+
+    table = Table(
+        title=f"Companies ({'enabled' if enabled_only else 'all'}) — {len(companies)} shown",
+        box=box.ROUNDED, header_style="bold cyan",
+    )
+    table.add_column("Name",     min_width=22)
+    table.add_column("Slug",     width=18)
     table.add_column("Tier",     width=5)
-    table.add_column("Industry", width=12)
-    table.add_column("Last Scraped", width=16)
+    table.add_column("Industry", width=5)
+    table.add_column("H1B",      width=6)
+    table.add_column("Enabled",  width=8)
 
-    for r in rows:
+    for c in companies:
         table.add_row(
-            r["name"], r["slug"], r["ats_type"], str(r["tier"]),
-            r["industry"] or "—",
-            (r["last_scraped"] or "never")[:16],
+            c.name[:22], c.slug[:18], str(c.tier), str(c.industry),
+            str(c.h1b_petitions_recent) if c.h1b_petitions_recent else "—",
+            "[green]yes[/]" if c.enabled else "[red]no[/]",
         )
     console.print(table)
 
@@ -253,11 +373,19 @@ def company_list() -> None:
 def company_disable(
     slug: str = typer.Argument(help="Company slug to disable"),
 ) -> None:
-    """Disable a company (stop scraping it)."""
-    init_db()
-    with get_conn() as conn:
-        conn.execute("UPDATE companies SET active=0 WHERE slug=?", (slug,))
-    console.print(f"[yellow]Disabled {slug}[/yellow]")
+    """Set enabled=false for a company in data/companies.csv."""
+    companies = _read_csv(_COMPANIES_CSV, _COMPANY_FIELDS)
+    found = False
+    for r in companies:
+        if r["slug"] == slug:
+            r["enabled"] = "false"
+            found = True
+            break
+    if not found:
+        console.print(f"[red]Slug '{slug}' not found in data/companies.csv.[/red]")
+        raise typer.Exit(1)
+    _write_csv(_COMPANIES_CSV, _COMPANY_FIELDS, companies)
+    console.print(f"[yellow]Disabled {slug} in data/companies.csv.[/yellow]")
 
 
 # ── serve ─────────────────────────────────────────────────────────────────────

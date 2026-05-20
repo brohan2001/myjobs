@@ -177,11 +177,17 @@ def parse_signals(job: dict) -> dict:
     """Extract visa_signal, early_career, role_category, exp_years_max from a job dict."""
     desc = job.get("description", "")
     title = job.get("title", "")
+    # Prefer the normalize step's pre-populated value when available (uses
+    # jobseek's higher-precision extract_experience). Fall back to the simpler
+    # parse_max_experience regex for jobs that entered the DB via other paths.
+    exp_years = job.get("exp_years_max")
+    if exp_years is None:
+        exp_years = parse_max_experience(desc)
     return {
         "visa_signal":   detect_visa_signal(desc),
         "early_career":  detect_early_career(title, desc),
         "role_category": classify_role(title, desc),
-        "exp_years_max": parse_max_experience(desc),
+        "exp_years_max": exp_years,
     }
 
 

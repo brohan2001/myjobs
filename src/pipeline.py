@@ -1,17 +1,30 @@
+"""Job discovery pipeline using vendored jobseek monitors + scrapers.
+
+Flow per daily run:
+  1. Sync data/companies.csv + data/boards.csv → SQLite companies + boards tables
+  2. Start shared Playwright if any enabled board requires a browser
+  3. Run monitor_one_stream for all enabled boards (concurrency=20)
+  4. For URL-only boards (scraper_type != skip): run scrape_one (concurrency=10)
+  5. Normalize staged raw_jobs → jobs table via normalize_to_jobs_row
+  6. parse_signals → score_job → mark_shortlisted → render_report
+"""
 from __future__ import annotations
 
 import asyncio
-import random
-import re
+import dataclasses
+import json
 import time
 from datetime import date, datetime
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from src.config import load_companies
-from src.logger import get_logger, log_scrape_failure
+from src.companies import load_boards
+from src.core.monitor import monitor_one_stream
+from src.core.monitors import monitor_needs_browser
+from src.core.scrape import scrape_one
+from src.core.scrapers import scraper_needs_browser
 from src.database import (
     create_daily_run,
     get_conn,
@@ -20,241 +33,45 @@ from src.database import (
     get_new_jobs,
     get_shortlist,
     get_top_unshortlisted,
+    get_unparsed_raw_jobs,
+    get_unscraped_url_only_raw_jobs,
     init_db,
     insert_jobs,
-    log_run_error,
+    mark_raw_parsed,
     mark_shortlisted,
-    update_company_scraped,
+    record_raw_job,
+    update_board_failure,
+    update_board_success,
     update_daily_run,
     update_job_scores,
     update_job_signals,
-    upsert_company,
+    update_raw_job_payload,
+    upsert_board,
+    upsert_company_from_board,
 )
+from src.logger import get_logger
+from src.normalize import normalize_to_jobs_row
 from src.ranker import parse_signals, score_job
 from src.renderer import render_report
-from src.scrapers.base import ScraperError
-from src.scrapers.greenhouse import GreenhouseScraper
-from src.scrapers.lever import LeverScraper
-from src.scrapers.workday import WorkdayScraper, fetch_workday_description
-from src.scrapers.google import fetch_google_description
-from src.scrapers.smartrecruiters import fetch_smartrecruiters_description
-from src.scrapers.amazon import AmazonScraper
-from src.scrapers.google import GoogleScraper
-from src.scrapers.apple import AppleScraper
-from src.scrapers.ashby import AshbyScraper
-from src.scrapers.microsoft import MicrosoftScraper
-from src.scrapers.workable import WorkableScraper
-from src.scrapers.rippling import RipplingScraper
-from src.scrapers.smartrecruiters import SmartRecruitersScraper
-from src.scrapers.linkedin import LinkedInBroadScraper, LinkedInScraper, MetaScraper
-from src.scrapers.serp_fallback import SerpFallbackScraper
-from src.scrapers.avature import AvatureScraper
-from src.scrapers.oracle_cloud import OracleCloudScraper
+from src.shared.http import create_http_client
 
 console = Console()
 _log = get_logger("pipeline")
 
-# Max concurrent scrape tasks per ATS batch
-_SCRAPE_CONCURRENCY = asyncio.Semaphore(5)
 
+async def run_daily(shortlist_limit: int = 50, board_slug: str | None = None) -> Path:
+    """Run the full daily job discovery pipeline.
 
-async def _scrape_company(scraper, company: dict, company_id: int, existing_keys: set) -> tuple[int, int, list[int], str | None]:
-    """Returns (scraped_count, new_count, inserted_ids, error_str | None)."""
-    async with _SCRAPE_CONCURRENCY:
-        try:
-            jobs = await scraper.fetch_jobs(company, company_id)
-            new_jobs = scraper.deduplicate(jobs, existing_keys)
-            with get_conn() as conn:
-                inserted, inserted_ids = insert_jobs(conn, new_jobs)
-                update_company_scraped(conn, company["slug"], company["ats_type"])
-            for j in new_jobs:
-                existing_keys.add((j["external_id"], j["ats_type"]))
-            return len(jobs), inserted, inserted_ids, None
-        except ScraperError as e:
-            err = f"{company['ats_type']}/{company['slug']}: {e}"
-            log_scrape_failure(_log, company["slug"], company["ats_type"], str(e))
-            return 0, 0, [], err
-        except Exception as e:
-            err = f"{company['ats_type']}/{company['slug']}: unexpected: {e}"
-            log_scrape_failure(_log, company["slug"], company["ats_type"], f"unexpected: {e}")
-            return 0, 0, [], err
-
-
-async def _scrape_linkedin_company(scraper, company: dict, company_id: int, existing_keys: set) -> tuple[int, int, str | None]:
-    """LinkedIn runs without the shared semaphore — it enforces its own rate limit."""
-    try:
-        jobs = await scraper.fetch_jobs(company, company_id)
-        new_jobs = scraper.deduplicate(jobs, existing_keys)
-        with get_conn() as conn:
-            inserted, _ = insert_jobs(conn, new_jobs)
-            update_company_scraped(conn, company["slug"], company["ats_type"])
-        for j in new_jobs:
-            existing_keys.add((j["external_id"], j["ats_type"]))
-        return len(jobs), inserted, None
-    except Exception as e:
-        log_scrape_failure(_log, company["slug"], "linkedin", str(e))
-        return 0, 0, f"linkedin/{company['slug']}: {e}"
-
-
-_BROAD_SEARCH_TERMS = [
-    "software engineer new grad",
-    "software engineer entry level",
-]
-
-
-async def _run_broad_linkedin_search(
-    existing_keys: set,
-    company_name_to_id: dict[str, int],
-) -> int:
-    """Broad LinkedIn keyword search across all US companies. Returns count of new jobs inserted."""
-    total_new = 0
-    async with LinkedInBroadScraper() as scraper:
-        for term in _BROAD_SEARCH_TERMS:
-            jobs = await scraper.search(
-                term,
-                max_results=100,
-                company_name_to_id=company_name_to_id,
-            )
-            # Handle unknown companies: create minimal entries
-            with get_conn() as conn:
-                for job in jobs:
-                    if job.get("company_id") is None:
-                        dyn_name = job.pop("_company_name", "") or "Unknown"
-                        if not dyn_name or dyn_name == "Unknown":
-                            continue
-                        dyn_slug = re.sub(r"[^a-z0-9-]", "-", dyn_name.lower())[:40]
-                        cid = upsert_company(conn, {
-                            "name": dyn_name,
-                            "slug": dyn_slug,
-                            "ats_type": "linkedin",
-                            "domain": None,
-                            "industry": "tech",
-                            "tier": 3,
-                        })
-                        job["company_id"] = cid
-                        company_name_to_id[dyn_name.lower()] = cid
-                new_jobs = scraper.deduplicate(jobs, existing_keys)
-                inserted, _ = insert_jobs(conn, new_jobs)
-                for j in new_jobs:
-                    existing_keys.add((j["external_id"], j["ats_type"]))
-                total_new += inserted
-            await asyncio.sleep(random.uniform(15, 25))
-    return total_new
-
-
-async def _enrich_workday_descriptions(job_ids: list[int]) -> None:
-    """Fetch Workday detail pages for newly inserted jobs. Runs in parallel with concurrency=5."""
-    if not job_ids:
-        return
-
-    with get_conn() as conn:
-        placeholders = ",".join("?" * len(job_ids))
-        rows = conn.execute(
-            f"SELECT id, url FROM jobs WHERE id IN ({placeholders}) AND (description IS NULL OR description='')",
-            job_ids,
-        ).fetchall()
-
-    if not rows:
-        return
-
-    sem = asyncio.Semaphore(5)
-
-    async def fetch_one(job_id: int, url: str) -> tuple[int, str]:
-        async with sem:
-            desc = await fetch_workday_description(url)
-            return job_id, desc
-
-    tasks = [fetch_one(r["id"], r["url"]) for r in rows[:100]]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    with get_conn() as conn:
-        for result in results:
-            if isinstance(result, tuple):
-                jid, desc = result
-                if desc:
-                    conn.execute("UPDATE jobs SET description=? WHERE id=?", (desc, jid))
-
-
-async def _enrich_google_descriptions(job_ids: list[int]) -> None:
-    """Fetch Google Careers detail pages for newly inserted jobs. Runs in parallel with concurrency=5."""
-    if not job_ids:
-        return
-
-    with get_conn() as conn:
-        placeholders = ",".join("?" * len(job_ids))
-        rows = conn.execute(
-            f"SELECT id, url FROM jobs WHERE id IN ({placeholders}) AND (description IS NULL OR description='')",
-            job_ids,
-        ).fetchall()
-
-    if not rows:
-        return
-
-    sem = asyncio.Semaphore(5)
-
-    async def fetch_one(job_id: int, url: str) -> tuple[int, str]:
-        async with sem:
-            desc = await fetch_google_description(url)
-            return job_id, desc
-
-    tasks = [fetch_one(r["id"], r["url"]) for r in rows[:50]]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    with get_conn() as conn:
-        for result in results:
-            if isinstance(result, tuple):
-                jid, desc = result
-                if desc:
-                    conn.execute("UPDATE jobs SET description=? WHERE id=?", (desc, jid))
-
-
-async def _enrich_sr_descriptions(job_ids: list[int]) -> None:
-    """Fetch SmartRecruiters detail pages for newly inserted jobs. Runs in parallel with concurrency=5."""
-    if not job_ids:
-        return
-
-    with get_conn() as conn:
-        placeholders = ",".join("?" * len(job_ids))
-        rows = conn.execute(
-            f"SELECT id, url FROM jobs WHERE id IN ({placeholders}) AND (description IS NULL OR description='')",
-            job_ids,
-        ).fetchall()
-
-    if not rows:
-        return
-
-    sem = asyncio.Semaphore(5)
-
-    async def fetch_one(job_id: int, url: str) -> tuple[int, str]:
-        # URL format: https://jobs.smartrecruiters.com/{sr_id}/{job_id_str}
-        parts = url.rstrip("/").rsplit("/", 2)
-        if len(parts) < 3:
-            return job_id, ""
-        sr_id = parts[-2]
-        job_id_str = parts[-1]
-        async with sem:
-            desc = await fetch_smartrecruiters_description(sr_id, job_id_str)
-            return job_id, desc
-
-    tasks = [fetch_one(r["id"], r["url"]) for r in rows[:50]]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    with get_conn() as conn:
-        for result in results:
-            if isinstance(result, tuple):
-                jid, desc = result
-                if desc:
-                    conn.execute("UPDATE jobs SET description=? WHERE id=?", (desc, jid))
-
-
-async def run_daily(shortlist_limit: int = 50) -> Path:
+    When *board_slug* is given only that one board is processed — useful for
+    debugging a specific company board without running all 3 000+ boards.
+    """
     run_date = date.today().isoformat()
     start_time = time.monotonic()
     errors: list[str] = []
 
     console.rule(f"[bold blue]Job Run — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-    # ── 1. INIT ────────────────────────────────────────────────────────────
+    # ── 1. INIT ──────────────────────────────────────────────────────────────
     init_db()
     with get_conn() as conn:
         create_daily_run(conn, run_date)
@@ -264,44 +81,79 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
         if h1b_data:
             populate_h1b_data(conn, h1b_data)
 
-    companies = load_companies()
-    gh_companies = [c for c in companies if c["ats_type"] == "greenhouse"]
-    lv_companies = [c for c in companies if c["ats_type"] == "lever"]
-    wd_companies = [c for c in companies if c["ats_type"] == "workday"]
-    az_companies = [c for c in companies if c["ats_type"] == "amazon"]
-    li_companies = [c for c in companies if c["ats_type"] == "linkedin"]
-    go_companies = [c for c in companies if c["ats_type"] == "google"]
-    ap_companies = [c for c in companies if c["ats_type"] == "apple"]
-    ab_companies = [c for c in companies if c["ats_type"] == "ashby"]
-    ms_companies = [c for c in companies if c["ats_type"] == "microsoft"]
-    meta_companies = [c for c in companies if c["ats_type"] == "meta"]
-    wb_companies = [c for c in companies if c["ats_type"] == "workable"]
-    rp_companies = [c for c in companies if c["ats_type"] == "rippling"]
-    sr_companies = [c for c in companies if c["ats_type"] == "smartrecruiters"]
-    serp_companies = [c for c in companies if c["ats_type"] == "serp"]
-    av_companies = [c for c in companies if c["ats_type"] == "avature"]
-    orc_companies = [c for c in companies if c["ats_type"] == "oracle_cloud"]
+    # ── 2. SYNC CSV → DB ─────────────────────────────────────────────────────
+    csv_boards = load_boards()
+    if board_slug:
+        csv_boards = [b for b in csv_boards if b.board_slug == board_slug]
+        if not csv_boards:
+            raise ValueError(f"Board not found in boards.csv: {board_slug!r}")
 
-    console.print(
-        f"[dim]Companies: {len(gh_companies)} Greenhouse, {len(lv_companies)} Lever, "
-        f"{len(wd_companies)} Workday, {len(az_companies)} Amazon, {len(li_companies)} LinkedIn, "
-        f"{len(go_companies)} Google, {len(ap_companies)} Apple, {len(ab_companies)} Ashby, "
-        f"{len(ms_companies)} Microsoft, {len(meta_companies)} Meta[/dim]"
+    board_id_map: dict[str, int] = {}
+    with get_conn() as conn:
+        for board in csv_boards:
+            company = board.company
+            if company is None:
+                continue
+            cid = upsert_company_from_board(
+                conn, company.slug, company.name, company.industry, company.tier
+            )
+            bid = upsert_board(
+                conn, cid, board.board_slug, board.board_url,
+                board.monitor_type, board.monitor_config,
+                board.scraper_type, board.scraper_config,
+            )
+            board_id_map[board.board_slug] = bid
+
+    active_boards = [b for b in csv_boards if b.board_slug in board_id_map]
+    console.print(f"[dim]Synced {len(active_boards)} boards to DB[/dim]")
+
+    # ── 3. CHECK BROWSER NEEDS ───────────────────────────────────────────────
+    needs_browser = any(
+        monitor_needs_browser(b.monitor_type, b.monitor_config)
+        or scraper_needs_browser(b.scraper_type, b.scraper_config)
+        for b in active_boards
     )
 
-    with get_conn() as conn:
-        existing_keys: set[tuple] = get_existing_keys(conn)
-        company_id_map: dict[str, int] = {}
-        for c in companies:
-            cid = upsert_company(conn, c)
-            company_id_map[f"{c['ats_type']}:{c['slug']}"] = cid
+    # ── 4. MONITOR ALL BOARDS ────────────────────────────────────────────────
+    monitor_sem = asyncio.Semaphore(20)
+    jobs_discovered = 0
+    boards_ok = 0
+    boards_failed = 0
 
-    # ── 2. SCRAPE ──────────────────────────────────────────────────────────
-    jobs_scraped = 0
-    jobs_new = 0
-    new_workday_ids: list[int] = []
-    new_google_ids: list[int] = []
-    new_sr_ids: list[int] = []
+    http = create_http_client()
+
+    async def run_monitor(board, board_id, pw=None):
+        nonlocal jobs_discovered, boards_ok, boards_failed
+        async with monitor_sem:
+            discovered = 0
+            try:
+                async for batch in monitor_one_stream(
+                    board.board_url, board.monitor_type, board.monitor_config, http, pw=pw
+                ):
+                    with get_conn() as conn:
+                        if batch.jobs_by_url:
+                            for url, dj in batch.jobs_by_url.items():
+                                payload = dataclasses.asdict(dj)
+                                payload["url"] = url
+                                record_raw_job(conn, board_id, url, payload, "monitor_rich")
+                                discovered += 1
+                        else:
+                            for url in batch.urls:
+                                record_raw_job(conn, board_id, url, {"url": url}, "monitor")
+                                discovered += 1
+                with get_conn() as conn:
+                    update_board_success(conn, board_id)
+                jobs_discovered += discovered
+                boards_ok += 1
+            except Exception as e:
+                err = f"{board.board_slug}: {e}"
+                _log.error("monitor.failure", board=board.board_slug, error=str(e))
+                with get_conn() as conn:
+                    update_board_failure(conn, board_id, str(e))
+                errors.append(err)
+                boards_failed += 1
+
+    monitor_tasks = [run_monitor(b, board_id_map[b.board_slug]) for b in active_boards]
 
     with Progress(
         SpinnerColumn(),
@@ -310,254 +162,122 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
         TaskProgressColumn(),
         console=console,
     ) as progress:
-        task_gh = progress.add_task("[cyan]Greenhouse", total=max(len(gh_companies), 1))
-        task_lv = progress.add_task("[yellow]Lever     ", total=max(len(lv_companies), 1))
-        task_wd = progress.add_task("[green]Workday   ", total=max(len(wd_companies), 1))
-        task_az = progress.add_task("[orange3]Amazon    ", total=max(len(az_companies), 1))
-        task_go = progress.add_task("[red]Google    ", total=max(len(go_companies), 1))
-        task_ap = progress.add_task("[white]Apple     ", total=max(len(ap_companies), 1))
-        task_ab = progress.add_task("[magenta]Ashby     ", total=max(len(ab_companies), 1))
-        task_ms = progress.add_task("[blue]Microsoft ", total=max(len(ms_companies), 1))
-        task_wb = progress.add_task("[green4]Workable  ", total=max(len(wb_companies), 1))
-        task_rp = progress.add_task("[bright_magenta]Rippling  ", total=max(len(rp_companies), 1))
-        task_sr = progress.add_task("[cyan3]SmartRecr ", total=max(len(sr_companies), 1))
-        task_serp = progress.add_task("[yellow3]SERP      ", total=max(len(serp_companies), 1))
-        task_av = progress.add_task("[dark_orange]Avature   ", total=max(len(av_companies), 1))
-        task_orc = progress.add_task("[gold1]Oracle Cld", total=max(len(orc_companies), 1))
+        task_mon = progress.add_task("[cyan]Monitoring boards", total=len(active_boards))
 
-        # Greenhouse
-        async with GreenhouseScraper() as gh_scraper:
-            gh_tasks = [
-                _scrape_company(gh_scraper, c, company_id_map[f"greenhouse:{c['slug']}"], existing_keys)
-                for c in gh_companies
-            ]
-            for coro in asyncio.as_completed(gh_tasks):
-                scraped, new, _, err = await coro
-                jobs_scraped += scraped
-                jobs_new += new
-                if err:
-                    errors.append(err)
-                progress.advance(task_gh)
+        if needs_browser:
+            from playwright.async_api import async_playwright
+            async with async_playwright() as pw:
+                monitor_tasks = [run_monitor(b, board_id_map[b.board_slug], pw=pw) for b in active_boards]
+                for coro in asyncio.as_completed(monitor_tasks):
+                    await coro
+                    progress.advance(task_mon)
+        else:
+            for coro in asyncio.as_completed(monitor_tasks):
+                await coro
+                progress.advance(task_mon)
 
-        # Lever
-        async with LeverScraper() as lv_scraper:
-            lv_tasks = [
-                _scrape_company(lv_scraper, c, company_id_map[f"lever:{c['slug']}"], existing_keys)
-                for c in lv_companies
-            ]
-            for coro in asyncio.as_completed(lv_tasks):
-                scraped, new, _, err = await coro
-                jobs_scraped += scraped
-                jobs_new += new
-                if err:
-                    errors.append(err)
-                progress.advance(task_lv)
+    await http.aclose()
 
-        # Workday
-        if wd_companies:
-            async with WorkdayScraper() as wd_scraper:
-                wd_tasks = [
-                    _scrape_company(wd_scraper, c, company_id_map[f"workday:{c['slug']}"], existing_keys)
-                    for c in wd_companies
-                ]
-                for coro in asyncio.as_completed(wd_tasks):
-                    scraped, new, ids, err = await coro
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    new_workday_ids.extend(ids)
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_wd)
+    console.print(
+        f"[green]Monitored {boards_ok}/{len(active_boards)} boards — "
+        f"{jobs_discovered} total discoveries ({boards_failed} failures)[/green]"
+    )
 
-        # Amazon
-        if az_companies:
-            async with AmazonScraper() as az_scraper:
-                for c in az_companies:
-                    cid = company_id_map[f"amazon:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(az_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_az)
+    # ── 5. SCRAPE URL-ONLY BOARDS ────────────────────────────────────────────
+    scrape_sem = asyncio.Semaphore(10)
+    scraped_count = 0
+    scrape_errors = 0
 
-        # Google
-        if go_companies:
-            async with GoogleScraper() as go_scraper:
-                for c in go_companies:
-                    cid = company_id_map[f"google:{c['slug']}"]
-                    scraped, new, ids, err = await _scrape_company(go_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    new_google_ids.extend(ids)
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_go)
+    with get_conn() as conn:
+        url_only_rows = get_unscraped_url_only_raw_jobs(conn, limit=5000)
 
-        # Apple
-        if ap_companies:
-            async with AppleScraper() as ap_scraper:
-                for c in ap_companies:
-                    cid = company_id_map[f"apple:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(ap_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_ap)
+    if url_only_rows:
+        http2 = create_http_client()
 
-        # Ashby
-        if ab_companies:
-            async with AshbyScraper() as ab_scraper:
-                ab_tasks = [
-                    _scrape_company(ab_scraper, c, company_id_map[f"ashby:{c['slug']}"], existing_keys)
-                    for c in ab_companies
-                ]
-                for coro in asyncio.as_completed(ab_tasks):
-                    scraped, new, _, err = await coro
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_ab)
+        async def run_scrape(row, pw=None):
+            nonlocal scraped_count, scrape_errors
+            url = row["source_url"]
+            scraper_type = row["scraper_type"]
+            sc = json.loads(row["scraper_config"] or "{}")
+            raw_id = row["id"]
+            async with scrape_sem:
+                try:
+                    content = await scrape_one(url, scraper_type, sc, http2, pw=pw)
+                    payload = dataclasses.asdict(content)
+                    payload["url"] = url
+                    with get_conn() as conn:
+                        update_raw_job_payload(conn, raw_id, payload, "scraper")
+                    scraped_count += 1
+                except Exception as e:
+                    _log.warning("scrape.failure", url=url, error=str(e))
+                    with get_conn() as conn:
+                        mark_raw_parsed(conn, raw_id, None, str(e))
+                    scrape_errors += 1
 
-        # Microsoft
-        if ms_companies:
-            async with MicrosoftScraper() as ms_scraper:
-                for c in ms_companies:
-                    cid = company_id_map[f"microsoft:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(ms_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_ms)
+        needs_browser_scrape = any(
+            scraper_needs_browser(r["scraper_type"], json.loads(r["scraper_config"] or "{}"))
+            for r in url_only_rows
+        )
 
-        # Workable
-        if wb_companies:
-            async with WorkableScraper() as wb_scraper:
-                for c in wb_companies:
-                    cid = company_id_map[f"workable:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(wb_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_wb)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task_sc = progress.add_task("[yellow]Scraping job pages", total=len(url_only_rows))
+            scrape_tasks = [run_scrape(r) for r in url_only_rows]
 
-        # Rippling
-        if rp_companies:
-            async with RipplingScraper() as rp_scraper:
-                for c in rp_companies:
-                    cid = company_id_map[f"rippling:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(rp_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_rp)
+            if needs_browser_scrape:
+                from playwright.async_api import async_playwright
+                async with async_playwright() as pw:
+                    scrape_tasks = [run_scrape(r, pw=pw) for r in url_only_rows]
+                    for coro in asyncio.as_completed(scrape_tasks):
+                        await coro
+                        progress.advance(task_sc)
+            else:
+                for coro in asyncio.as_completed(scrape_tasks):
+                    await coro
+                    progress.advance(task_sc)
 
-        # SmartRecruiters
-        if sr_companies:
-            async with SmartRecruitersScraper() as sr_scraper:
-                for c in sr_companies:
-                    cid = company_id_map[f"smartrecruiters:{c['slug']}"]
-                    scraped, new, ids, err = await _scrape_company(sr_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    new_sr_ids.extend(ids)
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_sr)
+        await http2.aclose()
+        console.print(
+            f"[dim]Scraped {scraped_count}/{len(url_only_rows)} URL-only jobs "
+            f"({scrape_errors} errors)[/dim]"
+        )
 
-        # SERP fallback (Meta only — Google restored to Playwright scraper)
-        if serp_companies:
-            async with SerpFallbackScraper() as serp_scraper:
-                for c in serp_companies:
-                    cid = company_id_map[f"serp:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(serp_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_serp)
+    # ── 6. PARSE RAW → JOBS ──────────────────────────────────────────────────
+    jobs_new = 0
+    parse_errors = 0
 
-        # Avature (Bloomberg)
-        if av_companies:
-            async with AvatureScraper() as av_scraper:
-                for c in av_companies:
-                    cid = company_id_map[f"avature:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(av_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_av)
+    with get_conn() as conn:
+        existing_keys: set[tuple] = get_existing_keys(conn)
+        raw_rows = get_unparsed_raw_jobs(conn, limit=10000)
 
-        # Oracle Recruiting Cloud (JPMC, AmEx)
-        if orc_companies:
-            async with OracleCloudScraper() as orc_scraper:
-                for c in orc_companies:
-                    cid = company_id_map[f"oracle_cloud:{c['slug']}"]
-                    scraped, new, _, err = await _scrape_company(orc_scraper, c, cid, existing_keys)
-                    jobs_scraped += scraped
-                    jobs_new += new
-                    if err:
-                        errors.append(err)
-                    progress.advance(task_orc)
+    with get_conn() as conn:
+        for row in raw_rows:
+            raw_id = row["id"]
+            try:
+                payload = json.loads(row["payload"])
+                norm = normalize_to_jobs_row(payload, row)
+                key = (norm["external_id"], norm["ats_type"])
+                if key in existing_keys:
+                    mark_raw_parsed(conn, raw_id, None, None)
+                    continue
+                inserted, ids = insert_jobs(conn, [norm])
+                if inserted:
+                    existing_keys.add(key)
+                    jobs_new += 1
+                mark_raw_parsed(conn, raw_id, ids[0] if ids else None, None)
+            except Exception as e:
+                _log.warning("parse.failure", raw_id=raw_id, error=str(e))
+                mark_raw_parsed(conn, raw_id, None, str(e))
+                parse_errors += 1
 
-    # Meta + LinkedIn (Arista/Juniper) now route to SERP — no separate scrapers needed
+    console.print(f"[green]{jobs_new} new jobs inserted ({parse_errors} parse errors)[/green]")
 
-    # Broad LinkedIn keyword search (best-effort, may be rate-limited)
-    console.print("[dim]LinkedIn broad search (software engineer new grad/entry level)...[/dim]")
-    try:
-        company_name_to_id = {
-            c["name"].lower(): company_id_map.get(f"{c['ats_type']}:{c['slug']}", -1)
-            for c in companies
-        }
-        broad_new = await _run_broad_linkedin_search(existing_keys, company_name_to_id)
-        jobs_new += broad_new
-        jobs_scraped += broad_new
-        if broad_new:
-            console.print(f"[dim]LinkedIn broad search: {broad_new} new jobs[/dim]")
-    except Exception as e:
-        errors.append(f"linkedin_broad: {e}")
-        _log.error("linkedin_broad_failure", extra={"error": str(e)})
-        console.print(f"[yellow]LinkedIn broad search failed (non-fatal): {e}[/yellow]")
-
-    console.print(f"[green]Scraped {jobs_scraped} jobs ({jobs_new} new)[/green]")
-
-    # ── 2b. ENRICH WORKDAY DESCRIPTIONS ───────────────────────────────────
-    if new_workday_ids:
-        console.print(f"[dim]Enriching descriptions for {min(len(new_workday_ids), 100)} Workday jobs...[/dim]")
-        try:
-            await _enrich_workday_descriptions(new_workday_ids)
-        except Exception as e:
-            errors.append(f"workday_enrich: {e}")
-            _log.error("workday_enrich_failure", extra={"error": str(e)})
-            console.print(f"[yellow]Workday description enrichment failed (non-fatal): {e}[/yellow]")
-
-    # ── 2c. ENRICH GOOGLE DESCRIPTIONS ────────────────────────────────────
-    if new_google_ids:
-        console.print(f"[dim]Enriching descriptions for {min(len(new_google_ids), 50)} Google jobs...[/dim]")
-        try:
-            await _enrich_google_descriptions(new_google_ids)
-        except Exception as e:
-            errors.append(f"google_enrich: {e}")
-            _log.error("google_enrich_failure", extra={"error": str(e)})
-            console.print(f"[yellow]Google description enrichment failed (non-fatal): {e}[/yellow]")
-
-    # ── 2d. ENRICH SMARTRECRUITERS DESCRIPTIONS ───────────────────────────
-    if new_sr_ids:
-        console.print(f"[dim]Enriching descriptions for {min(len(new_sr_ids), 50)} SmartRecruiters jobs...[/dim]")
-        try:
-            await _enrich_sr_descriptions(new_sr_ids)
-        except Exception as e:
-            errors.append(f"sr_enrich: {e}")
-            _log.error("sr_enrich_failure", extra={"error": str(e)})
-            console.print(f"[yellow]SmartRecruiters description enrichment failed (non-fatal): {e}[/yellow]")
-
-    # ── 3. PARSE SIGNALS ───────────────────────────────────────────────────
+    # ── 7. PARSE SIGNALS ─────────────────────────────────────────────────────
     with get_conn() as conn:
         new_jobs = get_new_jobs(conn)
         console.print(f"[dim]Parsing signals for {len(new_jobs)} new jobs...[/dim]")
@@ -565,7 +285,7 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             signals = parse_signals(dict(job))
             update_job_signals(conn, job["id"], signals)
 
-    # ── 4. RANK ────────────────────────────────────────────────────────────
+    # ── 8. RANK ──────────────────────────────────────────────────────────────
     with get_conn() as conn:
         jobs_to_rank = get_jobs_for_rerank(conn)
         console.print(f"[dim]Scoring {len(jobs_to_rank)} jobs...[/dim]")
@@ -573,7 +293,7 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
             scores = score_job(dict(job))
             update_job_scores(conn, job["id"], scores)
 
-    # ── 5. SHORTLIST ───────────────────────────────────────────────────────
+    # ── 9. SHORTLIST ─────────────────────────────────────────────────────────
     with get_conn() as conn:
         top_jobs = get_top_unshortlisted(conn, limit=shortlist_limit)
         if top_jobs:
@@ -582,13 +302,13 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
 
     console.print(f"[green]Shortlisted {shortlisted_count} jobs[/green]")
 
-    # ── 6. RENDER ──────────────────────────────────────────────────────────
+    # ── 10. RENDER ───────────────────────────────────────────────────────────
+    elapsed = time.monotonic() - start_time
     with get_conn() as conn:
         shortlist = get_shortlist(conn, run_date, limit=shortlist_limit)
 
-    elapsed = time.monotonic() - start_time
     report_path = render_report(list(shortlist), run_date, {
-        "jobs_scraped": jobs_scraped,
+        "jobs_scraped": jobs_discovered,
         "jobs_new": jobs_new,
         "shortlisted": shortlisted_count,
         "errors": len(errors),
@@ -596,14 +316,14 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     })
     console.print(f"[bold green]Report: {report_path}[/bold green]")
 
-    # ── 7. FINALIZE ────────────────────────────────────────────────────────
+    # ── 11. FINALIZE ─────────────────────────────────────────────────────────
     with get_conn() as conn:
         update_daily_run(conn, run_date, {
             "finished_at":      datetime.now().isoformat(timespec="seconds"),
-            "jobs_scraped":     jobs_scraped,
+            "jobs_scraped":     jobs_discovered,
             "jobs_new":         jobs_new,
             "jobs_shortlisted": shortlisted_count,
-            "errors":           __import__("json").dumps(errors),
+            "errors":           json.dumps(errors[:50]),
             "status":           "complete" if not errors else "complete_with_errors",
         })
 
@@ -611,7 +331,7 @@ async def run_daily(shortlist_limit: int = 50) -> Path:
     console.rule("[bold blue]Done")
     console.print(f"[bold]Run complete in {elapsed_fmt}[/bold]")
     if errors:
-        console.print(f"[yellow]{len(errors)} scrape error(s):[/yellow]")
+        console.print(f"[yellow]{len(errors)} monitor error(s):[/yellow]")
         for e in errors[:10]:
             console.print(f"  [red]• {e}[/red]")
 
