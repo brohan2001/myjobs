@@ -11,6 +11,37 @@ BASE_DIR = Path(__file__).parent.parent
 DB_PATH = BASE_DIR / "jobs.db"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS boards (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id            INTEGER NOT NULL REFERENCES companies(id),
+    board_slug            TEXT    UNIQUE NOT NULL,
+    board_url             TEXT    NOT NULL,
+    monitor_type          TEXT    NOT NULL,
+    monitor_config        TEXT,
+    scraper_type          TEXT    NOT NULL,
+    scraper_config        TEXT,
+    is_enabled            INTEGER DEFAULT 1,
+    last_monitored_at     TEXT,
+    last_success_at       TEXT,
+    consecutive_failures  INTEGER DEFAULT 0,
+    last_error            TEXT,
+    metadata              TEXT
+);
+
+CREATE TABLE IF NOT EXISTS raw_jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id       INTEGER REFERENCES boards(id),
+    source_url     TEXT    NOT NULL UNIQUE,
+    discovered_at  TEXT    DEFAULT (datetime('now')),
+    payload        TEXT    NOT NULL,
+    payload_source TEXT    NOT NULL,
+    parsed         INTEGER DEFAULT 0,
+    parse_error    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_jobs_board_parsed ON raw_jobs(board_id, parsed);
+CREATE INDEX IF NOT EXISTS idx_boards_company ON boards(company_id);
+
 CREATE TABLE IF NOT EXISTS companies (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL UNIQUE,
@@ -37,6 +68,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     posted_at     TEXT,
     scraped_at    TEXT DEFAULT (datetime('now')),
     ats_type      TEXT,
+    salary_min_usd INTEGER,
+    salary_max_usd INTEGER,
 
     visa_signal   INTEGER DEFAULT 0,
     early_career  INTEGER DEFAULT 0,
@@ -87,6 +120,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_company_id ON jobs(company_id);
 _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN posted_at TEXT",
     "ALTER TABLE companies ADD COLUMN h1b_petitions_recent INTEGER",
+    "ALTER TABLE jobs ADD COLUMN salary_min_usd INTEGER",
+    "ALTER TABLE jobs ADD COLUMN salary_max_usd INTEGER",
 ]
 
 # ── US location detection ──────────────────────────────────────────────────────
@@ -220,13 +255,18 @@ def insert_jobs(conn: sqlite3.Connection, jobs: list[dict]) -> tuple[int, list[i
         try:
             row = dict(job)
             row.setdefault("posted_at", None)
+            row.setdefault("salary_min_usd", None)
+            row.setdefault("salary_max_usd", None)
+            row.setdefault("exp_years_max", None)
             row.pop("_company_name", None)
             conn.execute(
                 """INSERT OR IGNORE INTO jobs
                    (external_id, company_id, title, description, location, remote,
-                    url, posted_date, posted_at, ats_type)
+                    url, posted_date, posted_at, ats_type,
+                    salary_min_usd, salary_max_usd, exp_years_max)
                    VALUES (:external_id, :company_id, :title, :description,
-                           :location, :remote, :url, :posted_date, :posted_at, :ats_type)""",
+                           :location, :remote, :url, :posted_date, :posted_at, :ats_type,
+                           :salary_min_usd, :salary_max_usd, :exp_years_max)""",
                 row,
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
@@ -458,3 +498,136 @@ def get_last_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM daily_runs ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
+
+
+# ── Boards + raw_jobs helpers (Phase 3 additions) ─────────────────────────────
+
+def upsert_company_from_board(conn: sqlite3.Connection, company_slug: str, company_name: str, industry: int, tier: int) -> int:
+    """Ensure a company row exists and return its id. Used when syncing CSV→DB."""
+    conn.execute(
+        """INSERT OR IGNORE INTO companies (name, slug, ats_type, domain, industry, tier)
+           VALUES (?, ?, 'jobseek', NULL, ?, ?)""",
+        (company_name, company_slug, str(industry), tier),
+    )
+    conn.execute(
+        "UPDATE companies SET industry=?, tier=? WHERE slug=?",
+        (str(industry), tier, company_slug),
+    )
+    row = conn.execute("SELECT id FROM companies WHERE slug=?", (company_slug,)).fetchone()
+    return row["id"]
+
+
+def upsert_board(conn: sqlite3.Connection, company_id: int, board_slug: str, board_url: str,
+                 monitor_type: str, monitor_config: dict,
+                 scraper_type: str, scraper_config: dict) -> int:
+    """Insert or update a board row. Returns the board id."""
+    mc = json.dumps(monitor_config) if monitor_config else None
+    sc = json.dumps(scraper_config) if scraper_config else None
+    conn.execute(
+        """INSERT INTO boards
+               (company_id, board_slug, board_url, monitor_type, monitor_config,
+                scraper_type, scraper_config)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(board_slug) DO UPDATE SET
+               board_url=excluded.board_url,
+               monitor_type=excluded.monitor_type,
+               monitor_config=excluded.monitor_config,
+               scraper_type=excluded.scraper_type,
+               scraper_config=excluded.scraper_config""",
+        (company_id, board_slug, board_url, monitor_type, mc, scraper_type, sc),
+    )
+    row = conn.execute("SELECT id FROM boards WHERE board_slug=?", (board_slug,)).fetchone()
+    return row["id"]
+
+
+def list_enabled_boards(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return all enabled boards joined with their company name."""
+    return conn.execute(
+        """SELECT b.*, c.name as company_name, c.slug as company_slug,
+                  c.tier, c.industry
+           FROM boards b
+           JOIN companies c ON b.company_id=c.id
+           WHERE b.is_enabled=1 AND c.active=1
+           ORDER BY b.id""",
+    ).fetchall()
+
+
+def get_board(conn: sqlite3.Connection, board_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM boards WHERE id=?", (board_id,)).fetchone()
+
+
+def update_board_success(conn: sqlite3.Connection, board_id: int) -> None:
+    conn.execute(
+        """UPDATE boards SET consecutive_failures=0, last_success_at=datetime('now'),
+           last_monitored_at=datetime('now'), last_error=NULL
+           WHERE id=?""",
+        (board_id,),
+    )
+
+
+def update_board_failure(conn: sqlite3.Connection, board_id: int, error: str) -> None:
+    conn.execute(
+        """UPDATE boards SET consecutive_failures=consecutive_failures+1,
+           last_monitored_at=datetime('now'), last_error=?
+           WHERE id=?""",
+        (error[:500], board_id),
+    )
+
+
+def record_raw_job(conn: sqlite3.Connection, board_id: int, source_url: str,
+                   payload: dict, source: str) -> int | None:
+    """Insert a raw job row. Uses INSERT OR IGNORE so re-discovery is idempotent.
+
+    Returns the row id if inserted, None if already existed.
+    """
+    conn.execute(
+        """INSERT OR IGNORE INTO raw_jobs (board_id, source_url, payload, payload_source)
+           VALUES (?, ?, ?, ?)""",
+        (board_id, source_url, json.dumps(payload), source),
+    )
+    row = conn.execute("SELECT id FROM raw_jobs WHERE source_url=?", (source_url,)).fetchone()
+    return row["id"] if row else None
+
+
+def get_unscraped_url_only_raw_jobs(conn: sqlite3.Connection, limit: int = 2000) -> list[sqlite3.Row]:
+    """Return raw_jobs rows that came from URL-only monitors and need scraping."""
+    return conn.execute(
+        """SELECT r.*, b.scraper_type, b.scraper_config, b.company_id,
+                  b.board_slug, b.monitor_type
+           FROM raw_jobs r
+           JOIN boards b ON r.board_id=b.id
+           WHERE r.parsed=0 AND r.payload_source='monitor'
+             AND b.scraper_type != 'skip' AND b.scraper_type != ''
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+
+def get_unparsed_raw_jobs(conn: sqlite3.Connection, limit: int = 5000) -> list[sqlite3.Row]:
+    """Return raw_jobs rows that haven't been converted to jobs rows yet."""
+    return conn.execute(
+        """SELECT r.*, b.scraper_type, b.scraper_config, b.company_id,
+                  b.board_slug, b.monitor_type
+           FROM raw_jobs r
+           JOIN boards b ON r.board_id=b.id
+           WHERE r.parsed=0
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+
+def update_raw_job_payload(conn: sqlite3.Connection, raw_id: int,
+                           payload: dict, source: str) -> None:
+    """Replace the payload of a raw_job row after scraping."""
+    conn.execute(
+        "UPDATE raw_jobs SET payload=?, payload_source=? WHERE id=?",
+        (json.dumps(payload), source, raw_id),
+    )
+
+
+def mark_raw_parsed(conn: sqlite3.Connection, raw_id: int,
+                    jobs_row_id: int | None, error: str | None) -> None:
+    conn.execute(
+        "UPDATE raw_jobs SET parsed=1, parse_error=? WHERE id=?",
+        (error[:500] if error else None, raw_id),
+    )

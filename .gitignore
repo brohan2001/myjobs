@@ -1,5 +1,6 @@
 jobs.db
 .env
+.history/
 output/*/
 !output/.gitkeep
 .claude/

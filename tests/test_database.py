@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import src.database as db_module
@@ -8,10 +10,19 @@ from src.database import (
     get_existing_keys,
     get_shortlist,
     get_top_unshortlisted,
+    get_unparsed_raw_jobs,
+    get_unscraped_url_only_raw_jobs,
     init_db,
     insert_jobs,
+    mark_raw_parsed,
     mark_shortlisted,
+    record_raw_job,
+    update_board_failure,
+    update_board_success,
+    update_raw_job_payload,
+    upsert_board,
     upsert_company,
+    upsert_company_from_board,
 )
 
 
@@ -259,3 +270,132 @@ class TestGetShortlist:
             mark_shortlisted(conn, [jid])
             results = get_shortlist(conn, run_date="2000-01-01", limit=10)
         assert len(results) == 0
+
+
+# ── boards + raw_jobs helpers ─────────────────────────────────────────────────
+
+def _board_id(conn, company_id: int) -> int:
+    return upsert_board(
+        conn, company_id, "acme-greenhouse",
+        "https://job-boards.greenhouse.io/acme",
+        "greenhouse", {"token": "acme"}, "skip", {},
+    )
+
+
+class TestUpsertBoard:
+    def test_insert_returns_id(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+        assert isinstance(bid, int) and bid > 0
+
+    def test_idempotent_same_id(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            b1 = _board_id(conn, cid)
+            b2 = _board_id(conn, cid)
+        assert b1 == b2
+
+    def test_board_url_updated_on_conflict(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            upsert_board(conn, cid, "acme-greenhouse", "https://old.url/",
+                         "greenhouse", {}, "skip", {})
+            upsert_board(conn, cid, "acme-greenhouse", "https://new.url/",
+                         "greenhouse", {}, "skip", {})
+            row = conn.execute(
+                "SELECT board_url FROM boards WHERE board_slug='acme-greenhouse'"
+            ).fetchone()
+        assert row["board_url"] == "https://new.url/"
+
+    def test_board_success_clears_failures(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            update_board_failure(conn, bid, "timeout")
+            update_board_failure(conn, bid, "timeout")
+            update_board_success(conn, bid)
+            row = conn.execute(
+                "SELECT consecutive_failures FROM boards WHERE id=?", (bid,)
+            ).fetchone()
+        assert row["consecutive_failures"] == 0
+
+    def test_board_failure_increments(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            update_board_failure(conn, bid, "err1")
+            update_board_failure(conn, bid, "err2")
+            row = conn.execute(
+                "SELECT consecutive_failures, last_error FROM boards WHERE id=?", (bid,)
+            ).fetchone()
+        assert row["consecutive_failures"] == 2
+        assert row["last_error"] == "err2"
+
+
+class TestRecordRawJob:
+    def test_insert_returns_id(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            raw_id = record_raw_job(conn, bid, "https://example.com/jobs/1",
+                                    {"url": "https://example.com/jobs/1"}, "monitor_rich")
+        assert isinstance(raw_id, int) and raw_id > 0
+
+    def test_duplicate_url_ignored(self, tmp_db):
+        url = "https://example.com/jobs/42"
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            id1 = record_raw_job(conn, bid, url, {"url": url}, "monitor_rich")
+            id2 = record_raw_job(conn, bid, url, {"url": url}, "monitor_rich")
+        assert id1 == id2
+
+    def test_get_unparsed_returns_new_rows(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            record_raw_job(conn, bid, "https://example.com/jobs/a",
+                           {"url": "https://example.com/jobs/a", "title": "Eng"}, "monitor_rich")
+        with get_conn() as conn:
+            rows = get_unparsed_raw_jobs(conn)
+        assert len(rows) == 1
+
+    def test_mark_raw_parsed_hides_from_queue(self, tmp_db):
+        url = "https://example.com/jobs/b"
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            raw_id = record_raw_job(conn, bid, url, {"url": url}, "monitor_rich")
+            mark_raw_parsed(conn, raw_id, None, None)
+        with get_conn() as conn:
+            rows = get_unparsed_raw_jobs(conn)
+        assert len(rows) == 0
+
+    def test_url_only_in_unscraped_queue(self, tmp_db):
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            # board needs scraper (not skip)
+            bid = upsert_board(conn, cid, "acme-sitemap",
+                               "https://example.com/sitemap.xml",
+                               "sitemap", {}, "json-ld", {})
+            url = "https://example.com/jobs/x"
+            record_raw_job(conn, bid, url, {"url": url}, "monitor")
+        with get_conn() as conn:
+            rows = get_unscraped_url_only_raw_jobs(conn)
+        assert len(rows) == 1
+        assert rows[0]["source_url"] == url
+
+    def test_update_raw_job_payload(self, tmp_db):
+        url = "https://example.com/jobs/c"
+        new_payload = {"url": url, "title": "New Title", "description": "<p>Hi</p>"}
+        with get_conn() as conn:
+            cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+            bid = _board_id(conn, cid)
+            raw_id = record_raw_job(conn, bid, url, {"url": url}, "monitor")
+            update_raw_job_payload(conn, raw_id, new_payload, "scraper")
+            r = conn.execute(
+                "SELECT payload, payload_source FROM raw_jobs WHERE id=?", (raw_id,)
+            ).fetchone()
+        assert r["payload_source"] == "scraper"
+        assert json.loads(r["payload"])["title"] == "New Title"

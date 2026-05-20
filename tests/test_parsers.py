@@ -1,425 +1,361 @@
-"""Parser stability tests.
+"""Pipeline normalisation and monitor smoke tests.
 
-Each test class loads a static fixture file and runs the corresponding scraper's
-fetch_jobs() with a mocked _request to verify that the field-extraction logic
-(parsing) produces stable, correctly-typed output.
+Replaces the old per-ATS scraper parser tests. The new pipeline uses jobseek's
+monitor_one_stream → raw_jobs → normalize_to_jobs_row → jobs table flow.
 
-We test the parsing contract, not HTTP fetching — BaseScraper._request is mocked.
+These tests verify:
+  1. normalize_to_jobs_row output shape (pure unit, no network)
+  2. monitor/scraper registry sanity
+  3. raw_jobs → jobs DB integration cycle
 """
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.scrapers.base import BaseScraper
-from src.scrapers.greenhouse import GreenhouseScraper
-from src.scrapers.lever import LeverScraper
-from src.scrapers.workday import WorkdayScraper
-from src.scrapers.amazon import AmazonScraper
-from src.scrapers.google import GoogleScraper, _parse_api_job as _google_parse_api_job
-from src.scrapers.apple import AppleScraper, _parse_api_job as _apple_parse_api_job
-from src.scrapers.ashby import AshbyScraper
+import src.database as db_module
+from src.database import (
+    get_conn,
+    get_existing_keys,
+    get_unparsed_raw_jobs,
+    init_db,
+    insert_jobs,
+    mark_raw_parsed,
+    record_raw_job,
+    update_raw_job_payload,
+    upsert_board,
+    upsert_company,
+    upsert_company_from_board,
+)
+from src.normalize import normalize_to_jobs_row
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
-# Required fields and their expected types for every job dict.
-REQUIRED_FIELDS: dict[str, type | tuple[type, ...]] = {
-    "external_id": str,
-    "company_id":  int,
-    "title":       str,
-    "description": str,
-    "location":    str,
-    "url":         str,
-    "ats_type":    str,
-}
-NULLABLE_FIELDS: dict[str, type] = {
-    "posted_date": str,
-    "posted_at":   str,
-}
-
 COMPANY_ID = 42
+BOARD_ID = 1
 
 
-def _load_fixture(filename: str) -> object:
-    path = FIXTURE_DIR / filename
-    assert path.exists(), f"Fixture missing: {path}. Run: python scripts/capture_fixtures.py"
-    return json.loads(path.read_text())
+def _board(
+    company_id: int = COMPANY_ID,
+    monitor_type: str = "greenhouse",
+    board_slug: str = "acme-greenhouse",
+) -> SimpleNamespace:
+    """Minimal board-like object for normalize_to_jobs_row."""
+    return SimpleNamespace(
+        company_id=company_id,
+        monitor_type=monitor_type,
+        board_slug=board_slug,
+    )
 
 
-def _mock_response(data: object, status_code: int = 200) -> MagicMock:
-    resp = MagicMock()
-    resp.json.return_value = data
-    resp.status_code = status_code
-    resp.raise_for_status.return_value = None
-    return resp
+@pytest.fixture()
+def tmp_db(tmp_path, monkeypatch):
+    db_file = tmp_path / "test.db"
+    monkeypatch.setattr(db_module, "DB_PATH", db_file)
+    init_db()
+    return db_file
 
 
-def _assert_job_contract(jobs: list[dict], ats_type: str) -> None:
-    """Shared assertion: all required fields present with correct types."""
-    for i, job in enumerate(jobs):
-        for field, expected_type in REQUIRED_FIELDS.items():
-            assert field in job, f"job[{i}] missing required field '{field}'"
-            assert isinstance(job[field], expected_type), (
-                f"job[{i}]['{field}'] expected {expected_type.__name__}, "
-                f"got {type(job[field]).__name__}: {job[field]!r}"
-            )
-        for field, expected_type in NULLABLE_FIELDS.items():
-            assert field in job, f"job[{i}] missing nullable field '{field}'"
-            assert job[field] is None or isinstance(job[field], expected_type), (
-                f"job[{i}]['{field}'] must be str or None, "
-                f"got {type(job[field]).__name__}: {job[field]!r}"
-            )
-        assert job["ats_type"] == ats_type, (
-            f"job[{i}]['ats_type'] expected '{ats_type}', got '{job['ats_type']}'"
+@pytest.fixture()
+def db_board_id(tmp_db):
+    """Insert one company + board and return the board db id."""
+    with get_conn() as conn:
+        cid = upsert_company_from_board(conn, "acme", "Acme Corp", 1, 2)
+        bid = upsert_board(
+            conn, cid, "acme-greenhouse",
+            "https://job-boards.greenhouse.io/acme",
+            "greenhouse", {"token": "acme"}, "skip", {},
         )
-        assert job["company_id"] == COMPANY_ID
+    return bid
 
 
-# ── Greenhouse ────────────────────────────────────────────────────────────────
+# ── 1. normalize_to_jobs_row — output shape ────────────────────────────────────
 
-@pytest.mark.asyncio
-class TestGreenhouseParser:
-    COMPANY = {"name": "Anthropic", "slug": "anthropic", "ats_type": "greenhouse",
-               "domain": "anthropic.com", "industry": "tech", "tier": 1}
-    FIXTURE = "greenhouse_anthropic.json"
+class TestNormalizeShape:
+    """Verify the jobs-row dict produced by normalize_to_jobs_row."""
 
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
-
-    @pytest.fixture
-    def mock_request(self, fixture_data):
-        resp = _mock_response(fixture_data)
-        with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
-            m.return_value = resp
-            yield m
-
-    async def test_returns_list_of_dicts(self, mock_request):
-        async with GreenhouseScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert isinstance(jobs, list)
-        assert len(jobs) > 0
-
-    async def test_required_fields_present(self, mock_request, fixture_data):
-        async with GreenhouseScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        # fixture has "jobs" list; assert we parsed at least as many as the fixture has
-        assert len(jobs) == len(fixture_data.get("jobs", []))
-        _assert_job_contract(jobs, "greenhouse")
-
-    async def test_external_id_is_nonempty_string(self, mock_request):
-        async with GreenhouseScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["external_id"] != "", "external_id must not be empty"
-
-    async def test_remote_is_binary_int(self, mock_request):
-        async with GreenhouseScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["remote"] in (0, 1), f"remote must be 0 or 1, got {job['remote']!r}"
-
-    async def test_url_starts_with_http(self, mock_request):
-        async with GreenhouseScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            if job["url"]:
-                assert job["url"].startswith("http"), f"url must start with http: {job['url']!r}"
-
-
-# ── Lever ─────────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-class TestLeverParser:
-    COMPANY = {"name": "Wealthfront", "slug": "wealthfront", "ats_type": "lever",
-               "domain": "wealthfront.com", "industry": "fintech", "tier": 2}
-    FIXTURE = "lever_wealthfront.json"
-
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
-
-    @pytest.fixture
-    def mock_request(self, fixture_data):
-        # First call returns fixture (list of jobs < 50 → stops pagination naturally).
-        # Second call returns empty list as safety net.
-        resp1 = _mock_response(fixture_data)
-        resp2 = _mock_response([])
-        with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
-            m.side_effect = [resp1, resp2]
-            yield m
-
-    async def test_returns_list_of_dicts(self, mock_request):
-        async with LeverScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert isinstance(jobs, list)
-        assert len(jobs) > 0
-
-    async def test_required_fields_present(self, mock_request, fixture_data):
-        async with LeverScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert len(jobs) == len(fixture_data)
-        _assert_job_contract(jobs, "lever")
-
-    async def test_external_id_is_nonempty_string(self, mock_request):
-        async with LeverScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["external_id"] != ""
-
-    async def test_remote_is_binary_int(self, mock_request):
-        async with LeverScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["remote"] in (0, 1)
-
-    async def test_url_starts_with_http(self, mock_request):
-        async with LeverScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            if job["url"]:
-                assert job["url"].startswith("http")
-
-
-# ── Workday ───────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-class TestWorkdayParser:
-    COMPANY = {
-        "name": "Cisco", "slug": "cisco", "ats_type": "workday",
-        "workday_host": "cisco.wd5.myworkdayjobs.com",
-        "workday_slug": "Cisco", "workday_board": "Cisco",
-        "domain": "cisco.com", "industry": "tech", "tier": 1,
+    REQUIRED: dict[str, type | tuple] = {
+        "external_id": str,
+        "company_id":  int,
+        "title":       str,
+        "url":         str,
+        "ats_type":    str,
+        "remote":      int,
     }
-    FIXTURE = "workday_synthetic.json"
+    NULLABLE: dict[str, type] = {
+        "description": str,
+        "location":    str,
+        "posted_date": str,
+        "posted_at":   str,
+    }
 
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
-
-    @pytest.fixture
-    def mock_request(self, fixture_data):
-        resp1 = _mock_response(fixture_data)
-        resp2 = _mock_response({"jobPostings": [], "total": 0})
-        with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
-            m.side_effect = [resp1, resp2]
-            yield m
-
-    async def test_returns_list_of_dicts(self, mock_request):
-        async with WorkdayScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert isinstance(jobs, list)
-        assert len(jobs) > 0
-
-    async def test_required_fields_present(self, mock_request, fixture_data):
-        async with WorkdayScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert len(jobs) == len(fixture_data["jobPostings"])
-        _assert_job_contract(jobs, "workday")
-
-    async def test_description_is_empty_string(self, mock_request):
-        # Workday descriptions are enriched post-scrape; the scraper returns "".
-        async with WorkdayScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["description"] == "", (
-                "Workday scraper must return empty description (enriched later)"
+    def _assert_shape(self, row: dict) -> None:
+        for field, t in self.REQUIRED.items():
+            assert field in row, f"missing '{field}'"
+            assert isinstance(row[field], t), (
+                f"'{field}' expected {t}, got {type(row[field])}: {row[field]!r}"
+            )
+        for field, t in self.NULLABLE.items():
+            assert field in row, f"missing nullable '{field}'"
+            assert row[field] is None or isinstance(row[field], t), (
+                f"'{field}' must be str or None, got {type(row[field])}"
             )
 
-    async def test_remote_is_binary_int(self, mock_request):
-        async with WorkdayScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["remote"] in (0, 1)
+    def test_greenhouse_rich_payload(self):
+        payload = {
+            "url":         "https://job-boards.greenhouse.io/acme/jobs/12345",
+            "title":       "Software Engineer",
+            "description": "<p>Build things.</p>",
+            "locations":   ["San Francisco, CA", "Remote"],
+            "employment_type": "FULL_TIME",
+            "job_location_type": "REMOTE",
+            "date_posted": "2026-04-01",
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        self._assert_shape(row)
+        assert row["external_id"] == "12345"
+        assert row["company_id"] == COMPANY_ID
+        assert row["remote"] == 1
+        assert row["ats_type"] == "greenhouse"
 
-    async def test_url_starts_with_http(self, mock_request):
-        async with WorkdayScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["url"].startswith("http")
+    def test_location_joined_from_list(self):
+        payload = {
+            "url":      "https://example.com/jobs/7",
+            "title":    "Designer",
+            "locations": ["New York, NY", "Austin, TX"],
+        }
+        row = normalize_to_jobs_row(payload, _board(monitor_type="lever"))
+        assert row["location"] == "New York, NY; Austin, TX"
 
+    def test_remote_from_location_text(self):
+        payload = {
+            "url":       "https://example.com/jobs/8",
+            "title":     "Engineer",
+            "locations": ["Remote - United States"],
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        assert row["remote"] == 1
 
-# ── Amazon ────────────────────────────────────────────────────────────────────
+    def test_non_remote_job(self):
+        payload = {
+            "url":       "https://example.com/jobs/9",
+            "title":     "Analyst",
+            "locations": ["New York, NY"],
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        assert row["remote"] == 0
 
-@pytest.mark.asyncio
-class TestAmazonParser:
-    COMPANY = {"name": "Amazon", "slug": "amazon", "ats_type": "amazon",
-               "domain": "amazon.jobs", "industry": "tech", "tier": 1}
-    FIXTURE = "amazon_amazon.json"
+    def test_date_coercion(self):
+        payload = {
+            "url":         "https://example.com/jobs/10",
+            "title":       "PM",
+            "date_posted": "2026-03-15T00:00:00Z",
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        assert row["posted_date"] == "2026-03-15"
+        assert row["posted_at"] == "2026-03-15"
 
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
+    def test_missing_title_raises(self):
+        payload = {"url": "https://example.com/jobs/11"}
+        with pytest.raises(ValueError, match="Missing title or url"):
+            normalize_to_jobs_row(payload, _board())
 
-    @pytest.fixture
-    def mock_request(self, fixture_data):
-        # Fixture uses new Amazon API format: hits=<int total>, jobs=[...].
-        # Set hits equal to len(jobs) so offset >= total stops pagination after one page.
-        data = dict(fixture_data)
-        job_list = data.get("jobs") if isinstance(data.get("hits"), int) else data.get("hits", [])
-        n = len(job_list) if isinstance(job_list, list) else 0
-        data["hits"] = n  # make total == page size → stops after first page
-        resp = _mock_response(data)
-        with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
-            m.return_value = resp
-            yield m
+    def test_missing_url_raises(self):
+        payload = {"title": "Engineer"}
+        with pytest.raises(ValueError, match="Missing title or url"):
+            normalize_to_jobs_row(payload, _board())
 
-    async def test_returns_list_of_dicts(self, mock_request):
-        async with AmazonScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert isinstance(jobs, list)
-        assert len(jobs) > 0
+    def test_english_localisation_preferred(self):
+        payload = {
+            "url":   "https://example.com/jobs/99",
+            "title": "Ingénieur",
+            "localizations": {
+                "en": {"title": "Software Engineer", "locations": ["Paris, FR"]},
+            },
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        assert row["title"] == "Software Engineer"
 
-    async def test_required_fields_present(self, mock_request, fixture_data):
-        async with AmazonScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        _assert_job_contract(jobs, "amazon")
-
-    async def test_external_id_is_nonempty_string(self, mock_request):
-        async with AmazonScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["external_id"] != ""
-
-    async def test_remote_is_binary_int(self, mock_request):
-        async with AmazonScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["remote"] in (0, 1)
-
-    async def test_url_starts_with_http(self, mock_request):
-        async with AmazonScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["url"].startswith("http")
-
-
-# ── Google ────────────────────────────────────────────────────────────────────
-# GoogleScraper uses Playwright (no _request calls), so we test _parse_api_job directly.
-
-@pytest.mark.asyncio
-class TestGoogleParser:
-    COMPANY = {"name": "Google", "slug": "google", "ats_type": "google",
-               "domain": "google.com", "industry": "tech", "tier": 1}
-    FIXTURE = "google_synthetic.json"
-
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
-
-    @pytest.fixture
-    def parsed_jobs(self, fixture_data):
-        return [j for j in (_google_parse_api_job(r, COMPANY_ID) for r in fixture_data["jobs"]) if j]
-
-    async def test_returns_list_of_dicts(self, parsed_jobs):
-        assert isinstance(parsed_jobs, list)
-        assert len(parsed_jobs) > 0
-
-    async def test_required_fields_present(self, parsed_jobs, fixture_data):
-        assert len(parsed_jobs) == len(fixture_data["jobs"])
-        _assert_job_contract(parsed_jobs, "google")
-
-    async def test_external_id_is_nonempty_string(self, parsed_jobs):
-        for job in parsed_jobs:
-            assert job["external_id"] != ""
-
-    async def test_remote_is_binary_int(self, parsed_jobs):
-        for job in parsed_jobs:
-            assert job["remote"] in (0, 1)
-
-    async def test_url_starts_with_http(self, parsed_jobs):
-        for job in parsed_jobs:
-            assert job["url"].startswith("http")
+    def test_external_id_from_url_last_segment(self):
+        payload = {
+            "url":   "https://jobs.lever.co/acme/abc-def-1234",
+            "title": "Backend Engineer",
+        }
+        row = normalize_to_jobs_row(payload, _board(monitor_type="lever"))
+        assert row["external_id"] == "abc-def-1234"
 
 
-# ── Apple ─────────────────────────────────────────────────────────────────────
-# AppleScraper uses Playwright (no _request calls), so we test _parse_api_job directly.
+# ── 2. Monitor / scraper registry sanity ──────────────────────────────────────
 
-@pytest.mark.asyncio
-class TestAppleParser:
-    COMPANY = {"name": "Apple", "slug": "apple", "ats_type": "apple",
-               "domain": "apple.com", "industry": "tech", "tier": 1}
-    FIXTURE = "apple_synthetic.json"
+class TestMonitorRegistry:
+    def test_greenhouse_monitor_registered(self):
+        from src.core.monitors import get_discoverer
+        fn = get_discoverer("greenhouse")
+        assert fn is not None
 
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
+    def test_lever_monitor_registered(self):
+        from src.core.monitors import get_discoverer
+        assert get_discoverer("lever") is not None
 
-    @pytest.fixture
-    def parsed_jobs(self, fixture_data):
-        seen: set = set()
-        return [j for j in (_apple_parse_api_job(r, COMPANY_ID, seen) for r in fixture_data["searchResults"]) if j]
+    def test_dom_monitor_registered(self):
+        from src.core.monitors import get_discoverer
+        assert get_discoverer("dom") is not None
 
-    async def test_returns_list_of_dicts(self, parsed_jobs):
-        assert isinstance(parsed_jobs, list)
-        assert len(parsed_jobs) > 0
+    def test_skip_scraper_registered(self):
+        from src.core.scrapers import get_scraper
+        assert get_scraper("skip") is not None
 
-    async def test_required_fields_present(self, parsed_jobs, fixture_data):
-        assert len(parsed_jobs) == len(fixture_data["searchResults"])
-        _assert_job_contract(parsed_jobs, "apple")
+    def test_dom_scraper_registered(self):
+        from src.core.scrapers import get_scraper
+        assert get_scraper("dom") is not None
 
-    async def test_external_id_is_nonempty_string(self, parsed_jobs):
-        for job in parsed_jobs:
-            assert job["external_id"] != ""
+    def test_browser_detection_dom_render_true(self):
+        from src.core.monitors import monitor_needs_browser
+        assert monitor_needs_browser("dom", {"render": True}) is True
 
-    async def test_remote_is_binary_int(self, parsed_jobs):
-        for job in parsed_jobs:
-            assert job["remote"] in (0, 1)
+    def test_browser_detection_dom_render_false(self):
+        from src.core.monitors import monitor_needs_browser
+        assert monitor_needs_browser("dom", {"render": False}) is False
 
-    async def test_url_starts_with_http(self, parsed_jobs):
-        for job in parsed_jobs:
-            assert job["url"].startswith("http")
+    def test_browser_detection_greenhouse_never(self):
+        from src.core.monitors import monitor_needs_browser
+        assert monitor_needs_browser("greenhouse", {}) is False
+
+    def test_scraper_browser_detection(self):
+        from src.core.scrapers import scraper_needs_browser
+        assert scraper_needs_browser("skip") is False
 
 
-# ── Ashby ─────────────────────────────────────────────────────────────────────
+# ── 3. raw_jobs → jobs DB integration cycle ───────────────────────────────────
 
-@pytest.mark.asyncio
-class TestAshbyParser:
-    COMPANY = {"name": "Ramp", "slug": "ramp", "ats_type": "ashby",
-               "ashby_slug": "ramp", "domain": "ramp.com", "industry": "fintech", "tier": 1}
-    FIXTURE = "ashby_synthetic.json"
+class TestRawJobCycle:
+    """End-to-end test: record_raw_job → parse → insert_jobs → mark_raw_parsed."""
 
-    @pytest.fixture
-    def fixture_data(self):
-        return _load_fixture(self.FIXTURE)
+    PAYLOAD_RICH = {
+        "url":         "https://job-boards.greenhouse.io/acme/jobs/9001",
+        "title":       "Staff Engineer",
+        "description": "<p>Build distributed systems.</p>",
+        "locations":   ["Remote"],
+        "job_location_type": "REMOTE",
+        "date_posted": "2026-05-01",
+    }
 
-    @pytest.fixture
-    def mock_request(self, fixture_data):
-        resp = _mock_response(fixture_data)
-        with patch.object(BaseScraper, "_request", new_callable=AsyncMock) as m:
-            m.return_value = resp
-            yield m
+    def test_rich_monitor_job_inserted(self, tmp_db, db_board_id):
+        url = self.PAYLOAD_RICH["url"]
+        with get_conn() as conn:
+            record_raw_job(conn, db_board_id, url, self.PAYLOAD_RICH, "monitor_rich")
 
-    async def test_returns_list_of_dicts(self, mock_request):
-        async with AshbyScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        assert isinstance(jobs, list)
-        assert len(jobs) > 0
+        with get_conn() as conn:
+            raw_rows = get_unparsed_raw_jobs(conn)
+        assert len(raw_rows) == 1
 
-    async def test_required_fields_present(self, mock_request, fixture_data):
-        async with AshbyScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        postings = fixture_data["data"]["jobBoard"]["jobPostings"]
-        assert len(jobs) == len(postings)
-        _assert_job_contract(jobs, "ashby")
+        row = raw_rows[0]
+        with get_conn() as conn:
+            existing = get_existing_keys(conn)
+            payload = json.loads(row["payload"])
+            norm = normalize_to_jobs_row(payload, row)
+            assert (norm["external_id"], norm["ats_type"]) not in existing
+            inserted, ids = insert_jobs(conn, [norm])
+            assert inserted == 1
+            mark_raw_parsed(conn, row["id"], ids[0], None)
 
-    async def test_external_id_is_nonempty_string(self, mock_request):
-        async with AshbyScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["external_id"] != ""
+        with get_conn() as conn:
+            unparsed = get_unparsed_raw_jobs(conn)
+        assert len(unparsed) == 0
 
-    async def test_remote_is_binary_int(self, mock_request):
-        async with AshbyScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["remote"] in (0, 1)
+        with get_conn() as conn:
+            job = conn.execute("SELECT * FROM jobs WHERE id=?", (ids[0],)).fetchone()
+        assert job["title"] == "Staff Engineer"
+        assert job["remote"] == 1
+        assert job["ats_type"] == "greenhouse"
 
-    async def test_url_starts_with_http(self, mock_request):
-        async with AshbyScraper() as scraper:
-            jobs = await scraper.fetch_jobs(self.COMPANY, COMPANY_ID)
-        for job in jobs:
-            assert job["url"].startswith("http")
+    def test_duplicate_url_not_double_inserted(self, tmp_db, db_board_id):
+        url = self.PAYLOAD_RICH["url"]
+        with get_conn() as conn:
+            record_raw_job(conn, db_board_id, url, self.PAYLOAD_RICH, "monitor_rich")
+            record_raw_job(conn, db_board_id, url, self.PAYLOAD_RICH, "monitor_rich")  # duplicate
+            rows = conn.execute("SELECT COUNT(*) FROM raw_jobs").fetchone()[0]
+        assert rows == 1
+
+    def test_url_only_flow_updates_payload(self, tmp_db, db_board_id):
+        url = "https://example.com/careers/dev-12"
+        stub = {"url": url}
+        scraped = {
+            "url":   url,
+            "title": "Frontend Engineer",
+            "description": "<p>Build UIs.</p>",
+            "locations": ["Austin, TX"],
+        }
+        with get_conn() as conn:
+            record_raw_job(conn, db_board_id, url, stub, "monitor")
+            raw_id = conn.execute("SELECT id FROM raw_jobs WHERE source_url=?", (url,)).fetchone()["id"]
+
+        with get_conn() as conn:
+            update_raw_job_payload(conn, raw_id, scraped, "scraper")
+
+        with get_conn() as conn:
+            r = conn.execute("SELECT payload, payload_source FROM raw_jobs WHERE id=?", (raw_id,)).fetchone()
+        assert r["payload_source"] == "scraper"
+        assert json.loads(r["payload"])["title"] == "Frontend Engineer"
+
+    def test_parse_error_marks_row_done(self, tmp_db, db_board_id):
+        url = "https://example.com/jobs/bad-job"
+        with get_conn() as conn:
+            record_raw_job(conn, db_board_id, url, {"url": url}, "monitor_rich")
+            raw_id = conn.execute("SELECT id FROM raw_jobs WHERE source_url=?", (url,)).fetchone()["id"]
+            mark_raw_parsed(conn, raw_id, None, "Missing title or url")
+
+        with get_conn() as conn:
+            r = conn.execute("SELECT parsed, parse_error FROM raw_jobs WHERE id=?", (raw_id,)).fetchone()
+        assert r["parsed"] == 1
+        assert "Missing title" in r["parse_error"]
+
+    def test_salary_structured_stored(self, tmp_db, db_board_id):
+        payload = {
+            "url":         "https://example.com/jobs/sal1",
+            "title":       "Staff Engineer",
+            "description": "<p>Build things.</p>",
+            "base_salary": {"currency": "USD", "min": 140000, "max": 220000, "unit": "year"},
+        }
+        with get_conn() as conn:
+            record_raw_job(conn, db_board_id, payload["url"], payload, "monitor_rich")
+        with get_conn() as conn:
+            raw_rows = get_unparsed_raw_jobs(conn)
+            row = raw_rows[0]
+            payload = json.loads(row["payload"])
+            norm = normalize_to_jobs_row(payload, row)
+            assert norm["salary_min_usd"] == 140000
+            assert norm["salary_max_usd"] == 220000
+            inserted, ids = insert_jobs(conn, [norm])
+            mark_raw_parsed(conn, row["id"], ids[0] if ids else None, None)
+        with get_conn() as conn:
+            j = conn.execute("SELECT salary_min_usd, salary_max_usd FROM jobs WHERE id=?", (ids[0],)).fetchone()
+        assert j["salary_min_usd"] == 140000
+        assert j["salary_max_usd"] == 220000
+
+    def test_experience_extraction_stored(self, tmp_db, db_board_id):
+        payload = {
+            "url":         "https://example.com/jobs/exp1",
+            "title":       "Senior Backend Engineer",
+            "description": "<p>We require 5+ years of engineering experience.</p>",
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        assert row["exp_years_max"] == 5
+
+    def test_greenhouse_fixture_normalizes(self, tmp_db, db_board_id):
+        """Round-trip test using the real Greenhouse API fixture."""
+        fixture = json.loads((FIXTURE_DIR / "greenhouse_anthropic.json").read_text())
+        first_raw_job = fixture["jobs"][0]
+        payload = {
+            "url":         first_raw_job["absolute_url"],
+            "title":       first_raw_job["title"],
+            "description": first_raw_job.get("content"),
+            "locations":   [first_raw_job["location"]["name"]] if first_raw_job.get("location") else [],
+        }
+        row = normalize_to_jobs_row(payload, _board())
+        assert row["title"] == first_raw_job["title"]
+        assert row["url"] == first_raw_job["absolute_url"]
+        assert isinstance(row["external_id"], str) and row["external_id"]
