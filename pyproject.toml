@@ -25,6 +25,14 @@ dependencies = [
     "fast-langdetect>=0.3",
     "pypdf>=6.10.2",
     "jmespath>=1.0",
+    # jobseek pipeline stack
+    "asyncpg>=0.29",
+    "redis[asyncio]>=5.0",
+    "pydantic-settings>=2.0",
+    "alembic>=1.13",
+    "psycopg2-binary>=2.9",
+    "prometheus-client>=0.20",
+    "polars>=1.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -32,7 +40,8 @@ where = ["."]
 include = ["src*"]
 
 [project.scripts]
-myjobs = "src.cli:app"
+myjobs = "src.cli:myjobs_main"
+crawler = "src.cli:crawler_main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

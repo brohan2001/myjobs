@@ -19,7 +19,7 @@ from typing import Any
 import anthropic
 from bs4 import BeautifulSoup
 
-from src.config import ANTHROPIC_API_KEY, RESUME_MAP, SKILL_GROUPS
+from src.scoring_config import ANTHROPIC_API_KEY, RESUME_MAP, SKILL_GROUPS
 
 _PROFILE = """\
 Name: the candidate
@@ -151,7 +151,7 @@ async def _generate_one(
         "job_id": job.get("id"),
         "company_name": job.get("company_name", ""),
         "title": job.get("title", ""),
-        "url": job.get("url", ""),
+        "url": job.get("source_url") or job.get("url", ""),
         "total_score": job.get("total_score", 0),
         "role_category": role,
         "location": job.get("location", ""),
