@@ -1,113 +1,57 @@
+"""Crawler settings — pydantic-settings based configuration.
+
+All settings are read from environment variables (and .env / .env.local files).
+Scoring/keyword constants live in src/scoring_config.py so they don't conflict
+with this Settings class.
+"""
+
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / "data"
-OUTPUT_DIR = BASE_DIR / "output"
-RESUME_DIR = BASE_DIR / "Resume"
-
-SKILL_GROUPS: dict[str, tuple[float, list[str]]] = {
-    "languages": (1.0, [
-        "python", "java", "javascript", "typescript", "golang", "go",
-        "c++", "swift", "scala", "ruby", "rust", "bash", "shell", "kotlin",
-    ]),
-    "frameworks": (1.2, [
-        "react", "node.js", "nodejs", "django", "flask", "express",
-        "next.js", "nextjs", "fastapi", "spring", "rails", "flutter",
-        "graphql", "rest api", "grpc", "vue", "angular",
-    ]),
-    "cloud": (1.1, [
-        "aws", "gcp", "azure", "lambda", "ecs", "eks", "sqs", "sns",
-        "kubernetes", "k8s", "docker", "terraform", "ansible",
-        "ci/cd", "jenkins", "github actions", "cloudformation",
-    ]),
-    "ml": (1.3, [
-        "pytorch", "tensorflow", "scikit-learn", "hugging face", "transformers",
-        "llm", "nlp", "opencv", "pandas", "numpy", "spark", "mlflow",
-        "wandb", "langchain", "rag", "fine-tuning",
-    ]),
-    "databases": (0.9, [
-        "postgresql", "postgres", "mongodb", "mysql", "redis", "firebase",
-        "elasticsearch", "cassandra", "dynamodb", "sqlite", "bigquery",
-    ]),
-    "tools": (0.8, [
-        "git", "kafka", "airflow", "grafana", "prometheus",
-        "linux", "unix", "jira", "agile", "scrum", "datadog",
-    ]),
-}
-
-ROLE_PRIORITY: dict[str, float] = {
-    "backend":  1.00,
-    "cloud":    0.90,
-    "fullstack": 0.85,
-    "frontend": 0.75,
-    "mobile":   0.70,
-    "network":  0.65,
-    "ds":       0.55,
-    "ml":       0.50,
-    "other":    0.20,
-}
-
-SCORE_WEIGHTS = {
-    "skill":   35,
-    "role":    25,
-    "visa":    20,
-    "recency": 10,
-    "company": 10,
-}
-
-TIER_SCORES = {1: 1.0, 2: 0.65, 3: 0.35}
-INDUSTRY_BONUS = {"fintech": 0.10, "tech": 0.05, "enterprise": 0.0}
-
-RECENCY_BREAKPOINTS = [
-    (0,  1.00),
-    (1,  0.90),
-    (3,  0.80),
-    (7,  0.60),
-    (14, 0.35),
-    (30, 0.15),
-]
-
-RESUME_MAP = {
-    "backend":  RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "frontend": RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "fullstack": RESUME_DIR / os.getenv("RESUME_SWE",    "resume_SWE.pdf"),
-    "mobile":   RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "cloud":    RESUME_DIR / os.getenv("RESUME_CLOUD",   "resume_Cloud.pdf"),
-    "network":  RESUME_DIR / os.getenv("RESUME_NETWORK", "resume_Network.pdf"),
-    "ds":       RESUME_DIR / os.getenv("RESUME_DS",      "resume_DS.pdf"),
-    "ml":       RESUME_DIR / os.getenv("RESUME_ML",      "resume_ML_Publication.pdf"),
-    "other":    RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-}
-
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def load_companies() -> list[dict]:
-    with open(DATA_DIR / "companies.json") as f:
-        return [c for c in json.load(f) if c.get("enabled", True)]
+class Settings(BaseSettings):
+    local_database_url: str = "postgresql://crawler:crawler@localhost:5432/crawler"
+
+    # Proxy provider — applies to hosts with ``"proxy": true`` in
+    # ``monitor_config`` / ``scraper_config`` (``data/boards.csv``).
+    proxy_provider: str = "none"  # none | webshare | decodo
+    webshare_proxy_url: str = ""
+    decodo_proxy_url: str = ""
+
+    # SSRF guard
+    internal_hosts_allow: str = ""
+
+    # Redis (local instance)
+    redis_url: str = "redis://localhost:6379/0"
+    redis_max_connections: int = 60
+    throttle_delay_default: float = 2.0
+    throttle_delay_ats: float = 0.5
+
+    # Inflight lease + reaper
+    inflight_lease_ttl_seconds: int = 600
+    inflight_heartbeat_interval_seconds: int = 120
+    reaper_interval_seconds: int = 30
+    reaper_batch_size: int = 200
+    reaper_max_strikes: int = 5
+
+    # Graceful drain on SIGTERM/SIGINT
+    shutdown_grace_seconds: int = 30
+
+    log_level: str = "INFO"
+    worker_id_prefix: str = ""
+    crawler_db_pool_max: int = 10
+    metrics_port: int = 9091
+
+    # Pipeline concurrency (per-instance)
+    discovery_concurrency: int = 20
+    monitor_concurrency: int = 5
+    raw_buffer_size: int = 10
+    done_buffer_size: int = 10
+    writeback_concurrency: int = 5
+    cpu_threads: int = 1
+
+    model_config = SettingsConfigDict(env_file=(".env", ".env.local"), extra="ignore")
 
 
-def load_visa_keywords() -> dict[str, list[str]]:
-    with open(DATA_DIR / "visa_keywords.json") as f:
-        return json.load(f)
-
-
-def load_role_keywords() -> dict[str, list[str]]:
-    with open(DATA_DIR / "role_keywords.json") as f:
-        return json.load(f)
-
-
-def load_h1b_sponsors() -> dict:
-    h1b_path = DATA_DIR / "h1b_sponsors.json"
-    if not h1b_path.exists():
-        return {}
-    with open(h1b_path) as f:
-        return json.load(f)
+settings = Settings()

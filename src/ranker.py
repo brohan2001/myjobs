@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from src.config import (
+from src.scoring_config import (
     INDUSTRY_BONUS,
     RECENCY_BREAKPOINTS,
     ROLE_PRIORITY,
@@ -29,8 +29,8 @@ _SENIOR_TITLE_RE = re.compile(
 )
 
 
-def classify_role(title: str, description: str) -> str:
-    title_lower = title.lower()
+def classify_role(title: str | None, description: str) -> str:
+    title_lower = (title or "").lower()
     desc_lower = (description or "")[:800].lower()
 
     # Role priority: more specific roles first (ml/ds/network/cloud/mobile/frontend/backend),
@@ -64,8 +64,8 @@ def detect_visa_signal(description: str) -> int:
     return 0
 
 
-def detect_early_career(title: str, description: str) -> int:
-    text = (title + " " + (description or "")[:1000]).lower()
+def detect_early_career(title: str | None, description: str) -> int:
+    text = ((title or "") + " " + (description or "")[:1000]).lower()
     return 1 if _EXP_EARLY_RE.search(text) else 0
 
 
@@ -107,11 +107,14 @@ def visa_score(visa_signal: int) -> float:
     return 0.4
 
 
-def recency_score(posted_date: str | None) -> float:
+def recency_score(posted_date) -> float:
     if not posted_date:
         return 0.3
     try:
-        d = date.fromisoformat(posted_date[:10])
+        if isinstance(posted_date, date):
+            d = posted_date
+        else:
+            d = date.fromisoformat(str(posted_date)[:10])
     except ValueError:
         return 0.3
     days_old = (date.today() - d).days
@@ -127,8 +130,8 @@ def company_score(tier: int, industry: str) -> float:
     return min(1.0, base + bonus)
 
 
-def is_senior_role(title: str, description: str, exp_years_max: int | None) -> bool:
-    if _SENIOR_TITLE_RE.search(title):
+def is_senior_role(title: str | None, description: str, exp_years_max: int | None) -> bool:
+    if _SENIOR_TITLE_RE.search(title or ""):
         return True
     if exp_years_max is not None and exp_years_max >= 3:
         if not _EXP_EARLY_RE.search(description or ""):
@@ -189,6 +192,94 @@ def parse_signals(job: dict) -> dict:
         "role_category": classify_role(title, desc),
         "exp_years_max": exp_years,
     }
+
+
+_FETCH_JOBS_FOR_SCORING = """
+SELECT jp.id,
+       jp.titles[1]             AS title,
+       jp.first_seen_at::date   AS posted_date,
+       jp.experience_max        AS exp_years_max,
+       c.tier,
+       d.html                   AS description
+FROM job_posting jp
+JOIN company c ON c.id = jp.company_id
+LEFT JOIN descriptions d ON d.posting_id = jp.id
+WHERE jp.is_active = true
+  AND jp.status NOT IN ('applied', 'skipped')
+ORDER BY jp.id
+"""
+
+_UPDATE_SCORES = """
+UPDATE job_posting SET
+    visa_signal   = $2,
+    early_career  = $3,
+    role_category = $4,
+    skill_score   = $5,
+    role_score    = $6,
+    visa_score    = $7,
+    recency_score = $8,
+    company_score = $9,
+    total_score   = $10
+WHERE id = $1
+"""
+
+_MARK_SHORTLISTED = """
+UPDATE job_posting SET status = 'shortlisted'
+WHERE id = ANY($1::uuid[])
+"""
+
+_RESET_SHORTLISTED = """
+UPDATE job_posting SET status = 'new'
+WHERE status = 'shortlisted'
+  AND is_active = true
+"""
+
+
+async def run_scoring(pool, shortlist_top: int = 50) -> int:
+    """Score all active postings, shortlist top-N. Returns count shortlisted."""
+    from bs4 import BeautifulSoup
+
+    def _strip_html(html: str | None) -> str:
+        if not html:
+            return ""
+        return BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(_FETCH_JOBS_FOR_SCORING)
+
+    score_updates: list[tuple] = []
+    job_scores: list[tuple[float, str]] = []
+
+    for row in rows:
+        job = dict(row)
+        job["description"] = _strip_html(job.get("description"))
+        signals = parse_signals(job)
+        job.update(signals)
+        scores = score_job(job)
+        score_updates.append((
+            job["id"],
+            signals["visa_signal"],
+            signals["early_career"],
+            signals["role_category"],
+            scores["skill_score"],
+            scores["role_score"],
+            scores["visa_score"],
+            scores["recency_score"],
+            scores["company_score"],
+            scores["total_score"],
+        ))
+        if signals["visa_signal"] != -1:
+            job_scores.append((scores["total_score"], str(job["id"])))
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.executemany(_UPDATE_SCORES, score_updates)
+            await conn.execute(_RESET_SHORTLISTED)
+            top_ids = [jid for _, jid in sorted(job_scores, reverse=True)[:shortlist_top]]
+            if top_ids:
+                await conn.execute(_MARK_SHORTLISTED, top_ids)
+
+    return len(top_ids) if top_ids else 0
 
 
 def matched_skills(description: str) -> tuple[list[str], list[str]]:

@@ -1,0 +1,2379 @@
+"""ws help — on-demand reference docs for monitors, scrapers, and config."""
+
+from __future__ import annotations
+
+import click
+
+# ── Topic text constants ─────────────────────────────────────────────────
+
+INDEX = """\
+Usage: ws help <topic>
+
+Available topics:
+  board             Board command quick reference (add/use/del/patterns)
+  monitors          Monitor type overview + decision tree
+  scrapers          Scraper type overview + field importance
+  monitor <type>    Per-type reference (join, greenhouse, lever, rss, sitemap, dom, ...)
+  scraper <type>    Per-type reference (json-ld, nextdata, embedded, dom, api_sniffer)
+  fields            Job data fields — types, formats, importance
+  steps             DOM scraper step key reference
+  actions           Browser action pipeline
+  feedback          Feedback command — verdicts, per-field quality, examples
+  artifacts         Debug artifacts saved by ws commands
+  troubleshooting   Troubleshooting tips + case study reference
+  industries        Industry IDs for company enrichment
+  occupations       Occupation taxonomy — slugs, display names, alias counts
+  seniority         Seniority levels — slugs, display names, alias counts
+
+Commands:
+  ws probe monitor   Probe all monitor types for active board
+  ws probe scraper   Probe all scraper types against sample URLs
+
+Troubleshooting & case studies:
+  ws task troubleshoot <query>       Search the knowledge base
+  ws task troubleshoot --view <file> View full KB entry (useful for case studies)
+  ws task casestudy --company ...    Record a case study from a complex setup"""
+
+BOARD = """\
+Board Command Reference:
+
+  Identifiers:
+    alias       Short board name used by ws commands (e.g. careers, careers-gh)
+    board_slug  Full slug stored in CSV/workspace (e.g. stripe-careers-gh)
+
+  Most ws commands expect alias. If you pass board_slug, ws will try to
+  resolve it back to alias automatically.
+
+  Add:
+    ws add board <alias> --url "<board-url>"
+    ws add board careers-gh --url "https://job-boards.eu.greenhouse.io/acme"
+
+  Use:
+    ws use --board <alias-or-board_slug>
+    ws use <company> <alias-or-board_slug>
+
+  Remove:
+    ws del board <alias-or-board_slug>
+    ws del <company> board <alias-or-board_slug>
+
+  Job-link pattern:
+    ws set --board <alias-or-board_slug> --job-link-pattern "<regex>"
+
+  Tips:
+    - Single board alias: careers
+    - Multi-board aliases: careers-us, careers-de, careers-gh
+    - Prefer real listings board URLs over marketing landing pages
+    - If setting job-link-pattern manually, start broad and include URL variants
+      (numeric suffixes, query params), then tighten only after count checks
+"""
+
+MONITORS = """\
+Monitor Types (cheapest first):
+
+  Type              Cost    Returns           Scraper needed?
+  ──────────────────────────────────────────────────────────────
+  eightfold         8       Hybrid rich+URL   eightfold enrich (description only)
+  join              9       Job URLs          Auto-configured
+  almacareer        10      Full job data     No (skipped)
+  ashby             10      Full job data     No (skipped)
+  bite              10      Job URLs          Auto-configured
+  breezy            10      Job URLs          Auto-configured
+  deel              10      Full job data     No (skipped)
+  dvinci            10      Full job data     No (skipped)
+  gem               10      Full job data     No (skipped)
+  greenhouse        10      Full job data     No (skipped)
+  hireology         10      Full job data     No (skipped)
+  lever             10      Full job data     No (skipped)
+  pinpoint          10      Full job data     No (skipped)
+  recruitee         10      Full job data     No (skipped)
+  rippling          10      Job URLs          Auto-configured
+  rss               10      Full job data     No (skipped)
+  smartrecruiters   10      Job URLs          Auto-configured
+  softgarden        10      Job URLs          Auto-configured
+  traffit           10      Full job data     No (skipped)
+  workable          10      Job URLs          Auto-configured
+  workday           10      Job URLs          Auto-configured
+  personio          10      Full/partial      If descriptions missing (fallback)
+  notion            15      Job URLs          Auto-configured
+  recruiter_co_kr   15      Full job data     No (skipped)
+  umantis           15      URL set           Yes
+  nextdata          20      URLs or full      If URL-only
+  sitemap           50      URL set           Yes
+  api_sniffer       80      URLs or full      If URL-only (no fields)
+  dom               100     URL set           Yes
+
+Interpretation guide (after ws probe monitor):
+  1. Rich monitor detected (join/greenhouse/lever/rss/etc):
+     strong signal, but validate sample content and coverage.
+  2. nextdata / api_sniffer detected:
+     inspect mapped fields before accepting.
+  3. URL-only monitors (sitemap/umantis/dom):
+     compare discovered count with visible listings and validate filters.
+  4. Nothing detected:
+     gather more evidence (rendered probe/deep probe) before deciding.
+
+Config-first policy:
+  Before switching monitor type, iterate config on the current plausible type:
+  ws help monitor <type>  →  ws select monitor <type> --as <name> --config '{...}'  → ws run monitor
+
+Evidence note:
+  Probe suggestions are hypotheses. Prefer directly referenced site evidence
+  over blind slug guesses when they conflict.
+
+All monitors support url_filter to include/exclude URLs by regex:
+  "url_filter": "/jobs/"                          Include only
+  "url_filter": {"include": "/jobs/", "exclude": "/blog/"}
+
+All monitors support url_transform to rewrite discovered URLs:
+  "url_transform": {"find": "/profile/job_details/", "replace": "/jobs/"}
+  Uses regex find/replace. Applied after url_filter.
+
+Regex safety:
+  Start broad, then tighten after validating count against the site.
+  Include common URL variants (numeric suffixes, trailing slash, query params).
+
+  ws probe monitor                  Run monitor probe
+  ws help monitor <type>            Detailed config reference
+  ws help scrapers                  Scraper overview"""
+
+SCRAPERS = """\
+Scraper Types:
+
+  Type           Fetch       Config needed?   Best for
+  ───────────────────────────────────────────────────────────
+  json-ld        Static/PW   No (optional render)  Sites with schema.org/JobPosting
+  nextdata       Static/PW   Yes (fields)     Next.js sites with __NEXT_DATA__
+  embedded       Static/PW   Yes (fields)     JS-embedded JSON (script tags, variables)
+  pdf            Static      No               PDF job descriptions
+  dom            Static/PW   Yes (steps)      Custom HTML structure
+  api_sniffer    HTTP/PW     Optional (fields)  SPA/XHR or direct API
+  workable       API         No               Workable job pages (auto-configured)
+  workday        API         No               Workday job pages (auto-configured)
+
+  Many monitors auto-configure the scraper — ws select monitor will tell you
+  if the scraper step is skipped. You only reach this step when manual
+  selection is needed.
+
+  api_sniffer scraper is auto-probed via Playwright in ws probe scraper.
+
+  Probe first: ws probe scraper tries all types automatically against
+  sample URLs. Heuristic configs are starting evidence, not final truth.
+  Confirm with extracted sample content.
+
+  Try json-ld first — many sites embed JobPosting structured data for SEO.
+  If json-ld returns empty fields, check page source for embedded JSON data
+  (script tags, JS variables) → try embedded scraper. Fall back to dom last.
+
+Config-first policy:
+  Before switching scraper type, iterate config on the current plausible type:
+  ws help scraper <type>  →  ws select scraper <type> --config '{...}'  → ws run scraper
+
+Field importance:
+  Required     title — every job must have a title
+  Required     description — HTML fragment, needed for display
+  Important    locations — most jobs have at least one
+  Important    job_location_type — "remote", "hybrid", "onsite"
+  Optional     employment_type, date_posted, base_salary, skills,
+               qualifications, responsibilities, valid_through
+  Auto         language — ISO 639-1, auto-detected or monitor-provided
+
+  Titles and descriptions should reach full coverage before submit.
+  Missing locations acceptable only if job_location_type is set (remote-only).
+  See: ws help fields                  Full field reference
+
+  ws probe scraper                  Run scraper probe
+  ws help scraper <type>            Detailed config reference
+  ws help steps                     DOM scraper step format"""
+
+MONITOR_AMAZON = """\
+amazon — Amazon Jobs API
+
+  API:      GET https://www.amazon.jobs/en/search.json?result_limit=100&offset=N
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            date_posted, base_salary)
+            metadata: id_icims, job_category, job_family, business_category,
+            company_name
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs (API caps at 10k per query; auto-partitions by country)
+
+  Config:
+    {}                                         All jobs worldwide
+    {"country": "DEU"}                         Single country (ISO 3166-1 alpha-3)
+    {"category": "software-development"}       Single job category
+    {"business_category": "amazon-web-services"}  Single team/division
+
+  Notes:
+    - Max 100 results per page, max 10,000 per query (offset >= 10000 errors)
+    - When total exceeds 10k, the monitor partitions by country code
+    - Country codes: ISO 3166-1 alpha-3 (USA, DEU, GBR, IND, JPN, etc.)
+    - No date-range filter available; sort=recent orders by creation date
+    - Job URL constructed from job_path field in API response"""
+
+MONITOR_ACCENTURE = """\
+accenture — Accenture Career API (dedicated monitor)
+
+  API:      POST /api/accenture/elastic/findjobs (multipart form data)
+            POST /api/accenture/jobsearch/result (FR/BR variant)
+  Returns:  Full job data (title, HTML description, locations,
+            job_location_type, date_posted)
+            metadata: businessArea, careerLevel, guid
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 per query; auto-partitions by businessArea then careerLevel
+
+  Config:
+    {"country": "India", "language": "en", "site": "in-en"}
+    {"country": "France", "language": "fr", "site": "fr-fr",
+     "endpoint": "jobsearch/result"}
+
+  Notes:
+    - Launches browser once to get cookies, then uses httpx for speed
+    - Page size 500, pagination ceiling 50k (startIndex >= 50000 returns empty)
+    - totalHits caps at 10k cosmetically; pagination works up to 50k
+    - FR/BR use jobsearch/result endpoint (captured via route interception)
+    - When 50k ceiling is hit, partitions by businessArea (discovered from data)
+    - If a single area also exceeds 50k, sub-partitions by careerLevel"""
+
+MONITOR_BITE = """\
+bite — BITE GmbH ATS (Job Search API, widget key auth)
+
+  Search: POST https://jobs.b-ite.com/api/v1/postings/search
+  Returns:  Job URLs only (https://{domain}/jobposting/{hash})
+  Scraper:  Auto-configured (bite) — fetches details on daily scrape schedule
+  Cap:      50,000 jobs
+  Note:     Requires a 40-char hex "Job Listing Key" embedded in widget JS.
+            Key is extracted from listing JS at cs-assets.b-ite.com.
+            6,500+ customers in DACH. Pitchman portals (multi-employer
+            aggregators like jobs.drk.de) are NOT handled — out of scope.
+
+  Config:
+    {"key": "9d6d3e33a4d7cc7c319d0ccb38cf695f6c3c4172"}
+    {"key": "...", "locale": "en", "channel": 0}
+
+    key       40-char hex API key. Auto-filled by ws probe from:
+              1. Page HTML scan for data-bite-jobs-api-listing widget attribute
+              2. Listing JS fetch from cs-assets.b-ite.com/{customer}/jobs-api/
+              3. Key extraction from createClient({key: ...}) pattern
+    locale    API locale for job content (default: "de") — passed to scraper
+    channel   API channel parameter (default: 0)
+
+  Detection:  ws probe shows "BITE API — customer: X, N jobs"
+  Zero jobs?  Verify key — the listing JS may have changed format"""
+
+MONITOR_DEEL = """\
+deel — Deel ATS Job Board API
+
+  API:      Settings: GET /deelapi/guest/ats/organizations/{slug}/career_page_settings
+            Postings: GET /deelapi/guest/ats/organizations/{org_id}/
+                      job_boards/{board_id}/job_postings
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            date_posted, base_salary)
+            metadata: team, department, id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+
+  Config:
+    {"slug": "klarna"}
+
+    slug       Company URL slug on jobs.deel.com. Auto-filled by ws probe from
+               the board URL (jobs.deel.com/{slug}).
+    org_id     Organization UUID. Auto-resolved from career_page_settings.
+    board_id   Job board UUID. Auto-resolved from career_page_settings.
+
+  Detection:  ws probe shows "Deel API — slug: X, N jobs"
+  Zero jobs?  Verify slug — try visiting jobs.deel.com/{slug} in a browser"""
+
+MONITOR_DVINCI = """\
+dvinci — d.vinci ATS (Public JSON API, no auth)
+
+  API:      GET https://{slug}.dvinci-hr.com/jobPublication/list.json
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            date_posted, base_salary)
+            metadata: contract_period, reference, categories, department
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     API is fully public — no authentication required.
+            Primarily DACH region (Germany, Austria, Switzerland).
+
+  Config:
+    {"slug": "at-careers"}
+
+    slug     Customer subdomain. Auto-filled by ws probe from:
+             1. Direct URL ({slug}.dvinci-hr.com)
+             2. Page HTML scan for d.vinci markers (dvinciVersion meta,
+                ng-app="dvinci.apps.Dvinci", DvinciData variable)
+             No blind slug probe — subdomains are custom names.
+
+  Detection:  ws probe shows "d.vinci API — slug: X, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser"""
+
+MONITOR_BREEZY = """\
+breezy — Breezy HR Public Listing Endpoint
+
+  Listing:  GET https://{portal}/json
+  Returns:  Job detail URLs (built from listing JSON)
+  Scraper:  Auto-configured (json-ld) — extracts JSON-LD JobPosting from detail pages
+  Cap:      50,000 jobs
+  Note:     Single HTTP call to listing endpoint.
+            Detail URLs built as https://{portal}/p/{friendly_id}.
+
+  Config:
+    {"portal_url": "https://acme.breezy.hr"}
+    {"slug": "acme"}  # shorthand for https://{slug}.breezy.hr
+
+    portal_url  Optional explicit Breezy portal URL/origin.
+                Useful for custom domain pages embedding a Breezy board.
+                Auto-filled by ws probe when detected.
+    slug        Optional Breezy slug shorthand.
+
+  Detection:  ws probe shows "Breezy — https://{portal}, N jobs"
+  Zero jobs?  Valid board with no open postings still returns 0 jobs.
+  False positives:  Redirects to marketing.breezy.hr are rejected unless
+                    /json validates as a real listing endpoint."""
+
+MONITOR_EIGHTFOLD = """\
+eightfold — Eightfold AI Careers Portal (hybrid sitemap + PCSX)
+
+  Sources:  Sitemap (URL authority) + PCSX API (rich data, incremental)
+  Returns:  Sitemap URL set + partial rich data (title, locations, date_posted,
+            job_location_type, department, ats_job_id) for new/updated jobs
+  Scraper:  json-ld in "enrich" mode to fill description only
+            (PCSX doesn't return descriptions)
+  Cost:     8 — cheapest monitor type
+
+  How it works:
+    1. Fetch the sitemap (canonical URL set — drives gone detection)
+    2. Probe PCSX API availability (cached in board metadata after first run)
+    3. If PCSX enabled: paginate newest-first via postedTs DESC, stopping
+       early when all items on a page are older than the stored watermark
+       (high-water mark). First run + weekly interval = full pagination.
+    4. Correlate PCSX positions to sitemap URLs by numeric job id
+    5. Emit partial rich data (keyed on canonical sitemap URL) + the full
+       sitemap URL set so gone detection continues to work
+
+  PCSX-disabled tenants (403 "PCSX is not enabled"): fall back to sitemap-only
+  mode automatically — same behaviour as the pre-hybrid monitor. Known
+  disabled tenants: bayer, american-express, hsbc, stmicroelectronics,
+  symetra, vale, zebra.
+
+  Eightfold AI powers careers portals for 170+ enterprises including
+  Starbucks, HSBC, Microsoft, Kering, Citigroup, Micron, etc.
+
+  Config (monitor_config):
+    {"url_filter": "/careers/job/"}               Filter non-job URLs (recommended)
+    {"sitemap_url": "https://custom.com/sitemap.xml"}  Override auto-derived URL
+    {"pcsx_watermark": {"auto_full_crawl": false}}     Await manual backfill
+                                                        (used for very large boards
+                                                        like Starbucks — see below)
+
+  Config (scraper_config):
+    {"enrich": ["description"]}                   REQUIRED for PCSX-enabled tenants
+                                                   so json-ld fills in descriptions
+                                                   (PCSX doesn't return them).
+                                                   Optional for PCSX-disabled
+                                                   tenants (no effect if PCSX is
+                                                   skipped).
+
+  Watermark state (runtime-written in ``metadata.pcsx_watermark``):
+    max_ts               Highest postedTs seen — drives incremental stop
+    last_full_at         Last full crawl time (for 7-day refresh cadence)
+    last_incremental_at  Last successful incremental run
+    enabled              Cached probe result (true/false)
+    auto_full_crawl      If false, skip automatic full crawl on first run
+    extra                Host + domain (derived from sitemap URLs)
+
+  Manual backfill for large boards (Starbucks-scale):
+    Board CSVs with ``monitor_config.pcsx_watermark.auto_full_crawl: false``
+    skip the initial full crawl in scheduled runs. Operator triggers it
+    manually with:
+
+        uv run crawler board <slug> --pcsx-full-crawl
+
+    This bypasses the watermark and does a full PCSX pagination (can take
+    30-60 minutes for very large boards). On success the watermark is
+    populated and subsequent scheduled runs do fast incremental top-ups.
+
+  URL patterns:
+    *.eightfold.ai subdomains:  starbucks.eightfold.ai/careers
+    White-label custom domains: careers.kering.com, apply.careers.microsoft.com
+    Redirecting subdomains:     netflix.eightfold.ai → explore.jobs.netflix.net
+
+  Detection:  ws probe shows "Eightfold AI — N jobs at {sitemap_url}"
+              Detects *.eightfold.ai domains, HTML markers (eightfold.ai, pcsx),
+              and PCSX API endpoint probe for white-label domains.
+
+  Observability:
+    eightfold.full_crawl_start       First run or weekly re-sync starting
+    eightfold.full_crawl_done        Completed, N positions fetched
+    eightfold.incremental_start      Steady-state polling, max_ts=<unix>
+    eightfold.incremental_done       Completed, N positions fetched
+    eightfold.pcsx_disabled          Tenant returned 403 / probe failed
+    eightfold.pcsx_fetch_failed      Rate limit (405) or retry exhaustion —
+                                      sitemap-only fallback, watermark preserved
+    eightfold.pcsx_unmatched         N PCSX positions had no sitemap match
+                                      (usually sitemap lag for fresh jobs)
+    eightfold.awaiting_manual_backfill  auto_full_crawl=false + no watermark
+
+  Why the hybrid design?  Two problems in the old sitemap-only path:
+    1. JSON-LD in schema.org HTML has known quality issues on Eightfold —
+       stale datePosted, malformed addressRegion, missing jobLocationType.
+       PCSX returns clean standardizedLocations, accurate postedTs, and
+       explicit workLocationOption.
+    2. Steady-state crawls become O(new jobs) instead of O(total jobs)
+       via watermark-based early termination — the monitor typically
+       fetches only the first ~5-20 PCSX pages per cycle instead of
+       hundreds.
+
+  Zero jobs?  Verify the sitemap URL exists: curl {host}/careers/sitemap.xml
+              Check url_filter isn't too restrictive."""
+
+MONITOR_GEM = """\
+gem — Gem ATS Job Board API
+
+  API:      GET https://api.gem.com/job_board/v0/{slug}/job_posts/
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, date_posted)
+            metadata: department
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     Single API call — no pagination, no auth needed
+
+  Config:
+    {"token": "caffeine-ai"}
+
+    token    Board slug from jobs.gem.com/{slug}. Auto-filled by ws probe from:
+             1. Direct URL (jobs.gem.com/{slug})
+             2. Inline HTML scan for jobs.gem.com or __GEM_TRACKING_CONTEXT__
+             3. Slug-based API probe (derives slug from domain)
+
+  Detection:  ws probe shows "Gem API — slug: {token}, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser"""
+
+MONITOR_GREENHOUSE = """\
+greenhouse — Greenhouse Public API
+
+  API:      GET https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
+  Returns:  Full job data (title, HTML description, locations, date_posted)
+            metadata: departments, education, requisition_id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+
+  Config:
+    {"token": "stripe"}
+
+    token    Board identifier. Auto-filled by ws probe from:
+             1. Direct URL (boards.greenhouse.io/{token})
+             2. Regional board URL (job-boards.<region>.greenhouse.io/{token})
+             3. Inline JS scan for Greenhouse API references / urlToken
+             4. Slug-based API probe (derives slug from domain)
+
+  Detection:  ws probe shows "Greenhouse API — token: X, N jobs"
+  Zero jobs?  Verify token — try the API URL directly in a browser"""
+
+MONITOR_HIREOLOGY = """\
+hireology — Hireology Careers API
+
+  API:      GET https://api.hireology.com/v2/public/careers/{slug}?page_size=500
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, date_posted)
+            metadata: organization, job_family, id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     Single API call for most boards (page_size=500)
+
+  Config:
+    {"slug": "bristolhonda"}
+
+    slug     Careers path slug. Auto-filled by ws probe from:
+             1. Direct URL (careers.hireology.com/{slug})
+             2. New domain ({slug}.hireology.careers)
+             3. Inline HTML scan for Hireology API references
+             4. Slug-based API probe
+
+  Detection:  ws probe shows "Hireology API — slug: X, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser"""
+
+MONITOR_LEVER = """\
+lever — Lever Postings API
+
+  API:      GET https://api.lever.co/v0/postings/{token}?limit=100&skip=N
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, base_salary)
+            metadata: team, department, id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Rate:     0.5s sleep between pagination batches of 100
+
+  Config:
+    {"token": "cloudflare"}
+
+    token    Company slug. Auto-filled by ws probe from:
+             1. Direct URL (jobs.lever.co/{token})
+             2. Inline JS scan for Lever API references
+             3. Slug-based API probe
+
+  Detection:  ws probe shows "Lever API — token: X, N jobs"
+  Zero jobs?  Verify token — try the API URL directly in a browser"""
+
+MONITOR_JOBYLON = """\
+jobylon — Jobylon (Nordic ATS, inline-embed widget)
+
+  Source:   GET https://cdn.jobylon.com/jobs/companies/{company_id}/embed/v2/
+            GET https://cdn.jobylon.com/jobs/company-groups/{group_id}/embed/v2/
+  Returns:  Rich job data — title, locations, language, date_posted,
+            job_location_type (TELECOMMUTE when labeled Remote).
+            metadata: id, company_id, company, function, experience,
+            employment_type_label, workspace, departments, to_date,
+            published_date_raw.
+  Scraper:  Not needed for title/location (rich).  Pair with a json-ld
+            scraper + ``enrich: ["description"]`` when descriptions are
+            wanted — detail pages under emp.jobylon.com serve
+            ``application/ld+json`` JobPosting.
+  Cap:      50,000 jobs
+  Note:     The embed endpoint returns a server-rendered AngularJS
+            widget whose inline ``<script>`` body assigns the full
+            job list to ``JBL.embed_v2['jobs']`` as a JS object literal
+            (unquoted keys).  No separate JSON API exists — the widget
+            ships with the entire dataset per request.
+            Unknown customer IDs 404 (treated as ``BoardGoneError``).
+
+  Config:
+    {"company_id": "1955"}
+    {"company_group_id": "241"}
+
+    company_id         Jobylon numeric customer id (single-brand
+                       customers, e.g. McDonald's Sverige = 1955).
+    company_group_id   Numeric multi-brand group id (e.g. McDonald's
+                       Danmark uses group 241).  Takes precedence over
+                       company_id when both are set.
+
+  Detection:  ws probe shows "Jobylon embed — company: X, N jobs"
+              or "Jobylon embed — company-group: X, N jobs".
+              Detects via direct cdn.jobylon.com URL or iframe
+              reference in the page HTML.
+  Zero jobs?  Verify the customer id by loading the embed URL directly
+              in a browser.  Stale/disabled customers return HTTP 404."""
+
+MONITOR_JOIN = """\
+join — JOIN (join.com) Next.js Monitor
+
+  Source:    Next.js __NEXT_DATA__ on join.com/companies/{slug}
+  Returns:   Job URLs (scraper fetches details separately on daily schedule)
+  Scraper:   Auto-configured (nextdata) — config needed in board CSV
+  Cap:      50,000 jobs
+  Note:      Pre-configured nextdata monitor for JOIN.
+             Listing pages contain jobs at:
+             props.pageProps.initialState.jobs.items
+             JOIN paginates by ?page=N (typically 5 jobs per page).
+
+  Config:
+    {"slug": "acme"}
+
+    slug               Company slug from URL path /companies/{slug}.
+                       Auto-filled by ws probe and auto-derived from URL.
+
+  Detection:  ws probe shows "JOIN — slug: X, N jobs"
+              Requires join.com URL + detectable __NEXT_DATA__ job list.
+  Zero jobs?  Verify board URL is join.com/companies/{slug} and not a
+              marketing landing page."""
+
+MONITOR_SITEMAP = """\
+sitemap — XML Sitemap Parser
+
+  Returns:  URL set only (needs scraper)
+  Cap:      50,000 URLs
+
+  Config:
+    {"sitemap_url": "https://example.com/jobs/sitemap.xml"}
+
+    sitemap_url  Optional. If omitted, auto-discovers by:
+                 1. Walking up the board URL path trying sitemap.xml at each level
+                 2. Trying non-standard paths (/sitemaps/sitemapIndex, etc.)
+                 3. Parsing robots.txt for Sitemap: directives
+                 4. Recursively resolving sitemap indexes (prefers job-related children)
+                 Discovered URL is cached in board metadata for future runs.
+
+  url_filter   Regex filter for discovered URLs (all monitors):
+                 String: include pattern — "url_filter": "/jobs/"
+                 Dict:   include + exclude —
+                   "url_filter": {"include": "/jobs/", "exclude": "/blog/"}
+
+  url_transform  Regex find/replace to rewrite discovered URLs:
+                   "url_transform": {"find": "/profile/job_details/", "replace": "/jobs/"}
+                   Use when the sitemap lists non-public or redirect URLs that
+                   need mapping to the canonical public job page.
+
+  Detection:     ws probe shows "Sitemap — N URLs at <url>"
+  Fewer URLs?    Sitemap may not list all job pages — try dom monitor
+  UTM params:    Automatically stripped from discovered URLs
+
+  Pair with:     json-ld (try first) or dom scraper"""
+
+MONITOR_PHENOM = """\
+phenom — Phenom People Careers Platform (sitemap + json-ld)
+
+  Returns:  URL set only (needs scraper)
+  Cap:      50,000 URLs (inherited from sitemap)
+
+  Phenom tenants (e.g. careers.marriott.com, careers.nike.com) expose a
+  sitemap-index at /sitemap.xml with per-language child sitemaps named
+  sitemap-<hex>-<lang>.xml. The sitemap is the authoritative URL set.
+  Rich job data comes from the detail page's JSON-LD JobPosting script,
+  extracted by the json-ld scraper.
+
+  Why a dedicated monitor vs. plain sitemap:
+    • Phenom-specific can_handle fingerprint (child naming) avoids
+      mis-detecting generic XML sitemaps as Phenom during ws probe.
+    • Filters discovered URLs to job detail pages (contain "/job/" or
+      "?job_id="), dropping site root, "/jobs" index, language pages.
+
+  No API is used. Phenom's /api/get-jobs has no per-job timestamp and
+  no sort-by-recency, so there's no meaningful incremental signal; the
+  sitemap URL set + last_seen_at in Postgres already give _DIFF_BATCH
+  everything it needs for new/relisted/gone classification.
+
+  Config:
+    {}  — no configuration required. sitemap_url is derived from the
+          board URL's scheme+host (board metadata stores the discovered
+          URL for future runs, as with the sitemap monitor).
+
+  Scrapers:
+    json-ld (default) — works for marriott, nike, nordstrom, elevance,
+                        mondelez. Detail page returns JSON-LD natively.
+    json-ld + render:true — for mcdonalds-* and nationwide detail pages
+                            where Playwright render is needed before
+                            the JobPosting <script> appears in DOM.
+
+  Browser flags on the board (persistent_context, channel=chrome,
+  proxy) only matter for the scraper path; the monitor itself uses
+  plain httpx and runs in ~5 seconds regardless of job count."""
+
+MONITOR_NEXTDATA = """\
+nextdata — Next.js __NEXT_DATA__ Discovery
+
+  Returns:  URL set (default) or full job data (if fields configured)
+  Cap:      50,000 items
+
+  Config (minimal — URL-only mode):
+    {"path": "props.pageProps.positions", "url_template": "https://example.com/jobs/{id}"}
+
+  Config (rich mode — full job data):
+    {
+      "path": "props.pageProps.positions",
+      "url_template": "https://example.com/jobs/{id}",
+      "fields": {"title": "name", "locations": "offices[].name"},
+      "slug_fields": ["title"]
+    }
+
+    path           Dot-notation path to jobs array in __NEXT_DATA__ JSON
+    url_template   URL template with {field_name} placeholders from each item
+                   Special: {slug} built by slugifying + joining slug_fields
+    fields         Dict mapping DiscoveredJob fields to item field paths
+                   Supports dot notation (a.b.c), array index (a[0].b),
+                   array wildcard (a[].b — extracts from all items)
+    slug_fields    List of item fields to slugify + join for {slug} variable
+    render         If true, use Playwright to render page (default: false)
+    actions        Browser action pipeline (auto-enables render)
+    wait           Navigation wait strategy (Playwright only)
+    wait_fallback  Fallback wait strategy retried once on Page.goto timeout
+                   (Playwright only). Default: "domcontentloaded". Set to
+                   null to opt out.
+    timeout        Navigation timeout in ms (Playwright only)
+    url_filter     Regex filter for discovered URLs (see: ws help monitor sitemap)
+    url_transform  Regex find/replace to rewrite URLs (see: ws help monitor sitemap)
+
+  Detection:  ws probe shows "__NEXT_DATA__ — N items at <path>"
+              If "(render)" shown, page needs Playwright to load data.
+              Auto-searches common paths: props.pageProps.positions,
+              props.pageProps.jobs, props.pageProps.openings,
+              props.pageProps.allJobs, props.pageProps.data.positions,
+              props.pageProps.data.jobs. Needs >= 5 items (all dicts).
+
+  Pair with:  nextdata or json-ld scraper (if URL-only mode)
+
+  Tip: Inspect nextdata.json artifact to see all available keys in each
+  item before choosing your fields mapping. Map employment_type, date_posted,
+  job_location_type, team/department if present — they come at no extra cost."""
+
+MONITOR_MOKAHR = """\
+mokahr — Mokahr ATS (Chinese recruitment platform)
+
+  Returns:  Rich (title, locations, date_posted, employment_type)
+  Cost:     Low — paginated API with AES-128-CBC decryption, no browser.
+
+  Mokahr (app.mokahr.com) is a Chinese ATS. The API encrypts responses
+  with AES-128-CBC using a per-response key and a per-site IV embedded
+  in the SPA HTML. The monitor handles decryption transparently.
+
+  Auto-detected from app.mokahr.com URLs.
+
+  Config:
+    org_id    Organisation slug (e.g. "zte")
+    site_id   Numeric site ID (e.g. 47588)
+    locale    API locale (default "zh-CN")"""
+
+MONITOR_RECRUITER_CO_KR = """\
+recruiter_co_kr — Recruiter.co.kr ATS (Korean, Public JSON API)
+
+  List:     POST https://api-recruiter.recruiter.co.kr/position/v1/jobflex
+  Detail:   GET  https://api-recruiter.recruiter.co.kr/position/v2/jobflex/{sn}
+  Returns:  Rich (title, HTML description, date_posted, employment_type,
+            language=ko, metadata: classification, tags, valid_through,
+            announcement_type, recruitment_type)
+  Scraper:  Not needed (detail API returns full HTML)
+  Browser:  No — HTTP-only
+  Cost:     15 (paginated list + concurrent detail fetches)
+  Cap:      50,000 jobs
+
+  Tenants are identified via a `prefix: {slug}.recruiter.co.kr` request
+  header — the API itself lives at a shared origin. Board URLs follow the
+  pattern https://{slug}.recruiter.co.kr/career/home. Monitor defaults to
+  only OPEN + IN_SUBMISSION postings; set include_closed to widen.
+
+  Config:
+    {"slug": "mcdonalds"}
+    {"slug": "mcdonalds", "include_closed": true}
+
+    slug             Customer subdomain. Auto-derived from board URL.
+    include_closed   Include postings with openStatus != OPEN or
+                     submissionStatus == POST_SUBMISSION (default false).
+
+  Detection:  ws probe shows "Recruiter.co.kr — slug: X, N jobs"
+  Zero jobs?  Check openStatus filters — try include_closed."""
+
+MONITOR_NOTION = """\
+notion — Notion Site Job Pages
+
+  Returns:  URL set only (needs scraper)
+  Cost:     Low — two lightweight API calls, no browser rendering.
+
+  Detects public *.notion.site career pages and enumerates job listings
+  via Notion's internal API (/api/v3). Supports two patterns:
+  - Sub-pages: direct child pages of a parent page
+  - Databases: rows in embedded collection_view blocks (gallery, table, board)
+
+  No config required — auto-resolves page structure from the board URL.
+
+  Config:
+    include_nested    Include grandchild pages (default: false)
+    collection_index  Zero-based index to select one database when page
+                      has multiple (default: use all)
+    title_exclude     Regex — exclude rows whose title matches.
+                      Example: "Stay up to date|Coming soon"
+    property_filter   Filter rows by collection property values:
+                      {"exclude": {"Department": "Archived"}}
+                      {"include": {"Status": "Open"}}
+                      Property names matched case-insensitively.
+    url_filter        Regex filter on output URLs (all monitors)
+
+  Detection:   Probe checks for *.notion.site URL, enumerates sub-pages
+               and collection databases via API.
+  Pair with:   notion scraper (extracts title, description, locations,
+               employment_type from page blocks and collection properties)"""
+
+MONITOR_INLINE = """\
+inline — Single-Page Extraction (rich)
+
+  Returns:  Full job data (title, description, locations, etc.)
+  Scraper:  Not needed (skipped)
+  Cost:     60
+  Browser:  Only when render: true
+
+  For career pages that list all jobs inline on a single URL with no
+  individual job links (e.g., Squarespace, Webflow sites).  Extracts
+  multiple jobs by running step-based extraction repeatedly — the cursor
+  advances through the page, pulling one job per iteration.
+
+  Each job gets a synthetic URL: {board_url}?_jid={title-slug}-{hash}
+
+  Config:
+    {
+      "render": true,
+      "steps": [
+        {"tag": "h3", "field": "title"},
+        {"text": "Location", "offset": 1, "field": "location", "optional": true},
+        {"tag": "p", "field": "description", "html": true, "stop_tag": "h3"}
+      ],
+      "defaults": {"employment_type": "full_time"}
+    }
+
+    render       true = Playwright, false = static HTTP (default: false)
+    steps        Extraction steps run once per job (see: ws help steps).
+                 The first step with a field (usually title) is the stop
+                 condition — when it can't find a match, extraction ends.
+    defaults     Default field values applied when extracted value is absent.
+                 Supports: locations (list), employment_type, job_location_type,
+                 date_posted.
+    + browser keys (wait, wait_fallback, timeout, user_agent, etc. — see
+      `ws help scraper dom` for the full list; wait_fallback defaults to
+      "domcontentloaded" and retries once on Page.goto timeout, set to null
+      to opt out)
+
+  Step design tips:
+    - Steps run in a loop: after extracting one job, the cursor is where
+      the next job starts.  Design steps so the last step's cursor ends
+      just before the next job's title.
+    - Use stop_tag to limit description collection: {"stop_tag": "h3"}
+      stops before the next job's heading.
+    - Use optional: true for fields that may not appear on every job.
+
+  Detection:   Not auto-detected. Select manually after inspecting the page.
+               Best for small boards (< 50 jobs) with consistent HTML structure."""
+
+MONITOR_DOM = """\
+dom — Link Extraction (fallback)
+
+  Returns:  URL set only (needs scraper)
+  Cap:      50,000 URLs
+  Cost:     Highest — use only as last resort.
+
+  Config:
+    {"render": true, "wait": "networkidle", "timeout": 30000}
+
+    render         false (default) = static HTTP, true = Playwright
+    wait           Wait strategy: "load" | "domcontentloaded" | "networkidle" (default) | "commit"
+    wait_fallback  Fallback wait strategy retried once on Page.goto timeout.
+                   Default: "domcontentloaded" (applied automatically). Set
+                   to null to opt out. The retry reuses the same timeout, so
+                   worst-case wall-clock is 2*timeout. Use for SPA sites
+                   where "networkidle" never settles (persistent analytics/
+                   telemetry requests).
+    timeout        Navigation timeout in ms (default: 30000)
+    user_agent     Custom User-Agent string
+    headless       Run headless (default: true)
+    actions        Browser action pipeline (see: ws help actions)
+    url_filter     Regex filter for discovered URLs (see: ws help monitor sitemap)
+                   Keep patterns broad enough to include URL variants
+    url_transform  Regex find/replace to rewrite URLs (see: ws help monitor sitemap)
+                   (numeric suffixes, trailing slash, query params)
+
+  Pagination (multi-page career sites):
+    {
+      "render": false,
+      "url_filter": "/jobs/",
+      "pagination": {"param_name": "page", "max_pages": 10000}
+    }
+
+    pagination.param_name   Query parameter name (required)
+    pagination.start        First page's param value (default: 1)
+    pagination.increment    Step per page (default: 1)
+    pagination.max_pages    Hard limit (default: 10000, system cap: 10000)
+                            Set this to a value that greatly overshoots the
+                            expected real page count; low caps silently undercount.
+    pagination.browser      If true, fetch via page.evaluate(fetch(...)) inside
+                            Playwright context — preserves cookies (default: false)
+    pagination.url_template Format string with {page} placeholder for path-based
+                            pagination (e.g. "https://example.com/jobs/page/{page}").
+                            When set, replaces param_name-based URL building.
+                            Useful for sites that use path segments instead of
+                            query parameters for pagination.
+
+    Fetching starts at start + increment (page 1 is the board URL itself).
+    Stops when: no new links found, fetch fails, or max_pages reached.
+    High max_pages is usually safe: small boards terminate early via "no new links".
+    Works with both render: false (httpx) and render: true (Playwright).
+
+  Iframe widgets (onlyfy, prescreen, etc.):
+    When jobs are listed inside a third-party <iframe>, use the repeat action
+    with a "frame" option to click "Show more" inside the iframe:
+    {
+      "render": true,
+      "actions": [
+        {"action": "dismiss_overlays"},
+        {"action": "repeat", "selector": "a.load-more",
+         "frame": "iframe[src*=\\"widget-domain\\"]", "wait_ms": 3000}
+      ],
+      "url_filter": "\\\\?jh="
+    }
+    The repeat action injects frame links into the parent page for discovery.
+    See: ws task troubleshoot (KB: dom-monitor-jobs-inside-cross-origin-iframe-widget)
+
+  Discovery:   Extracts all <a href> links, filters for URLs containing
+               job/career/position/posting/opening/role/vacancy keywords.
+
+  Detection:   ws probe checks static HTML for job links.
+               If detected: shows "✓ N URLs". If not: shows "✗ Not detected".
+
+  Pair with:   json-ld (try first) or dom scraper"""
+
+MONITOR_ASHBY = """\
+ashby — Ashby Job Board API
+
+  API:      POST https://jobs.ashbyhq.com/api/non-user-graphql
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, date_posted, base_salary)
+            metadata: team, department, id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+
+  Config:
+    {"token": "company-slug"}
+
+    token    Board identifier (company slug). Auto-filled by ws probe from:
+             1. Direct URL (jobs.ashbyhq.com/{token})
+             2. Inline JS scan for Ashby API references
+
+  Detection:  ws probe shows "Ashby API — token: X, N jobs"
+  Zero jobs?  Verify token — check the board URL is correct"""
+
+MONITOR_RECRUITEE = """\
+recruitee — Recruitee Careers Site API
+
+  API:      GET https://{slug}.recruitee.com/api/offers
+            GET https://{custom-domain}/api/offers  (custom domains)
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, date_posted, base_salary)
+            metadata: department, tags, category, id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     Single API call — no pagination needed
+
+  Config:
+    {"slug": "acme"}               # Standard domain
+    {"api_base": "https://jobs.acme.com"}  # Custom domain
+
+    slug       Company slug for {slug}.recruitee.com. Auto-filled by ws probe from:
+               1. Direct URL ({slug}.recruitee.com)
+               2. Inline HTML scan for recruitee markers
+               3. Explicit blind-probe mode only (domain-derived slug guess)
+    api_base   Full base URL for custom domains. Auto-filled when detected
+               via HTML scan (e.g. karriere.herta.de → https://karriere.herta.de).
+
+  Detection:  ws probe shows "Recruitee API — {slug}, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser
+  Custom domains:  Recruitee supports custom domains (e.g. karriere.herta.de).
+                   The API is at https://{custom-domain}/api/offers."""
+
+MONITOR_SMARTRECRUITERS = """\
+smartrecruiters — SmartRecruiters Posting API (URL-only)
+
+  API:      GET https://api.smartrecruiters.com/v1/companies/{token}/postings?limit=100&offset=0
+  Returns:  URL set only — constructs URLs as https://jobs.smartrecruiters.com/{token}/{posting_id}
+  Scraper:  Auto-configured (smartrecruiters) — fetches details on daily schedule
+  Cap:      50,000 jobs
+
+  Config:
+    {"token": "smartrecruiters"}
+
+    token    Company identifier. Auto-filled by ws probe from:
+             1. Direct URL (jobs.smartrecruiters.com/{token})
+             2. Inline JS scan for SmartRecruiters API references
+             3. Slug-based API probe (derives slug from domain)
+
+  Detection:  ws probe shows "SmartRecruiters API — token: X, N jobs"
+  Zero jobs?  Verify token — try the API URL directly in a browser"""
+
+MONITOR_SOFTGARDEN = """\
+softgarden — Softgarden ATS (HTML scraping, no auth)
+
+  Listing:  GET https://{slug}.softgarden.io
+  Returns:  Job detail URLs (built from inline JS job IDs)
+  Scraper:  Auto-configured (json-ld) — extracts JSON-LD JobPosting from detail pages
+  Cap:      50,000 jobs
+  Note:     Single HTTP call to listing page.
+            Listing page embeds job IDs in inline JavaScript.
+            Detail URLs built as https://{slug}.softgarden.io/job/{id}?l=en.
+            Largest uncovered ATS in DACH (~2,000+ customers).
+
+  Config:
+    {"slug": "hapaglloyd"}
+    {"slug": "hapaglloyd", "job_url_pattern": "{base}/job/{id}?l=de"}
+
+    slug             Customer subdomain. Auto-filled by ws probe from:
+                     1. Direct URL ({slug}.softgarden.io)
+                     2. Page HTML scan for Softgarden markers
+                        (softgarden.io/assets/, tracker.softgarden.de,
+                        matomo.softgarden.io, powered by softgarden)
+                     No blind slug probe — subdomains are custom names.
+    job_url_pattern  URL pattern for detail pages (optional).
+                     Default: {base}/job/{id}?l=en
+                     Change ?l=de for German-language pages.
+
+  Detection:  ws probe shows "Softgarden — slug: X, N jobs"
+  Zero jobs?  Verify slug — visit https://{slug}.softgarden.io directly"""
+
+MONITOR_ALMACAREER = """\
+almacareer — AlmaCareer (Capybara) career portals (CZ + SK)
+
+  API:      POST https://api.capybara.lmc.cz/api/graphql/widget
+            (single GraphQL endpoint shared by CZ and SK)
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            date_posted, base_salary, language)
+            metadata: id, country (cz|sk), company_name, fields, professions
+  Scraper:  Not needed (API returns full HTML via content.htmlContent)
+  Cap:      50,000 jobs
+
+  Covers:
+    CZ      *.jobs.cz       (LMC / Profesia / Jobs.cz)
+    SK      *.topjobs.sk    (Profesia SK)
+
+  Note:     The GraphQL endpoint requires a per-tenant widgetId + x-api-key.
+            Both are extracted automatically from
+            https://{host}/assets/js/script.min.js (embedded in each
+            tenant's Capybara bundle).
+            Pagination runs at 10 items per page (server-side cap) — the
+            monitor walks every page and then fetches each jobAd's full
+            htmlContent concurrently.
+
+  Config:
+    {"slug": "mcdonalds", "country": "cz"}
+    {"host": "mcdonalds.topjobs.sk"}
+
+    slug     Customer subdomain (e.g. "mcdonalds"). Auto-filled by ws probe
+             from the board URL.
+    country  "cz" for *.jobs.cz or "sk" for *.topjobs.sk. Auto-filled.
+    host     Optional explicit override (e.g. for custom domains).
+    widget_id / api_key / detail_path
+             Optional pre-seeded overrides from ws probe — otherwise
+             re-fetched each monitor cycle from the tenant's script.min.js.
+
+  Detection:  ws probe shows "AlmaCareer (Capybara) — <slug> [<CC>], N jobs"
+  Zero jobs?  Verify the tenant serves jobs on the listing page (the React
+              bundle may render 0 when all widgets are empty).
+              Check https://{host}/assets/js/script.min.js responds 200."""
+
+MONITOR_TRAFFIT = """\
+traffit — TRAFFIT ATS (Public JSON API, no auth)
+
+  API:      GET https://{slug}.traffit.com/public/job_posts/published
+  Headers:  X-Request-Page-Size, X-Request-Current-Page (pagination)
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, date_posted, base_salary, language)
+            extras: requirements, responsibilities, benefits (HTML)
+            metadata: reference, department
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     API is fully public — no authentication required.
+            Primarily Poland/CEE region.
+
+  Config:
+    {"slug": "mycompany"}
+
+    slug     Customer subdomain. Auto-filled by ws probe from:
+             1. Direct URL ({slug}.traffit.com)
+             2. Page HTML scan for TRAFFIT markers (cdn3.traffit.com,
+                traffit-an-list, data-name="traffit")
+             No blind slug probe — subdomains are custom names.
+
+  Detection:  ws probe shows "TRAFFIT API — slug: X, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser"""
+
+MONITOR_UMANTIS = """\
+umantis — Umantis ATS (Haufe Group / Abacus)
+
+  Listing:  GET https://recruitingapp-{ID}[.de].umantis.com/Jobs/All
+  Returns:  URL set only (needs scraper)
+  Cap:      50,000 URLs
+  Note:     Paginated HTML listing pages (10 per page).
+            Pagination via tc{tableNr}=p{page} query params.
+            1,000+ customers in DACH (Switzerland, Germany, Austria).
+            Each customer has a unique HTML template on detail pages —
+            no shared structured data (no JSON-LD).
+
+  Config:
+    {"customer_id": "2698"}
+    {"customer_id": "5181", "region": "de"}
+
+    customer_id  Numeric customer ID from URL. Auto-filled by ws probe from:
+                 1. Direct URL (recruitingapp-{ID}[.de].umantis.com)
+                 2. Page HTML scan for Umantis markers
+                 No blind probe — customer IDs are numeric, not derivable.
+    region       Subdomain region: "" for .umantis.com, "de" for
+                 .de.umantis.com. Auto-filled from URL.
+    listing_path Override listing page path (default: /Jobs/All)
+
+  Detection:  ws probe shows "Umantis — ID: X, N jobs"
+  Zero jobs?  Verify customer_id — visit the listing URL directly
+  Pair with:  json-ld (try first) or dom scraper"""
+
+MONITOR_RIPPLING = """\
+rippling — Rippling ATS Job Board API
+
+  API:      GET https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs
+  Returns:  Job posting URLs (https://ats.rippling.com/{slug}/jobs/{uuid})
+  Scraper:  Auto-configured (rippling) — detail API fetches full data daily
+  Cap:      50,000 jobs
+  Note:     Single API call — returns all jobs, no pagination
+
+  Config:
+    {"slug": "rippling"}
+
+    slug     Board slug. Auto-filled by ws probe from:
+             1. Direct URL (ats.rippling.com/{slug}/jobs)
+             2. Inline HTML scan for Rippling ATS references
+             3. Slug-based API probe (derives slug from domain)
+
+  Detection:  ws probe shows "Rippling API — slug: X, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser"""
+
+MONITOR_PINPOINT = """\
+pinpoint — Pinpoint HQ Postings API
+
+  API:      GET https://{slug}.pinpointhq.com/postings.json
+  Returns:  Full job data (title, HTML description, locations, employment_type,
+            job_location_type, base_salary)
+            metadata: department, division, requisition_id
+  Scraper:  Not needed (API returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     Single API call — returns all jobs, no pagination
+
+  Config:
+    {"slug": "workwithus"}
+
+    slug     Company subdomain. Auto-filled by ws probe from:
+             1. Direct URL ({slug}.pinpointhq.com)
+             2. Inline HTML scan for pinpointhq.com references
+             3. Slug-based API probe (derives slug from domain)
+
+  Detection:  ws probe shows "Pinpoint API — slug: X, N jobs"
+  Zero jobs?  Verify slug — try the API URL directly in a browser"""
+
+MONITOR_PERSONIO = """\
+personio — Personio XML Feed + HTML Fallback
+
+  API:      GET https://{slug}.jobs.personio.{de,com}/xml?language={language}
+  Fallback: Parses RSC-embedded JSON from the HTML listing page
+  Returns:  Full job data via XML (title, HTML description, locations,
+            employment_type, date_posted).
+            Via HTML fallback: all fields except description.
+            metadata: department, subcompany, recruitingCategory, seniority,
+            yearsOfExperience, occupation, occupationCategory, keywords
+  Scraper:  Not needed when XML available with descriptions (skipped).
+            When HTML fallback is used or descriptions are missing, scraper needed.
+  Cap:      50,000 jobs
+  Note:     Tries both .personio.de and .personio.com domains automatically.
+            Some tenants only serve .com and/or have no XML feed.
+            Many tenants have descriptions in only one language (e.g. DE only).
+            The monitor auto-backfills from other languages.
+
+  Config:
+    {"slug": "acme"}
+    {"slug": "acme", "language": "de", "backfill_languages": ["en"]}
+
+    slug                Company subdomain. Auto-filled by ws probe.
+    language            Primary XML feed language (default: "en").
+                        Auto-discovered: ws probe checks EN and DE coverage
+                        and picks the language with the most descriptions.
+    backfill_languages  List of fallback languages to fill in missing
+                        descriptions (default: ["de"]). Set to [] to disable.
+                        Auto-discovered from coverage analysis.
+
+  Detection:  ws probe shows "Personio XML — slug: X, N jobs"
+              or "Personio HTML — slug: X, N jobs" (fallback)
+              Also shows language coverage (e.g. "en: 11/19 desc, de: 13/19 desc")
+  Zero jobs?  Verify slug — try the listing page in a browser"""
+
+MONITOR_RSS = """\
+rss — RSS 2.0 Feed Monitor (presets: successfactors, teamtailor, generic)
+
+  Feed:     GET {feed_url}
+  Returns:  Full job data (title, HTML description, locations, date_posted)
+            metadata: id and preset-specific fields
+  Scraper:  Not needed (feed returns full data, scraper step is skipped)
+  Cap:      50,000 jobs
+  Note:     One monitor type with multiple ATS presets:
+            - successfactors: /googlefeed.xml (Google Base namespace)
+            - teamtailor: /jobs.rss (offset-paginated)
+            - generic: standard RSS 2.0 (manual feed URL)
+
+  Config:
+    {"preset": "successfactors", "feed_url": "https://jobs.sap.com/googlefeed.xml"}
+    {"preset": "teamtailor", "feed_url": "https://company.teamtailor.com/jobs.rss"}
+    {"preset": "generic", "feed_url": "https://example.com/jobs.rss"}
+
+    preset     Feed parser preset. Auto-detected when possible.
+               Defaults to "generic" when not set.
+    feed_url   RSS URL. For known presets, ws probe can auto-fill this from
+               the board URL; for generic feeds set it explicitly.
+
+  Detection:  ws probe shows labels like:
+              "SuccessFactors RSS — <feed_url>, N jobs"
+              "Teamtailor RSS — <feed_url>, N jobs"
+              "RSS (generic) — <feed_url>, N jobs"
+  Zero jobs?  Verify feed_url directly in a browser and confirm it returns
+              job items (not an empty feed or non-RSS endpoint)."""
+
+MONITOR_WORKABLE = """\
+workable — Workable Posting API
+
+  API:      POST https://apply.workable.com/api/v3/accounts/{token}/jobs
+  Returns:  Job URLs (scraper fetches details separately on daily schedule)
+  Scraper:  Auto-configured (workable) — no manual selection needed
+  Cap:      50,000 jobs
+  Note:     Monitor discovers URLs only via the list API (lightweight, hourly).
+            A dedicated workable scraper fetches full details (title, description,
+            locations, etc.) from the detail API on a daily schedule.
+            List endpoint uses cursor pagination (token in POST body).
+
+  Config:
+    {"token": "neowork"}
+
+    token    Company slug. Auto-filled by ws probe from:
+             1. Direct URL (apply.workable.com/{token})
+             2. Inline HTML scan for Workable references
+             3. Explicit blind-probe mode only (domain-derived slug guess)
+
+  Detection:  ws probe shows "Workable API — token: X, N jobs"
+  Zero jobs?  Verify token — try the API URL directly in a browser"""
+
+MONITOR_WORKDAY = """\
+workday — Workday Job Board API
+
+  API:      POST https://{company}.{wd_instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs
+  Returns:  Job URLs (scraper fetches details separately on daily schedule)
+  Scraper:  Auto-configured (workday) — no manual selection needed
+  Cap:      50,000 jobs
+  Note:     Monitor discovers URLs only via the list API (lightweight, hourly).
+            A dedicated workday scraper fetches full details (title, description,
+            locations, etc.) from the detail API on a daily schedule.
+            Max page size is 20 (API returns 400 for higher values).
+            API caps results at 2000 per query — automatically splits by
+            facet (e.g. job category) for companies with >2000 listings.
+            Multi-site: discovers all tenant job sites via robots.txt and
+            aggregates jobs from every site. Set "all_sites": false to
+            monitor only the configured site.
+
+  Config:
+    {"company": "nvidia", "wd_instance": "wd5", "site": "NVIDIAExternalCareerSite"}
+
+    company       Company subdomain. Auto-filled by ws probe from:
+                  1. Direct URL ({company}.wd{N}.myworkdayjobs.com/{site})
+                  2. Inline HTML scan for Workday markers
+    wd_instance   Workday instance (e.g. wd1, wd5). Auto-filled from URL.
+    site          Career site identifier. Auto-filled from URL path.
+    all_sites     Discover all tenant sites via robots.txt (default: true).
+                  Set false to monitor only the configured site.
+
+  URL format:   https://{company}.wd{N}.myworkdayjobs.com/{site}
+                May include locale prefix: /en-US/{site} (stripped automatically)
+
+  Detection:  ws probe shows "Workday API — {company}/{site}, N jobs"
+  Zero jobs?  Verify URL — try the list API URL directly in a browser"""
+
+MONITOR_API_SNIFFER = """\
+api_sniffer — XHR/Fetch API Capture (Playwright)
+
+  Captures JSON API responses during page load via Playwright.
+  Works for React SPAs, custom platforms, and any site that
+  loads job data via internal JSON APIs.
+
+  Returns:  Full job data (if fields auto-mapped) or URL set
+  Cost:     80 — between sitemap (50) and dom (100)
+  Requires: Playwright
+
+  Config (auto-filled from ws probe monitor):
+    {
+      "api_url": "https://example.com/api/jobs",
+      "method": "GET",
+      "json_path": "results.jobs",
+      "url_field": "url",
+      "url_template": "https://example.com/jobs/{id}",
+      "pagination": {
+        "param_name": "offset",
+        "style": "offset",
+        "start_value": 0,
+        "increment": 20,
+        "location": "query"
+      },
+      "fields": {
+        "title": "title",
+        "description": "bodyHtml",
+        "locations": "offices[].name",
+        "employment_type": "type",
+        "metadata.team": "department"
+      }
+    }
+
+    api_url          Captured API endpoint URL (auto-filled)
+    method           HTTP method: GET or POST (auto-filled)
+    json_path        Dot-notation path to jobs array in response
+    url_field        Field name containing job URL (if found)
+    url_template     URL pattern with {field} placeholders (from DOM cross-ref)
+    params           Query parameters merged into api_url at request time.
+                     Auto-filled from the captured URL (empty and pagination
+                     params stripped). Edit result_limit / per_page here to
+                     increase page size, and update pagination.increment to match.
+    request_headers  Cleaned request headers (auto-filled)
+    post_data        POST body string (for POST APIs, null for GET)
+    pagination       Pagination config (auto-detected from multiple requests)
+    fields           Field mapping (same spec as nextdata: key, nested.key, array[].field)
+                     When present → rich mode (scraper skipped)
+                     When absent → URL-only (scraper needed)
+    wait             Navigation wait strategy: "load", "domcontentloaded", or
+                     "networkidle". Default: "load". Use "networkidle" for sites
+                     where XHRs fire late; avoid it on heavy sites (analytics/ads).
+    wait_fallback    Fallback wait strategy retried once on Page.goto timeout.
+                     Default: "domcontentloaded". Set to null to opt out.
+                     Note: sniffer monitors depend on network activity to
+                     capture XHRs — an early fallback may miss late-loading
+                     responses. If API discovery regresses, set to null.
+    timeout          Navigation timeout in ms. Default: 20000.
+    settle           Seconds to wait after navigation for late XHRs. Default: 3.
+
+  Modes:
+    Rich (fields present):  Returns list[DiscoveredJob], scraper skipped.
+      Auto-mapped from API response during probe. Verify quality —
+      auto-mapping may miss fields or map wrong keys.
+    URL-only (no fields):   Returns set[str], needs scraper.
+      URLs derived from url_field, url_template, or DOM cross-reference.
+    HTML string mode:       When json_path resolves to a string (not a list),
+      the content is treated as an HTML fragment. URLs are extracted via
+      url_regex (or default href matching). Pagination fetches additional
+      pages and extracts URLs from each HTML string.
+      Use for APIs that return HTML fragments inside JSON (e.g. WordPress
+      get-jobs.php, PHP endpoints returning rendered HTML in a JSON wrapper).
+
+      Example (WordPress PHP API returning HTML in JSON):
+        {
+          "api_url": "https://example.com/get-jobs.php",
+          "params": {"ajax": "1"},
+          "json_path": "postings.jobs",
+          "total_path": "postings.size",
+          "url_regex": "href=\"(/jobdetail/\\?jobId=\\d+)\"",
+          "pagination": {"param_name": "spage", "style": "page",
+                         "start_value": 1, "increment": 1, "location": "query"}
+        }
+
+      url_regex    Regex with one capture group to extract URLs from the HTML
+                   string. Default: matches all href attribute values.
+
+  Detection:  ws probe shows "API sniffer — N items, total: M, score: S at <url>"
+  Zero jobs?  Verify api_url is correct, check if cookies/auth context is needed
+              (page is navigated first to establish cookies), check pagination config.
+
+  Tip: After ws select monitor api_sniffer, inspect the auto-filled config.
+  If fields are auto-mapped, verify their quality in ws run monitor output.
+  If fields are missing or wrong, adjust the fields mapping manually or
+  remove fields entirely to use URL-only mode with a scraper.
+
+  Page size: The auto-captured api_url may use a small page size (e.g.
+  result_limit=10). If the API supports larger pages, edit api_url to
+  increase the limit (e.g. result_limit=100) and update pagination.increment
+  to match. This reduces the number of API calls needed to fetch all jobs."""
+
+SCRAPER_JSONLD = """\
+json-ld — Schema.org JobPosting Extractor
+
+  Fetch:    Static HTTP (default) or Playwright (render: true)
+  Config:   No field mapping needed
+
+  Parses <script type="application/ld+json"> blocks for JobPosting data.
+  Handles @graph arrays and nested structures automatically.
+  Uses the first JSON-LD block that contains a JobPosting.
+
+  Optional runtime config:
+    render         Use Playwright (default: false)
+    actions        Browser action pipeline (auto-enables render)
+    wait           Navigation wait strategy (Playwright only)
+    wait_fallback  Fallback wait strategy retried once on Page.goto timeout
+                   (Playwright only). Default: "domcontentloaded". Set to
+                   null to opt out.
+    timeout        Navigation timeout in ms (Playwright only)
+
+  Fields extracted (from schema.org properties):
+    title          ← title or name
+    description    ← description (preserved as HTML if contains tags)
+    locations      ← jobLocation (single or array, builds from address parts)
+    employment_type ← employmentType
+    job_location_type ← jobLocationType
+    date_posted    ← datePosted
+    valid_through  ← validThrough
+    base_salary    ← baseSalary (currency/min/max/unit)
+    skills         ← skills
+    responsibilities ← responsibilities
+    qualifications ← qualifications or educationRequirements
+
+  When to use:  Try first for any URL-only monitor. Many career sites
+                (Workable, Lever-hosted, Indeed, LinkedIn) embed JSON-LD.
+
+  Empty fields?  Page may have partial or no JSON-LD. Try dom scraper."""
+
+SCRAPER_NEXTDATA = """\
+nextdata — Next.js __NEXT_DATA__ Page Extractor
+
+  Fetch:    Static HTTP (or Playwright with render: true)
+  Config:
+    {
+      "path": "props.pageProps.jobData",
+      "fields": {"title": "name", "locations": "offices[].name",
+                 "description": "content"}
+    }
+
+    path      Dot-notation path to job object in __NEXT_DATA__ (optional,
+              uses root data if omitted)
+    fields    Dict mapping JobContent fields to extraction paths:
+              - Dot notation: "a.b.c"
+              - Array index: "items[0].name"
+              - Array wildcard: "offices[].name" (extracts from all)
+              List of paths: concatenate multiple sources into one field.
+                "description": ["intro", "sections[*].content", "footer"]
+              Constants (=prefix): literal values for separators or headings.
+                "description": ["intro", "=<h3>Details</h3>", "body"]
+              Template iteration: {"each": "path[*]", "wrap": "<h3>{title}</h3>\\n{body}"}
+                Iterates array of objects, fills {field} placeholders.
+              Value mapping: {"path": "type", "map": {"REMOTE": "remote"}}
+                Maps values through a lookup dict. Unmapped values → null.
+              Target fields: title, description, locations, employment_type,
+              job_location_type, date_posted, valid_through, qualifications,
+              responsibilities, skills. Prefix with "metadata." for extras.
+    render        Use Playwright (default: false)
+    actions       Browser action pipeline (auto-enables render)
+    wait          Navigation wait strategy (Playwright only)
+    wait_fallback Fallback wait strategy retried once on Page.goto timeout
+                  (Playwright only). Default: "domcontentloaded". Set to
+                  null to opt out.
+    timeout       Navigation timeout in ms (Playwright only)
+
+  When to use:  When job pages are Next.js and embed data in __NEXT_DATA__.
+  Empty result? Verify path points to the right data with browser devtools.
+
+  Tip: Before finalizing config, inspect the full nextdata.json artifact
+  (saved by ws run monitor or ws probe monitor) for additional mappable fields.
+  Look for employment_type, date_posted, job_location_type, team/department
+  — these often exist in the raw data but aren't mapped by default."""
+
+SCRAPER_EMBEDDED = """\
+embedded — Generalized Embedded Data Extractor
+
+  Fetch:    Static HTTP (or Playwright with render: true)
+  Config:
+    {
+      "script_id": "app-data",
+      "path": "job",
+      "fields": {"title": "title", "description": "body",
+                 "locations": "offices[].name"}
+    }
+
+    Data source (one of, checked in priority order):
+      script_id    ID of a <script> tag containing JSON
+      pattern      Regex matching up to start of JSON (e.g. AF_initDataCallback)
+      variable     JS variable name (e.g. window.__DATA__)
+
+    path      jmespath expression to navigate to job object (optional)
+    fields    Dict mapping JobContent fields to jmespath expressions:
+              - Named keys: "title", "category.name"
+              - Array wildcard: "offices[].name"
+              - Positional index: "[1]", "[9][*][2]"
+              List of paths: concatenate multiple sources into one field.
+                "description": ["intro", "sections[*].content", "footer"]
+              Constants (=prefix): literal values for separators or headings.
+                "description": ["intro", "=<h3>Details</h3>", "body"]
+              Template iteration: {"each": "path[*]", "wrap": "<h3>{title}</h3>\\n{body}"}
+                Iterates array of objects, fills {field} placeholders.
+              Value mapping: {"path": "type", "map": {"REMOTE": "remote"}}
+                Maps values through a lookup dict. Unmapped values → null.
+              Target fields: title, description, locations, employment_type,
+              job_location_type, date_posted, valid_through, qualifications,
+              responsibilities, skills. Prefix with "metadata." for extras.
+    render        Use Playwright (default: false)
+    actions       Browser action pipeline (auto-enables render)
+    wait          Navigation wait strategy (Playwright only)
+    wait_fallback Fallback wait strategy retried once on Page.goto timeout
+                  (Playwright only). Default: "domcontentloaded". Set to
+                  null to opt out.
+    timeout       Navigation timeout in ms (Playwright only)
+
+  When to use:  Sites with structured job data embedded in JavaScript
+                that isn't Next.js __NEXT_DATA__ (use nextdata for that).
+                Examples: Google Wiz (AF_initDataCallback), custom SPAs
+                with window.__DATA__ assignments, or named <script> blocks.
+
+  Empty result? Verify the data source (script_id/pattern/variable) matches
+                the page content. Check path navigates to the right object.
+                Use jmespath syntax for field expressions.
+
+  Tip: nextdata scraper is syntactic sugar for embedded with
+       script_id: "__NEXT_DATA__" pre-filled."""
+
+SCRAPER_DOM = """\
+dom — Step-based Extraction Engine
+
+  Fetch:    Static HTTP (default) or Playwright (render: true)
+  Config:
+    {
+      "steps": [
+        {"tag": "h1", "field": "title"},
+        {"text": "Location", "offset": 1, "field": "location"},
+        {"text": "About", "field": "description", "stop": "Requirements", "html": true}
+      ],
+      "render": true,
+      "wait": "networkidle"
+    }
+
+    steps          Extraction step list (see: ws help steps)
+    render         false (default) = static HTTP, true = Playwright
+    wait           Wait strategy (Playwright only): load | domcontentloaded
+                   | networkidle (default) | commit
+    wait_fallback  Fallback wait strategy retried once on Page.goto timeout.
+                   Default: "domcontentloaded" (applied automatically). Set
+                   to null to opt out. Use for SPA sites where "networkidle"
+                   never settles.
+    timeout        Navigation timeout in ms (default: 30000)
+    user_agent     Custom User-Agent
+    headless       Run headless (default: true)
+    actions        Browser action pipeline (see: ws help actions)
+
+  Target fields: title, description, locations, employment_type,
+  job_location_type, date_posted, valid_through, qualifications,
+  responsibilities, skills. Prefix with "metadata." for extras.
+
+  When to use:  Sites without JSON-LD or __NEXT_DATA__, where you need
+                step-based field extraction from page HTML.
+  Prefer render: false when page content loads without JavaScript.
+
+  See: ws help steps     Full step format reference
+  See: ws help actions   Browser action pipeline"""
+
+SCRAPER_API_SNIFFER = """\
+api_sniffer — XHR/Fetch API Capture (single page)
+
+  Two modes:
+    Browser mode (default): Playwright opens page, captures XHR/fetch responses.
+    HTTP mode:  Direct httpx request to a known API endpoint — no Playwright.
+                Enable by setting api_url in scraper_config.
+
+  Config (browser mode):
+    {"fields": {"title": "name", "description": "content"}}
+
+  Config (HTTP mode):
+    {"api_url": "https://api.example.com/jobs/{id}",
+     "method": "GET", "json_path": "data.job",
+     "fields": {"title": "name", "description": "content"}}
+
+    api_url   API endpoint URL. Supports {id} placeholder (replaced with
+              job ID extracted from the job page URL's last path segment).
+    method    HTTP method: "GET" (default) or "POST".
+    post_body POST request body (JSON string). Supports {id} placeholder.
+    json_path jmespath expression to navigate to the job object in the response.
+    request_headers  Dict of HTTP headers to include in the request.
+    enrich    List of field names to fetch from the detail API when the
+              monitor already provides partial data (e.g. ["description"]).
+              Only those fields are scraped; others come from the monitor.
+
+    fields    Optional. Dict mapping JobContent fields to JSON response keys.
+              Same spec as nextdata: key, nested.key, array[].field.
+              If omitted, auto-maps heuristically from captured response.
+              List of paths: concatenate multiple sources into one field.
+                "description": ["intro", "sections[*].content", "footer"]
+              Constants (=prefix): literal values for separators or headings.
+                "description": ["intro", "=<h3>Details</h3>", "body"]
+              Template iteration: {"each": "path[*]", "wrap": "<h3>{title}</h3>\\n{body}"}
+                Iterates array of objects, fills {field} placeholders.
+              Value mapping: {"path": "type", "map": {"REMOTE": "remote"}}
+                Maps values through a lookup dict. Unmapped values → null.
+              Target fields: title, description, locations, employment_type,
+              job_location_type, date_posted, valid_through, qualifications,
+              responsibilities, skills. Prefix with "metadata." for extras.
+    wait          (Browser mode only) Navigation wait strategy: "load",
+                  "domcontentloaded", or "networkidle". Default: "load".
+    wait_fallback (Browser mode only) Fallback wait strategy retried once on
+                  Page.goto timeout. Default: "domcontentloaded". Set to null
+                  to opt out. Note: the sniffer captures XHRs during both the
+                  primary and fallback navigations, so the retry adds rather
+                  than replaces responses — but if API discovery regresses
+                  on a specific board, set to null to revert to single-attempt
+                  behavior.
+    timeout       (Browser mode only) Navigation timeout in ms. Default: 20000.
+    settle        (Browser mode only) Seconds to wait for late XHRs. Default: 3.
+
+  Auto-probed via Playwright in ws probe scraper. Requires Playwright.
+  Can also be manually selected: ws select scraper api_sniffer
+
+  How it works (browser mode):
+    1. Opens job page with Playwright
+    2. Captures all JSON responses during page load
+    3. Finds the best single-job response (dict with title + description keys)
+    4. Extracts fields using config mapping or heuristic matching
+
+  How it works (HTTP mode):
+    1. Sends request to api_url (with {id} substituted from job URL)
+    2. Navigates response via json_path to the job object
+    3. Extracts fields using config mapping
+
+  When to use:  Job pages are SPAs that load content via XHR/fetch.
+                Use HTTP mode when the API endpoint is known (faster, no browser).
+                Use browser mode when the endpoint must be discovered at runtime.
+
+  Empty result? Browser mode: page may not load data via XHR — try json-ld/dom.
+                HTTP mode: check api_url, json_path, and request headers."""
+
+FIELDS = """\
+Job Data Fields — types, formats, importance
+
+  Monitors return DiscoveredJob, scrapers return JobContent. Both use the
+  same core fields (all nullable). JobContent adds valid_through.
+
+  Importance:
+    Required     title             str       Plain text job title
+    Required     description       str       HTML fragment (<p>, <ul>, <h3>, etc.)
+    Important    locations         [str]     List of location strings
+    Important    job_location_type str       "remote", "hybrid", "onsite"
+    Optional     employment_type   str       "full_time", "part_time", "contract", etc.
+    Optional     date_posted       str       ISO 8601 date (YYYY-MM-DD)
+    Optional     valid_through     str       ISO 8601 date (scraper only, not in DiscoveredJob)
+    Optional     base_salary       dict      {currency, min, max, unit}
+    Optional     skills            [str]     List of skill strings
+    Optional     responsibilities  [str]     List of bullet-point strings
+    Optional     qualifications    [str]     List of bullet-point strings
+    Optional     metadata          dict      Arbitrary key-value pairs (team, dept, etc.)
+
+  Notes:
+    - description is always HTML, never plain text. API monitors (greenhouse,
+      lever) return HTML natively. Scrapers must produce HTML too.
+    - locations is a list even for single-location jobs: ["New York, NY"]
+    - base_salary dict: {"currency": "USD", "min": 100000, "max": 150000, "unit": "year"}
+    - responsibilities and qualifications are plain-text lists (one item per
+      bullet point), NOT HTML.
+    - metadata is a catch-all dict for fields that don't fit the schema
+      (e.g. team, department). Use "metadata.team" in dom scraper steps or
+      nextdata field mappings.
+    - API monitors also populate metadata: greenhouse stores departments,
+      education, requisition_id; lever stores team, department, id.
+
+  Quality checks:
+    ws run monitor shows quality stats for rich data (API monitors):
+      "Quality: 135/138 title, 120/138 description, 125/138 locations"
+    ws run scraper shows extraction stats for scraped pages:
+      "3/3 titles, 3/3 descriptions, 2/3 locations"
+
+  Tip: If descriptions are shorter than expected (missing sections like
+  "What You'll Do" or "Requirements"), the source data likely splits
+  content across multiple fields. Use a list spec to concatenate:
+    "description": ["introHtml", "sections[*].content", "closingHtml"]
+  Use =prefix constants for HTML headings between sections:
+    "description": ["intro", "=<h3>Requirements</h3>", "requirements"]
+  Use each+wrap for arrays of titled sections:
+    "description": ["intro", {"each": "sections[*]", "wrap": "<h3>{heading}</h3>\\n{body}"}]
+  Use map spec for value mapping (boolean/enum conversion):
+    "job_location_type": {"path": "homeOffice", "map": {"True": "remote"}}
+    Unmapped values produce null (not passthrough).
+  Use enrich to scrape only specific fields for rich monitors:
+    "enrich": ["description"] — fetches only description from detail pages.
+    Titles and descriptions must be N/N — 0/N on either = do not submit.
+    Missing locations acceptable only if job_location_type is set
+    (e.g. remote-only companies). Otherwise iterate on scraper config."""
+
+STEPS = """\
+Extraction Steps — DOM scraper step format
+
+  Steps walk a flattened list of HTML elements sequentially. The cursor
+  advances forward after each match. Each step finds an element and
+  extracts its text into a named field.
+
+  Step keys:
+    tag         Match by HTML tag name (e.g. "h1", "li", "p")
+    text        Match by substring in element text (case-insensitive)
+    attr        Match by attribute: "key=substring" or "key" (presence)
+    field       Output field name. Omit for anchor-only steps (move cursor)
+    offset      Skip N elements after match before extracting (default: 0)
+    optional    If true, skip silently when not found (default: false)
+    from        Override seek start (e.g. 0 to search from beginning)
+
+  Range extraction (collect multiple elements):
+    stop        Stop when element text contains this string
+    stop_tag    Stop when element tag matches
+    stop_count  Max elements to collect
+    html        If true, preserve HTML tags in output (groups <li> in <ul>)
+
+  Post-processing:
+    regex       Regex with capture group — extracts group(1)
+    split       Split result into list on this delimiter
+
+  Matching:
+    - All conditions (tag + text + attr) must match (AND logic)
+    - Text matching normalizes Unicode punctuation to ASCII
+    - Cursor advances forward after each step; use "from": 0 to reset
+
+  DOM order:
+    Steps MUST follow the order elements appear in the HTML, not logical
+    importance. The cursor only moves forward. If step B appears before
+    step A in the DOM, step A will be silently skipped (optional) or warn
+    (required). Inspect flat.json to see actual element order. Use
+    "from": 0 to reset the cursor when a field is above earlier steps.
+    Correct DOM order is critical for extraction completeness — wrong
+    order means silently missing fields.
+
+  Examples:
+    {"tag": "h1", "field": "title"}
+    {"text": "Location", "offset": 1, "field": "location"}
+    {"text": "About", "field": "description", "stop": "Requirements", "html": true}
+    {"tag": "li", "field": "skills", "stop_tag": "h2", "split": ","}
+    {"tag": "span", "attr": "class=salary", "field": "salary", "regex": "\\\\$(\\\\d[\\\\d,]+)"}"""
+
+ACTIONS = """\
+Browser Action Pipeline — pre-extraction actions for Playwright
+
+  Actions run sequentially after page navigation, before extraction.
+  Each action has a 10s timeout (configurable per-action). Failures
+  log a warning and continue.
+
+  Used in: dom monitor, dom scraper, nextdata monitor/scraper (with render: true)
+
+  Action types:
+    {"action": "click", "selector": "button.load-more"}
+        Click first matching element (no-op if not found)
+
+    {"action": "wait", "ms": 2000}
+        Wait N milliseconds (default: 1000)
+
+    {"action": "remove", "selector": ".cookie-banner"}
+        Remove all matching elements from DOM
+
+    {"action": "evaluate", "script": "window.scrollTo(0, 99999)"}
+        Execute arbitrary JavaScript
+
+    {"action": "dismiss_overlays"}
+        Remove common cookie/consent banners (8 built-in selectors)
+
+    {"action": "repeat", "selector": "button.load-more", "max": 50, "wait_ms": 2000}
+        Click an element repeatedly until no new <a href> links appear.
+        Stops when: selector disappears, no new links after click, or max reached.
+        Default timeout: 300s (vs normal action's 10s).
+        Options:
+          selector   CSS selector to click (required)
+          max        Max iterations (default: 50)
+          wait_ms    Ms to wait after each click (default: 2000)
+          frame      CSS selector for an <iframe> to target (optional).
+                     When set, clicks happen inside the iframe (using JS
+                     to bypass cross-origin overlays), link counts are
+                     measured inside the frame, and after all clicks the
+                     frame's links are injected into the parent page so
+                     the DOM monitor can discover them.
+          force      If true, use Playwright force-click (default: false).
+                     Useful when overlays intercept clicks.
+        Use for "Load More" / "Show More" buttons on infinite-scroll pages.
+        Use frame option when the job listing widget runs inside an iframe
+        (e.g. onlyfy, prescreen, or other embedded ATS widgets).
+
+  Per-action timeout:
+    {"action": "click", "selector": ".btn", "timeout": 5}
+        Override default 10s timeout (value in seconds)
+
+  Example pipelines:
+    "actions": [
+      {"action": "dismiss_overlays"},
+      {"action": "click", "selector": "button[data-load-all]"},
+      {"action": "wait", "ms": 2000}
+    ]
+
+    "actions": [
+      {"action": "repeat", "selector": "button.load-more", "max": 30, "wait_ms": 1500}
+    ]
+
+    # Click "Show more" inside a cross-origin iframe widget:
+    "actions": [
+      {"action": "dismiss_overlays"},
+      {"action": "repeat", "selector": "a.infinite-next",
+       "frame": "iframe[src*=\\"onlyfy\\"]", "wait_ms": 3000}
+    ]"""
+
+ARTIFACTS = """\
+Debug Artifacts — files saved by ws commands
+
+  All artifacts are saved under:
+    .workspace/<slug>/artifacts/<board_alias>/<category>/run-<timestamp>/
+
+  Categories: probe, scraper-probe, monitor, scraper
+
+
+  ws probe monitor            → artifacts/<alias>/probe/run-<ts>/
+  ─────────────────────────────────────────────────────────────────
+    probe.json         Array of detection results, one per monitor type.
+                       Each: {name, detected, metadata, comment}.
+                       Shows which monitors detected the board and why others
+                       failed. The metadata dict auto-fills config when you
+                       run ws select monitor.
+
+
+  ws probe scraper            → artifacts/<alias>/scraper-probe/run-<ts>/
+  ─────────────────────────────────────────────────────────────────
+    probe.json         Array of scraper detection results.
+                       Each: {name, detected, metadata, comment}.
+                       Metadata includes heuristic config and quality stats
+                       (titles, descriptions, locations counts).
+                       Use config from metadata to ws select scraper.
+
+
+  ws run monitor              → artifacts/<alias>/monitor/run-<ts>/
+  ─────────────────────────────────────────────────────────────────
+    jobs.json          Discovered jobs. If monitor returns rich data: all
+                       DiscoveredJob objects with full fields. If URL-only:
+                       first 100 URLs as [{url: "..."}] objects.
+                       Compare count against website to verify completeness.
+
+    quality.json       Field completeness report (rich data monitors only).
+                       {total, fields: {title: {count, pct}, ...}}.
+                       Quick check that API data has expected fields.
+
+    response.json      Raw API response (greenhouse/lever monitors).
+                       Full JSON returned by the API. Inspect to verify
+                       token, check field availability, debug parsing.
+
+    sitemap.xml        Raw sitemap XML (sitemap monitor).
+                       Inspect to verify URLs are job pages, not blog posts.
+
+    nextdata.json      Raw __NEXT_DATA__ blob (nextdata monitor).
+                       Inspect to find the correct path to the jobs array
+                       and available field names for config.
+
+    page.html          Raw board page HTML (dom monitor).
+                       Inspect to find job link patterns and verify that
+                       static fetch captures the content (vs needing render).
+
+    api_sniff.json     Captured API exchanges (api_sniffer monitor).
+                       Shows detected API URL, method, items found, and score.
+                       Inspect to verify correct API was selected.
+
+    http_log.json      All HTTP requests/responses with status codes and
+                       headers. Debug connectivity, redirects, rate limits.
+
+    events.jsonl       Structlog events (one JSON object per line).
+                       Detailed timing, warnings, and error traces from
+                       the monitor run. Check for rate-limit or timeout issues.
+
+
+  ws run scraper              → artifacts/<alias>/scraper/run-<ts>/
+  ─────────────────────────────────────────────────────────────────
+  Default: 3 URLs randomly sampled from monitor's stored results.
+  Override with: ws run scraper --url <URL> --url <URL>
+
+    sample-0.json      Extracted job content for first sample URL.
+    sample-1.json      (one file per sample URL tested)
+    sample-2.json      Each: {id, url, title, description, locations, ...}.
+                       Inspect to see exactly what the scraper extracted
+                       and which fields are missing or malformed.
+
+    sample-0.html      Raw page HTML for each sample URL (static HTTP fetch
+    sample-1.html      before scraping). Compare against extracted data to
+    sample-2.html      debug missing fields. Note: for render=true scrapers,
+                       this is the static HTML — the scraper sees Playwright-
+                       rendered content which may differ.
+
+    flat.json          Flattened DOM element tree (dom scraper only).
+                       Array of [{tag, text, attrs}, ...] for every element.
+                       This is what walk_steps() searches through.
+                       Use it to find the right tag/text/attr selectors for
+                       your extraction steps. Saved once per run (contains
+                       the last sample URL's data).
+
+    quality.json       Per-URL and aggregate field completeness.
+                       {total, fields: {title: {count, pct}, ...},
+                        per_url: [{url, fields: {title: true, ...}}]}.
+                       Pinpoints which URLs have missing data.
+
+    http_log.json      HTTP requests/responses during scraping.
+    events.jsonl       Structlog events from the scraper run.
+
+
+  Notes:
+    - Artifacts persist until ws del or manual deletion.
+    - .workspace/ is gitignored — artifacts never get committed.
+    - Each run creates a new timestamped directory, so you can compare
+      successive runs when iterating on config.
+    - Path is printed to stdout after each command:
+      "Saved: .workspace/<slug>/artifacts/<alias>/monitor/run-20250101T120000\""""
+
+TROUBLESHOOTING = """\
+Troubleshooting:
+
+  Configuration exploration policy (before switching type):
+    → Do not switch monitor/scraper type after the first bad run unless there is
+      a hard mismatch (wrong platform/domain, unsupported endpoint, explicit non-detection)
+    → For a plausible type, try at least one concrete config variant and re-run
+    → Preserve attempts with named configs when available:
+      ws select monitor <type> --as <name> --config '{...}'
+      ws select config <name>
+      ws reject-config <name> --reason "..."
+    → Record what was tried and why it failed before changing type
+
+  Monitor returns 0 jobs:
+    greenhouse/lever  Verify token — open the API URL directly in browser
+    sitemap           Sitemap may only have blog/page URLs, not jobs → try dom
+    nextdata          Path may be wrong — check __NEXT_DATA__ in browser devtools
+    dom               Try render: true, or check that links contain job keywords
+    api_sniffer       Verify api_url, check if site needs cookies (board page
+                      navigated first), try different board URL
+
+  Monitor returns fewer jobs than expected:
+    → Compare against website's displayed total ("Showing N positions")
+    → For paginated monitors, raise max_pages first so it significantly
+      overshoots expected pages, then re-run before switching type
+    → Set max_pages and max_items with ~50% headroom above current job
+      count — job volume grows over time and caps should not silently
+      truncate new postings
+    → Do not optimize for low page caps — completeness comes first
+    → If using url_filter/job-link-pattern, test without it (or with a broader
+      regex) to catch over-strict filters that drop valid variants
+    → sitemap may not list all jobs — try dom or nextdata
+    → greenhouse/lever may need a different token
+
+  Scraper extracts empty fields:
+    → Start with ws probe scraper to see which types work
+    json-ld     Page has partial or no JSON-LD → try embedded or dom scraper
+    nextdata    Data structure differs per page → check path + fields
+    embedded    Verify data source (script_id/pattern/variable) matches page →
+                check path + fields with browser DevTools
+    dom         Selectors don't match → inspect page HTML, adjust steps
+    api_sniffer Page may not load job data via XHR — try json-ld or dom instead
+
+  Debugging with artifacts (ws help artifacts):
+    → Every ws probe monitor / ws probe scraper / ws run saves debug files
+    → Monitor: inspect raw source (response.json, sitemap.xml, nextdata.json, page.html)
+    → Scraper: compare sample-N.html against sample-N.json to find missing fields
+    → DOM scraper: read flat.json to find correct tag/text/attr selectors for steps
+    → HTTP issues: check http_log.json for status codes, redirects, rate limits
+    → Artifacts path is printed after each command
+
+  Nothing works after trying all types:
+    → Document what was tried and the specific failure
+    → ws task fail --reason "..." to enter coding mode
+
+  Case studies:
+    The KB also contains case studies — end-to-end narratives of how
+    complex boards were configured.  Search finds them alongside
+    troubleshooting entries.  Use --view to read the full study:
+      ws task troubleshoot "lever description split"
+      ws task troubleshoot --view spotify-api-sniffer-nextdata.md"""
+
+FEEDBACK = """\
+Feedback Command Reference:
+
+  ws feedback [<config>] --verdict <verdict> --verdict-notes "..."
+
+  Records extraction quality feedback for the active (or named) scraper
+  configuration.  Feedback is MANDATORY before ws submit.
+
+  Verdicts:
+    good        All required + important fields extracted cleanly
+    acceptable  Required fields clean; some important fields noisy/absent
+    poor        Submit requires --force; significant quality issues
+    unusable    Cannot submit at all
+
+  Per-field quality options (override auto-populated values):
+    --title <q>              Required field
+    --description <q>        Required field
+    --locations <q>          Important field (--locations-notes "...")
+    --employment-type <q>    Important field (--employment-type-notes "...")
+    --job-location-type <q>  Important field (--job-location-type-notes "...")
+    --date-posted <q>        Optional field
+    --base-salary <q>        Optional field
+    --skills <q>             Optional field
+    --qualifications <q>     Optional field
+    --responsibilities <q>   Optional field
+    --valid-through <q>      Optional field
+
+  Quality values: clean, noisy, unusable, absent
+
+  Auto-population:
+    Field quality is auto-populated from ws run monitor / ws run scraper
+    coverage data.  Pass explicit --<field> options only to override.
+
+  Examples:
+    ws feedback --verdict good --verdict-notes "All fields extracted cleanly"
+    ws feedback my-cfg --verdict acceptable --verdict-notes "Locations noisy" \\
+        --locations noisy --locations-notes "Missing city for some postings"
+    ws feedback --verdict poor --verdict-notes "Description truncated" \\
+        --description unusable"""
+
+# ── Lookup tables ────────────────────────────────────────────────────────
+
+MONITOR_YCOMBINATOR = """\
+ycombinator — YCombinator Jobs (last resort, HTML scraping)
+
+  ⚠ LAST RESORT — all companies eventually outgrow YC and migrate to a
+    dedicated ATS (Greenhouse, Lever, Ashby, etc.). Only use this monitor
+    when no real ATS board exists for the company.
+
+  Listing:  GET https://www.ycombinator.com/companies/{slug}/jobs
+  Returns:  Job detail URLs (extracted from HTML href attributes)
+  Scraper:  Auto-configured (json-ld) — extracts JSON-LD JobPosting from detail pages
+  Note:     Server-rendered HTML, no pagination observed.
+            Job URLs follow /companies/{slug}/jobs/{alphanumeric_id}-{title-slug}.
+            Cross-company links on the page are filtered out.
+
+  Config:
+    {"slug": "typewise"}
+
+    slug    Company slug on ycombinator.com. Auto-detected from board URL
+            (ycombinator.com/companies/{slug}/jobs).
+
+  Detection:  ws probe shows "YCombinator — slug: X, N jobs
+              (last resort — prefer a dedicated ATS if available)"
+  Zero jobs?  Company may have migrated off YC — check for a real ATS board."""
+
+MONITOR_CARDS: dict[str, str] = {
+    "accenture": MONITOR_ACCENTURE,
+    "almacareer": MONITOR_ALMACAREER,
+    "amazon": MONITOR_AMAZON,
+    "bite": MONITOR_BITE,
+    "breezy": MONITOR_BREEZY,
+    "deel": MONITOR_DEEL,
+    "dvinci": MONITOR_DVINCI,
+    "eightfold": MONITOR_EIGHTFOLD,
+    "gem": MONITOR_GEM,
+    "greenhouse": MONITOR_GREENHOUSE,
+    "hireology": MONITOR_HIREOLOGY,
+    "jobylon": MONITOR_JOBYLON,
+    "join": MONITOR_JOIN,
+    "lever": MONITOR_LEVER,
+    "ashby": MONITOR_ASHBY,
+    "recruitee": MONITOR_RECRUITEE,
+    "rippling": MONITOR_RIPPLING,
+    "smartrecruiters": MONITOR_SMARTRECRUITERS,
+    "softgarden": MONITOR_SOFTGARDEN,
+    "traffit": MONITOR_TRAFFIT,
+    "umantis": MONITOR_UMANTIS,
+    "workable": MONITOR_WORKABLE,
+    "workday": MONITOR_WORKDAY,
+    "pinpoint": MONITOR_PINPOINT,
+    "personio": MONITOR_PERSONIO,
+    "rss": MONITOR_RSS,
+    "sitemap": MONITOR_SITEMAP,
+    "phenom": MONITOR_PHENOM,
+    "nextdata": MONITOR_NEXTDATA,
+    "notion": MONITOR_NOTION,
+    "oracle_hcm": """\
+oracle_hcm — Oracle Cloud HCM REST API monitor
+
+  Auto-detected for URLs matching oraclecloud.com/hcmUI/CandidateExperience.
+  Uses the recruitingCEJobRequisitions REST API — no browser needed.
+
+  Board metadata (auto-detected from URL):
+    host    Oracle HCM tenant hostname (e.g. "jpmc.fa.oraclecloud.com")
+    site    Career site identifier (e.g. "CX_1001", "CampusHiring")
+
+  Rich monitor — returns title, location, date, employment_type.
+  Pair with oracle_hcm scraper + enrich: ["description"] for descriptions.
+  Handles pagination automatically via finder param offset suffix.""",
+    "dom": MONITOR_DOM,
+    "inline": MONITOR_INLINE,
+    "api_sniffer": MONITOR_API_SNIFFER,
+    "mokahr": MONITOR_MOKAHR,
+    "recruiter_co_kr": MONITOR_RECRUITER_CO_KR,
+    "ycombinator": MONITOR_YCOMBINATOR,
+}
+
+SCRAPER_SMARTRECRUITERS = """\
+smartrecruiters — SmartRecruiters Detail API scraper
+
+  API:      GET https://api.smartrecruiters.com/v1/companies/{token}/postings/{posting_id}
+  Returns:  title, HTML description, locations, employment_type,
+            job_location_type, date_posted, base_salary,
+            metadata (department, function, experienceLevel)
+  Config:   None needed — token from board config, posting_id parsed from URL
+  Note:     Auto-configured when selecting the smartrecruiters monitor.
+            Runs on the daily scrape schedule (not every monitor cycle).
+"""
+
+SCRAPER_WORKABLE = """\
+workable — Workable Detail API scraper
+
+  API:      GET https://apply.workable.com/api/v2/accounts/{slug}/jobs/{shortcode}
+  Returns:  title, HTML description, locations, employment_type,
+            job_location_type, date_posted, metadata (department)
+  Config:   None needed — parses the job URL to derive API parameters
+  Note:     Auto-configured when selecting the workable monitor.
+            Runs on the daily scrape schedule (not every monitor cycle).
+"""
+
+SCRAPER_WORKDAY = """\
+workday — Workday Detail API scraper
+
+  API:      GET https://{company}.{wd_instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/job/{path}
+  Returns:  title, HTML description, locations, employment_type,
+            job_location_type, date_posted, metadata (jobReqId)
+  Config:   None needed — parses the job URL to derive API parameters
+  Note:     Auto-configured when selecting the workday monitor.
+            Runs on the daily scrape schedule (not every monitor cycle).
+"""
+
+SCRAPER_EIGHTFOLD = """\
+eightfold — Eightfold.ai Detail scraper (JSON-LD + position API fallback)
+
+  Fast path: fetch the HTML page and parse schema.org/JobPosting from the
+             inlined <script type="application/ld+json"> block. This is the
+             same path the generic json-ld scraper uses.
+  Fallback:  if the page does not contain a JobPosting block, call the
+             public position API:
+               GET https://{tenant}.eightfold.ai/api/apply/v2/jobs/{id}?domain={d}
+             which returns title, locations, HTML description, t_create, and
+             ats_job_id for every active position id.
+
+  Returns:  title, HTML description, locations, date_posted, metadata
+            (ats_job_id, display_job_id, department, business_unit).
+  Config:   None needed — job id and domain are parsed from the URL.
+  Note:     Auto-configured when selecting the eightfold monitor. Fallback
+            adds a second HTTP call only for pages missing JSON-LD, so the
+            happy-path cost is unchanged.
+"""
+
+SCRAPER_RIPPLING = """\
+rippling — Rippling Detail API scraper
+
+  API:      GET https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs/{uuid}
+  Returns:  title, HTML description, locations, employment_type,
+            job_location_type, date_posted, base_salary,
+            metadata (department, base_department, company)
+  Config:   None needed — slug from board config, uuid parsed from URL
+  Note:     Auto-configured when selecting the rippling monitor.
+            Runs on the daily scrape schedule (not every monitor cycle).
+"""
+
+SCRAPER_BITE = """\
+bite — BITE GmbH ATS Detail API scraper
+
+  API:      GET https://jobs.b-ite.com/jobposting/{hash}/json?locale={locale}&contentRendered=true
+  Returns:  title, HTML description, locations, employment_type,
+            date_posted, base_salary, language,
+            metadata (reference, employer)
+  Config:   locale from board config (default: "de") — used for API query param
+            and language field
+  Note:     Auto-configured when selecting the bite monitor.
+            Runs on the daily scrape schedule (not every monitor cycle).
+            Hash (40-42 char hex) is extracted from the job URL.
+"""
+
+SCRAPER_PDF = """\
+pdf — PDF document scraper
+
+  Downloads PDF files and extracts text content using pypdf.
+  Used for companies that host job descriptions as PDF files
+  (e.g. on Webflow CDN) rather than HTML pages.
+
+  Returns:  title, HTML description
+  Config:   title_source ("url" or "text"), title_pattern (regex)
+  Note:     Typically paired with a dom monitor using url_filter to
+            discover PDF links on the careers page.
+"""
+
+SCRAPER_SKIP = """\
+skip — Placeholder scraper (auto-configured)
+
+  Monitors that return full job data auto-configure this scraper to signal
+  that the scraper step should be skipped. Never selected manually.
+"""
+
+SCRAPER_MOKAHR = """\
+mokahr — Mokahr ATS Detail API scraper
+
+  API:      POST https://app.mokahr.com/api/outer/ats-apply/website/job
+  Returns:  title, HTML description (jobDescription), locations,
+            employment_type (mapped from commitment), date_posted,
+            metadata (department)
+  Config:   locale (optional, default "zh-CN") — passed to the detail API
+  Note:     Pair with the mokahr monitor and declare
+            scraper_config: {"enrich": ["description"]} in boards.csv.
+            The Mokahr listing API returns metadata only — descriptions
+            live on the encrypted detail endpoint, decrypted via the
+            per-site AES IV (extracted from the SPA's init-data attribute)
+            and per-response key (necromancer field). No browser needed.
+"""
+
+SCRAPER_NOTION = """\
+notion — Notion Page API scraper
+
+  API:      POST https://{subdomain}.notion.site/api/v3/loadPageChunk
+  Returns:  title, HTML description, locations, employment_type,
+            job_location_type, metadata (team/department)
+  Config:   property_map (optional) — custom mapping of Notion property
+            names to job fields. Default auto-maps common names:
+            Location→locations, Department→metadata.team,
+            Employment Type→employment_type
+  Note:     Auto-configured when selecting the notion monitor.
+            Extracts block content as structured HTML (headings, lists,
+            paragraphs) and collection properties (location, department).
+"""
+
+SCRAPER_CARDS: dict[str, str] = {
+    "json-ld": SCRAPER_JSONLD,
+    "nextdata": SCRAPER_NEXTDATA,
+    "embedded": SCRAPER_EMBEDDED,
+    "dom": SCRAPER_DOM,
+    "api_sniffer": SCRAPER_API_SNIFFER,
+    "pdf": SCRAPER_PDF,
+    "notion": SCRAPER_NOTION,
+    "oracle_hcm": """\
+oracle_hcm — Oracle Cloud HCM Detail API scraper
+
+  Fetches job details from recruitingCEJobRequisitionDetails REST API.
+  No browser needed — pure HTTP.
+
+  Auto-detected for Oracle HCM job URLs. Uses host + site from board metadata.
+
+  Available fields: Title, PrimaryLocation, ExternalPostedStartDate,
+  ExternalDescriptionStr, ExternalQualificationsStr,
+  ExternalResponsibilitiesStr, JobSchedule, WorkplaceTypeCode.
+
+  Best used with enrich: ["description"] — monitor provides title/location/date,
+  scraper fills in description from the detail API.""",
+    "skip": SCRAPER_SKIP,
+    "bite": SCRAPER_BITE,
+    "mokahr": SCRAPER_MOKAHR,
+    "rippling": SCRAPER_RIPPLING,
+    "smartrecruiters": SCRAPER_SMARTRECRUITERS,
+    "workable": SCRAPER_WORKABLE,
+    "workday": SCRAPER_WORKDAY,
+    "eightfold": SCRAPER_EIGHTFOLD,
+}
+
+
+def _show_occupations() -> None:
+    """Display occupation taxonomy from data/occupations.csv."""
+    import polars as pl
+
+    from src.shared.constants import get_data_dir
+
+    path = get_data_dir() / "occupations.csv"
+    if not path.exists():
+        print("No occupations found in data/occupations.csv")
+        return
+
+    df = pl.read_csv(path, infer_schema_length=0)
+    print("Occupation Taxonomy")
+    print("Managed in data/occupations.csv — enricher outputs free-text, resolver maps to slug\n")
+    print(f"  {'Slug':<35} {'EN':<25} {'Aliases':>7}")
+    print(f"  {'─' * 35} {'─' * 25} {'─' * 7}")
+
+    for row in df.iter_rows(named=True):
+        slug = row["slug"]
+        en = row.get("en", "")
+        aliases_raw = row.get("aliases", "")
+        alias_count = len([a for a in aliases_raw.split("|") if a.strip()]) if aliases_raw else 0
+        print(f"  {slug:<35} {en:<25} {alias_count:>7}")
+
+    print(f"\n  {len(df)} occupations total")
+    print("\n  CLI: ws taxonomy search occupations <query>")
+    print("       ws taxonomy validate occupations")
+
+
+def _show_seniority() -> None:
+    """Display seniority taxonomy from data/seniority.csv."""
+    import polars as pl
+
+    from src.shared.constants import get_data_dir
+
+    path = get_data_dir() / "seniority.csv"
+    if not path.exists():
+        print("No seniority levels found in data/seniority.csv")
+        return
+
+    df = pl.read_csv(path, infer_schema_length=0)
+    print("Seniority Taxonomy")
+    print("Managed in data/seniority.csv — detected from title patterns\n")
+    print(f"  {'Slug':<15} {'EN':<20} {'Aliases':>7}")
+    print(f"  {'─' * 15} {'─' * 20} {'─' * 7}")
+
+    for row in df.iter_rows(named=True):
+        slug = row["slug"]
+        en = row.get("en", "")
+        aliases_raw = row.get("aliases", "")
+        alias_count = len([a for a in aliases_raw.split("|") if a.strip()]) if aliases_raw else 0
+        print(f"  {slug:<15} {en:<20} {alias_count:>7}")
+
+    print(f"\n  {len(df)} seniority levels total")
+    print("\n  CLI: ws taxonomy search seniority <query>")
+    print("       ws taxonomy validate seniority")
+
+
+def _show_industries() -> None:
+    """Display industry taxonomy from data/industries.csv."""
+    import polars as pl
+
+    from src.shared.constants import get_data_dir
+
+    path = get_data_dir() / "industries.csv"
+    if not path.exists():
+        print("No industries found in data/industries.csv")
+        return
+
+    df = pl.read_csv(path, infer_schema_length=0)
+    name_header = "EN" if "en" in df.columns else "Name"
+    name_col = "en" if "en" in df.columns else "name"
+    de_col = "de" if "de" in df.columns else None
+    print("Industry Taxonomy")
+    print("Managed in data/industries.csv — set per company with: ws set --industry <id>\n")
+    print(f"  {'ID':>3}  {name_header:<30}" + (f" {'DE':<30}" if de_col else ""))
+    print(f"  {'──':>3}  {'─' * 30}" + (f" {'─' * 30}" if de_col else ""))
+
+    for row in df.iter_rows(named=True):
+        ind_id = row["id"]
+        name = row.get(name_col, "")
+        de = row.get(de_col, "") if de_col else ""
+        print(f"  {ind_id:>3}  {name:<30}" + (f" {de:<30}" if de_col else ""))
+
+    print(f"\n  {len(df)} industries total")
+    print("\n  CLI: ws taxonomy search industries <query>")
+    print("       ws taxonomy validate industries")
+
+    print("\nEmployee count range buckets (for --employee-count-range):")
+    print("  1: 1-10       2: 11-50      3: 51-200     4: 201-500")
+    print("  5: 501-1,000  6: 1,001-5,000  7: 5,001-10,000  8: 10,001+")
+
+
+TOPIC_MAP: dict[str, str] = {
+    "board": BOARD,
+    "monitors": MONITORS,
+    "scrapers": SCRAPERS,
+    "fields": FIELDS,
+    "steps": STEPS,
+    "actions": ACTIONS,
+    "artifacts": ARTIFACTS,
+    "troubleshooting": TROUBLESHOOTING,
+    "feedback": FEEDBACK,
+}
+
+
+# ── Click command ────────────────────────────────────────────────────────
+
+
+@click.command("help")
+@click.argument("topic", required=False)
+@click.argument("subtype", required=False)
+def help_cmd(topic: str | None, subtype: str | None) -> None:
+    """Show reference docs for monitors, scrapers, and config."""
+    if not topic:
+        print(INDEX)
+        return
+
+    # "ws help monitor <type>" / "ws help scraper <type>"
+    if topic == "monitor":
+        if not subtype:
+            print("Usage: ws help monitor <type>")
+            print(f"  Types: {', '.join(MONITOR_CARDS)}")
+            return
+        if subtype not in MONITOR_CARDS:
+            print(f"Unknown monitor type: {subtype!r}")
+            print(f"  Valid types: {', '.join(MONITOR_CARDS)}")
+            raise SystemExit(1)
+        print(MONITOR_CARDS[subtype])
+        return
+
+    if topic == "scraper":
+        if not subtype:
+            print("Usage: ws help scraper <type>")
+            print(f"  Types: {', '.join(SCRAPER_CARDS)}")
+            return
+        if subtype not in SCRAPER_CARDS:
+            print(f"Unknown scraper type: {subtype!r}")
+            print(f"  Valid types: {', '.join(SCRAPER_CARDS)}")
+            raise SystemExit(1)
+        print(SCRAPER_CARDS[subtype])
+        return
+
+    # Dynamic topics
+    if topic == "occupations":
+        _show_occupations()
+        return
+    if topic == "seniority":
+        _show_seniority()
+        return
+    if topic == "industries":
+        _show_industries()
+        return
+
+    # Simple topic lookup
+    if topic in TOPIC_MAP:
+        print(TOPIC_MAP[topic])
+        return
+
+    print(f"Unknown topic: {topic!r}")
+    print()
+    print(INDEX)
+    raise SystemExit(1)
