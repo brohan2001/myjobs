@@ -147,7 +147,7 @@ async def run_daily(shortlist_limit: int = 50, board_slug: str | None = None) ->
                 boards_ok += 1
             except Exception as e:
                 err = f"{board.board_slug}: {e}"
-                _log.error("monitor.failure", board=board.board_slug, error=str(e))
+                _log.error("monitor.failure", extra={"board": board.board_slug, "error": str(e)})
                 with get_conn() as conn:
                     update_board_failure(conn, board_id, str(e))
                 errors.append(err)
@@ -209,7 +209,7 @@ async def run_daily(shortlist_limit: int = 50, board_slug: str | None = None) ->
                         update_raw_job_payload(conn, raw_id, payload, "scraper")
                     scraped_count += 1
                 except Exception as e:
-                    _log.warning("scrape.failure", url=url, error=str(e))
+                    _log.warning("scrape.failure", extra={"url": url, "error": str(e)})
                     with get_conn() as conn:
                         mark_raw_parsed(conn, raw_id, None, str(e))
                     scrape_errors += 1
@@ -271,7 +271,7 @@ async def run_daily(shortlist_limit: int = 50, board_slug: str | None = None) ->
                     jobs_new += 1
                 mark_raw_parsed(conn, raw_id, ids[0] if ids else None, None)
             except Exception as e:
-                _log.warning("parse.failure", raw_id=raw_id, error=str(e))
+                _log.warning("parse.failure", extra={"raw_id": raw_id, "error": str(e)})
                 mark_raw_parsed(conn, raw_id, None, str(e))
                 parse_errors += 1
 
