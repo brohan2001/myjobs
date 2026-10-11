@@ -215,3 +215,11 @@ def test_cursor_tampered():
 def test_cursor_non_string_uuid_is_invalid_filter():
     with pytest.raises(InvalidFilter):
         decode_cursor(_b64(["2026-01-01T00:00:00+00:00", 5]))
+
+
+def test_max_years_filter_includes_unstated_experience():
+    from src.api.queries import JobFilters, build_jobs_query
+
+    sql, args = build_jobs_query(JobFilters(max_years=2))
+    assert "(jp.experience_min IS NULL OR jp.experience_min <= $1)" in sql
+    assert args[0] == 2

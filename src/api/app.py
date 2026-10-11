@@ -84,6 +84,11 @@ def serialize_job(row, index: LocationIndex) -> dict:
         "locations_raw": list(row["locations_raw"] or []),
         "work_modes": sorted({t for t in types if t}),
         "employment_type": row["employment_type"],
+        "experience": (
+            {"min_years": row["experience_min"], "max_years": row["experience_max"]}
+            if row.get("experience_min") is not None or row.get("experience_max") is not None
+            else None
+        ),
         "salary": salary,
         "ats": row["ats"],
         "first_seen_at": _iso(row["first_seen_at"]),
@@ -185,6 +190,7 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
         since: str | None = Query(None, max_length=40, description="24h, 7d or ISO-8601"),
         seniority: str | None = Query(None, max_length=50),
         occupation: str | None = Query(None, max_length=80),
+        max_years: int | None = Query(None, ge=0, le=40, description="Minimum experience required is at most this many years"),
         cursor: str | None = Query(None, max_length=200),
         limit: int = Query(50, ge=1, le=queries.MAX_LIMIT),
     ):
@@ -206,6 +212,7 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
                 since=queries.parse_since(since),
                 seniority=seniority,
                 occupation=occupation,
+                max_years=max_years,
                 cursor=queries.decode_cursor(cursor),
                 limit=limit,
             )
