@@ -46,7 +46,7 @@ Env: copy `.env.example` → `.env` (`LOCAL_DATABASE_URL`, `REDIS_URL`, `ANTHROP
 
 ```
 data/companies.csv + data/boards.csv → src/sync.py → Postgres (company, job_board) + Redis queues
-src/workers/pipeline.py → src/core/monitors/* (41 types) → src/core/scrapers/* (16 types) → job_posting + descriptions
+src/workers/pipeline.py → src/core/monitors/* (37 types) → src/core/scrapers/* (16 types) → job_posting + descriptions
 src/processing/cpu.py enrichment → src/ranker.py scoring → src/renderer.py / src/server.py
 ```
 

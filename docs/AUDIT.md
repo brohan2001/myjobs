@@ -6,7 +6,7 @@ Companion docs: `REPO_MAP.md` (module map), `SCRAPING_REPORT.md` (pipeline deep-
 | Brief said | Code says |
 |---|---|
 | Scraping design borrowed from JSeek (resume-extension) | Vendored from **colophon-group/jobseek** (MIT, third party). The user's JSeek extension is a content script that runs *on* jseek.co. Shared ideas with the extension: none in code |
-| 30+ ATS integrations | True: 41 monitor types and 16 scrapers |
+| 30+ ATS integrations | True: 37 monitor types and 16 scrapers |
 | Resumable staged caching | Redis leases, reaper and dead letter make runs resumable. "Staging" (`r2_stage.py`) only hashes; the R2 upload is dead code |
 | TLS fingerprint spoofing | **Gone.** No curl_cffi after the port. Fake Chrome UA, an `ssl` tweak and Playwright stealth only |
 | Per-host rate limits | Per *throttle key* (one per ATS for API boards, hostname otherwise) |
@@ -139,11 +139,12 @@ North Carolina: only in the (now private) consensus JSON. No NC logic in code.
 6. Server WIP bugs (§4).
 7. `scripts/backfill_locations.py` and `scripts/populate_taxonomy.py` hardcode the DSN.
 8. `Retry-After` is ignored. robots.txt is never consulted for permission.
-9. `tests/fixtures/google_synthetic.json` on `main` has one line replaced by `[redacted]` (side effect of the history redaction; restored on `revamp/phase-0-audit`).
+9. Workday multi-site mode (the default) swallows persistent list-endpoint failures and returns an empty set instead of raising, so a failed board looks like "0 jobs" (pinned in `tests/characterization/test_monitors_url.py`). Likely explains part of the 52% Workday "0 jobs" failures.
+10. `tests/fixtures/google_synthetic.json` on `main` has one line replaced by `[redacted]` (side effect of the history redaction; restored on `revamp/phase-0-audit`).
 
 ## 9. Tests
 - Before Phase 0: 85 tests, all pure ranker and renderer functions, 0.1 s. Nothing covered the pipeline, server, DB or generator.
-- Phase 0 adds `tests/characterization/` (no-network monitor and scraper behavior pins) and a monitor-registry snapshot.
+- Phase 0 adds `tests/characterization/` (85 tests): greenhouse, lever, ashby, workday, smartrecruiters and sitemap monitors, json-ld and nextdata scrapers, `fetch_with_retry`, a 37-monitor registry snapshot, and the baseline script. One xfail (ashby has no pagination). A socket-level guard blocks the network. Total: 170 passed, 1 xfailed.
 
 ## 10. Privacy remediation performed (2026-10-11)
 - Mirror backup at `~/Documents/myjobs-backup-2026-10-11.git` (outside the repo, contains the old history; delete once you're satisfied).
