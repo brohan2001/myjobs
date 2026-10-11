@@ -14,6 +14,7 @@ interface FeedClientProps {
   initialNextCursor: string | null;
   initialStats: Stats | null;
   initialError: boolean;
+  footer?: React.ReactNode;
 }
 
 export function FeedClient({
@@ -21,6 +22,7 @@ export function FeedClient({
   initialNextCursor,
   initialStats,
   initialError,
+  footer,
 }: FeedClientProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -311,6 +313,7 @@ export function FeedClient({
         </main>
         <SidebarNotes jobs={jobs} />
       </div>
+      {footer}
       <div
         id="toast"
         className={`toast ${toastMessage ? "on" : ""}`}

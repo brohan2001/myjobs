@@ -38,15 +38,11 @@ export function JobRow({
   // Formatted location
   let locationText = "Remote";
   const orderedLocations = orderLocations(job.locations, placeFilter);
-  if (orderedLocations && orderedLocations.length > 0) {
-    const valid = orderedLocations.filter((l) => l.name);
-    if (valid.length > 0) {
-      const first = valid[0].name ?? "";
-      locationText = valid.length > 1 ? `${first} +${valid.length - 1}` : first;
-    } else if (job.locations_raw && job.locations_raw.length > 0) {
-      locationText = job.locations_raw[0];
-    }
-  } else if (job.locations_raw && job.locations_raw.length > 0) {
+  const validLocs = orderedLocations?.filter((l) => l.name);
+  if (validLocs && validLocs.length > 0) {
+    const first = validLocs[0].name ?? "";
+    locationText = validLocs.length > 1 ? `${first} +${validLocs.length - 1}` : first;
+  } else if (job.locations_raw?.[0]) {
     locationText = job.locations_raw[0];
   }
 
