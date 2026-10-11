@@ -19,15 +19,16 @@ from typing import Any
 import anthropic
 from bs4 import BeautifulSoup
 
-from src.scoring_config import ANTHROPIC_API_KEY, RESUME_MAP, SKILL_GROUPS
+from src.scoring_config import ANTHROPIC_API_KEY, PROFILE_PATH, RESUME_MAP, SKILL_GROUPS
 
-_PROFILE = """\
-Name: the candidate
-Email: candidate@example.com
-Education: MS Computer Science, [university] (May 2025)
-Visa: [redacted]
-Published research: IJCNLP-AACL 2025 (constrained LLM text generation, [lab])
-Target roles (priority): Backend SWE > Cloud Engineer > Fullstack SWE > Frontend > Mobile > Network Engineer > Data Scientist > ML Engineer"""
+def _load_profile() -> str:
+    """Candidate profile text from PROFILE_PATH (private/, gitignored).
+
+    Stub until the Phase 1 structured profile system lands.
+    """
+    if PROFILE_PATH.exists():
+        return PROFILE_PATH.read_text().strip()
+    return "(No profile configured. Set PROFILE_PATH or create private/profile.txt.)"
 
 _ROLE_LABELS: dict[str, str] = {
     "backend":  "Software Engineer — Backend",
@@ -42,7 +43,7 @@ _ROLE_LABELS: dict[str, str] = {
 }
 
 _SYSTEM_TEMPLATE = """\
-You are an expert technical resume writer helping the candidate craft targeted job applications.
+You are an expert technical resume writer helping a candidate craft targeted job applications.
 
 ## Candidate
 {profile}
@@ -96,7 +97,7 @@ async def _generate_one(
         resume_cache[role] = _pdf_to_text(pdf_path)
 
     system_text = _SYSTEM_TEMPLATE.format(
-        profile=_PROFILE,
+        profile=_load_profile(),
         role_label=_ROLE_LABELS.get(role, "Software Engineer"),
         resume_text=resume_cache[role],
     )
