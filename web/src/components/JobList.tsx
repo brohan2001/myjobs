@@ -8,6 +8,7 @@ import { JobRow } from "./JobRow";
 interface JobListProps {
   jobs: Job[];
   currency: string;
+  placeFilter?: string;
   isLoading: boolean;
   isError: boolean;
   companiesHiring?: number;
@@ -28,6 +29,7 @@ interface JobListProps {
 export function JobList({
   jobs,
   currency,
+  placeFilter,
   isLoading,
   isError,
   companiesHiring = 2569,
@@ -181,6 +183,7 @@ export function JobList({
         job={job}
         index={index}
         currency={currency}
+        placeFilter={placeFilter}
         isFocused={focusedIndex === index}
         onFocus={() => setFocusedIndex(index)}
         onOpen={() => onOpenJob(job)}
