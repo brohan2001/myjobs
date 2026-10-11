@@ -1,0 +1,23 @@
+{
+  "jobPostings": [
+    {
+      "title": "Software Engineer, New Grad",
+      "externalPath": "/job/WD-001234_Software-Engineer-New-Grad",
+      "locationsText": "San Jose, CA",
+      "postedOn": "05/01/2026"
+    },
+    {
+      "title": "Cloud Infrastructure Engineer",
+      "externalPath": "/job/WD-005678_Cloud-Infrastructure-Engineer",
+      "locationsText": "Austin, TX; Remote",
+      "postedOn": "2026-04-28"
+    },
+    {
+      "title": "Senior Software Engineer",
+      "externalPath": "/job/WD-009012_Senior-Software-Engineer",
+      "locationsText": "Raleigh, NC",
+      "postedOn": "04/25/2026"
+    }
+  ],
+  "total": 3
+}
