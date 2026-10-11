@@ -267,7 +267,8 @@ async def run(
     sem = asyncio.Semaphore(concurrency)
     robots_cache: dict[str, str | None] = {}
 
-    async with create_http_client() as client:
+    # Each company probes many ATS endpoints in parallel; size the pool for it.
+    async with create_http_client(max_connections=max(50, concurrency * 12)) as client:
         async def _one(c: Candidate) -> Outcome:
             async with sem:
                 try:
