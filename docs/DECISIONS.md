@@ -98,3 +98,15 @@ services, not Docker Desktop.
 startups fold into `startup`, `mnc_gcc` into `gcc`. Discovery normalizes candidate categories and drops anything else (industry
 labels like "fintech" are not company types). A test keeps `data/companies.csv` inside the list. The API filter is
 `company_type=startup,gcc` (any of).
+
+## D22: Notice period is filled out-of-band (Default, 2026-10-12)
+`job_posting.notice_max_days` (migration 0010) is written by a loop inside `myjobs worker` (`src/processing/notice.py`)
+that re-parses a posting whenever its description hash changes. The monitor and scrape writers use positional SQL in four
+places; threading a new column through all of them risked silent misalignment for a field that only ~0.03% of postings
+state. The API filter `notice_days=N` keeps postings that accept at least N days *or don't say*, so the filter never hides
+the silent majority.
+
+## D23: Health alerts are a CLI exit code (Default, 2026-10-12)
+`myjobs health` (`src/health.py`) checks feed staleness (>3h), worker lag (>5% of boards 2h overdue), mass board loss
+(>20 gone/day), and per-ATS failure (>25%) or emptiness (>30% with no jobs for 3 days, ATS types with ≥5 boards). It
+exits 1 on any alert, so cron/systemd can notify. No webhook until deployment picks a channel (Phase 4).
