@@ -1,0 +1,652 @@
+{
+  "source": "legacy_sqlite",
+  "generated_at": "2026-10-11T08:08:40.416984+00:00",
+  "companies": {
+    "total": 2875,
+    "with_active_postings": 297
+  },
+  "boards_by_crawler_type": [
+    {
+      "crawler_type": "greenhouse",
+      "total": 1560,
+      "enabled": 1560,
+      "failing": 26,
+      "disabled": 0,
+      "failure_pct": 1.7
+    },
+    {
+      "crawler_type": "ashby",
+      "total": 695,
+      "enabled": 695,
+      "failing": 8,
+      "disabled": 0,
+      "failure_pct": 1.2
+    },
+    {
+      "crawler_type": "dom",
+      "total": 124,
+      "enabled": 124,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "lever",
+      "total": 121,
+      "enabled": 121,
+      "failing": 3,
+      "disabled": 0,
+      "failure_pct": 2.5
+    },
+    {
+      "crawler_type": "join",
+      "total": 110,
+      "enabled": 110,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "api_sniffer",
+      "total": 107,
+      "enabled": 107,
+      "failing": 6,
+      "disabled": 0,
+      "failure_pct": 5.6
+    },
+    {
+      "crawler_type": "workday",
+      "total": 103,
+      "enabled": 103,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "pinpoint",
+      "total": 62,
+      "enabled": 62,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "sitemap",
+      "total": 51,
+      "enabled": 51,
+      "failing": 5,
+      "disabled": 0,
+      "failure_pct": 9.8
+    },
+    {
+      "crawler_type": "recruitee",
+      "total": 48,
+      "enabled": 48,
+      "failing": 1,
+      "disabled": 0,
+      "failure_pct": 2.1
+    },
+    {
+      "crawler_type": "rss",
+      "total": 43,
+      "enabled": 43,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "smartrecruiters",
+      "total": 25,
+      "enabled": 25,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "workable",
+      "total": 17,
+      "enabled": 17,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "eightfold",
+      "total": 15,
+      "enabled": 15,
+      "failing": 3,
+      "disabled": 0,
+      "failure_pct": 20.0
+    },
+    {
+      "crawler_type": "oracle_hcm",
+      "total": 13,
+      "enabled": 13,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "nextdata",
+      "total": 12,
+      "enabled": 12,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "personio",
+      "total": 8,
+      "enabled": 8,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "inline",
+      "total": 7,
+      "enabled": 7,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "gem",
+      "total": 6,
+      "enabled": 6,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "jobylon",
+      "total": 6,
+      "enabled": 6,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "notion",
+      "total": 6,
+      "enabled": 6,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "almacareer",
+      "total": 5,
+      "enabled": 5,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "breezy",
+      "total": 4,
+      "enabled": 4,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "mokahr",
+      "total": 4,
+      "enabled": 4,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "ycombinator",
+      "total": 4,
+      "enabled": 4,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "rippling",
+      "total": 3,
+      "enabled": 3,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "amazon",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "deel",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "phenom",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "recruiter_co_kr",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "softgarden",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "umantis",
+      "total": 1,
+      "enabled": 1,
+      "failing": 1,
+      "disabled": 0,
+      "failure_pct": 100.0
+    }
+  ],
+  "boards_totals": {
+    "total": 3165,
+    "enabled": 3165,
+    "failing": 53,
+    "disabled": 0
+  },
+  "active_postings_by_crawler_type": [
+    {
+      "crawler_type": "greenhouse",
+      "active_postings": 12538
+    },
+    {
+      "crawler_type": "ashby",
+      "active_postings": 1261
+    },
+    {
+      "crawler_type": "rss",
+      "active_postings": 1260
+    },
+    {
+      "crawler_type": "api_sniffer",
+      "active_postings": 413
+    },
+    {
+      "crawler_type": "oracle_hcm",
+      "active_postings": 221
+    },
+    {
+      "crawler_type": "lever",
+      "active_postings": 153
+    },
+    {
+      "crawler_type": "apple",
+      "active_postings": 112
+    },
+    {
+      "crawler_type": "amazon",
+      "active_postings": 100
+    },
+    {
+      "crawler_type": "dom",
+      "active_postings": 95
+    },
+    {
+      "crawler_type": "workable",
+      "active_postings": 79
+    },
+    {
+      "crawler_type": "join",
+      "active_postings": 42
+    },
+    {
+      "crawler_type": "workday",
+      "active_postings": 25
+    },
+    {
+      "crawler_type": "pinpoint",
+      "active_postings": 21
+    },
+    {
+      "crawler_type": "recruitee",
+      "active_postings": 15
+    },
+    {
+      "crawler_type": "sitemap",
+      "active_postings": 5
+    },
+    {
+      "crawler_type": "inline",
+      "active_postings": 1
+    },
+    {
+      "crawler_type": "linkedin",
+      "active_postings": 1
+    }
+  ],
+  "top_companies_by_active_postings": [
+    {
+      "company": "hcltech",
+      "name": "HCL Technologies",
+      "active_postings": 1260
+    },
+    {
+      "company": "databricks",
+      "name": "Databricks",
+      "active_postings": 865
+    },
+    {
+      "company": "hibu",
+      "name": "Hibu",
+      "active_postings": 639
+    },
+    {
+      "company": "stripe",
+      "name": "Stripe",
+      "active_postings": 554
+    },
+    {
+      "company": "mongodb",
+      "name": "MongoDB",
+      "active_postings": 465
+    },
+    {
+      "company": "anthropic",
+      "name": "Anthropic",
+      "active_postings": 461
+    },
+    {
+      "company": "datadog",
+      "name": "Datadog",
+      "active_postings": 438
+    },
+    {
+      "company": "cloudflare",
+      "name": "Cloudflare",
+      "active_postings": 437
+    },
+    {
+      "company": "veeam-software",
+      "name": "Veeam Software",
+      "active_postings": 325
+    },
+    {
+      "company": "lg",
+      "name": "LG Electronics",
+      "active_postings": 320
+    },
+    {
+      "company": "verkada",
+      "name": "Verkada",
+      "active_postings": 304
+    },
+    {
+      "company": "canonical",
+      "name": "Canonical",
+      "active_postings": 290
+    },
+    {
+      "company": "airbnb",
+      "name": "Airbnb",
+      "active_postings": 280
+    },
+    {
+      "company": "coreweave",
+      "name": "CoreWeave",
+      "active_postings": 270
+    },
+    {
+      "company": "okx",
+      "name": "OKX",
+      "active_postings": 260
+    },
+    {
+      "company": "brex",
+      "name": "Brex",
+      "active_postings": 250
+    },
+    {
+      "company": "applied",
+      "name": "Applied",
+      "active_postings": 233
+    },
+    {
+      "company": "mphasis",
+      "name": "Mphasis",
+      "active_postings": 200
+    },
+    {
+      "company": "affirm",
+      "name": "Affirm",
+      "active_postings": 193
+    },
+    {
+      "company": "scaleai",
+      "name": "Scale AI",
+      "active_postings": 191
+    },
+    {
+      "company": "intercom",
+      "name": "Intercom",
+      "active_postings": 185
+    },
+    {
+      "company": "grafanalabs",
+      "name": "Grafana Labs",
+      "active_postings": 181
+    },
+    {
+      "company": "twilio",
+      "name": "Twilio",
+      "active_postings": 179
+    },
+    {
+      "company": "appian-corporation",
+      "name": "Appian Corporation",
+      "active_postings": 172
+    },
+    {
+      "company": "elastic",
+      "name": "Elastic",
+      "active_postings": 170
+    },
+    {
+      "company": "figma",
+      "name": "Figma",
+      "active_postings": 163
+    },
+    {
+      "company": "block",
+      "name": "Block",
+      "active_postings": 162
+    },
+    {
+      "company": "reddit",
+      "name": "Reddit",
+      "active_postings": 157
+    },
+    {
+      "company": "lyft",
+      "name": "Lyft",
+      "active_postings": 152
+    },
+    {
+      "company": "vast",
+      "name": "Vast",
+      "active_postings": 149
+    },
+    {
+      "company": "robinhood",
+      "name": "Robinhood",
+      "active_postings": 142
+    },
+    {
+      "company": "elevenlabs",
+      "name": "ElevenLabs",
+      "active_postings": 140
+    },
+    {
+      "company": "asana",
+      "name": "Asana",
+      "active_postings": 130
+    },
+    {
+      "company": "careers-at-tide",
+      "name": "Careers at Tide",
+      "active_postings": 130
+    },
+    {
+      "company": "cvx-ventures",
+      "name": "CVX Ventures",
+      "active_postings": 120
+    },
+    {
+      "company": "addepar",
+      "name": "Addepar",
+      "active_postings": 118
+    },
+    {
+      "company": "helsing",
+      "name": "Helsing",
+      "active_postings": 116
+    },
+    {
+      "company": "apple",
+      "name": "Apple",
+      "active_postings": 112
+    },
+    {
+      "company": "elca-group",
+      "name": "ELCA Group",
+      "active_postings": 107
+    },
+    {
+      "company": "apex-space",
+      "name": "Apex",
+      "active_postings": 101
+    },
+    {
+      "company": "amazon",
+      "name": "Amazon",
+      "active_postings": 100
+    },
+    {
+      "company": "cursor",
+      "name": "Cursor",
+      "active_postings": 89
+    },
+    {
+      "company": "varicent",
+      "name": "Varicent",
+      "active_postings": 89
+    },
+    {
+      "company": "gusto",
+      "name": "Gusto",
+      "active_postings": 85
+    },
+    {
+      "company": "duolingo",
+      "name": "Duolingo",
+      "active_postings": 84
+    },
+    {
+      "company": "varda-space-industries",
+      "name": "Varda Space Industries",
+      "active_postings": 84
+    },
+    {
+      "company": "discord",
+      "name": "Discord",
+      "active_postings": 83
+    },
+    {
+      "company": "similarweb",
+      "name": "Similarweb",
+      "active_postings": 83
+    },
+    {
+      "company": "appier",
+      "name": "Appier",
+      "active_postings": 81
+    },
+    {
+      "company": "vercel",
+      "name": "Vercel",
+      "active_postings": 79
+    }
+  ],
+  "boards_success_last_48h": 0,
+  "latest_daily_runs": [
+    {
+      "run_date": "2026-05-20",
+      "started_at": "2026-05-20 20:57:54",
+      "finished_at": "2026-05-20T17:28:43",
+      "duration_seconds": -12551.0,
+      "tz_suspect": true,
+      "jobs_scraped": 358304,
+      "jobs_new": 9490,
+      "jobs_shortlisted": 50,
+      "errors": "[\"oboe-ashby: Ashby board token 'oboe' returned 404\", \"hebbia-greenhouse: Greenhouse board token 'hebbia' returned 404\", \"lightspeed-commerce-greenhouse: Greenhouse board token 'lightspeedhq' returned 404\", \"lightspeed-commerce-fr-greenhouse: Greenhouse board token 'lightspeedhqfr' returned 404\", \"stronghold-investment-management-greenhouse: Greenhouse board token 'strongholdim' returned 404\", \"chalk-greenhouse: Greenhouse board token 'chalkinc' returned 404\", \"cerrion-careers: pagination fetch failed for https://app.dover.com/api/v1/careers-page/7e31b13a-82ec-45d1-bce7-040617fde272/jobs after 3 attempts (error=JSONDecodeError)\", \"arenanet-greenhouse: Greenhouse board token 'arenanet' returned 404\", \"superblocks-greenhouse: Greenhouse board token 'superblocks' returned 404\", \"swarm-aero-greenhouse: Greenhouse board token 'swarmaero' returned 404\", \"ens-dynamics-careers: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"lumos-identity-careers: Greenhouse board token 'lumos' returned 404\", \"sulzer-schmid-careers: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"logmind-careers: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"hyperiondev-greenhouse: Greenhouse board token 'hyperiondev' returned 404\", \"hyperskill-careers: [Errno 35] write could not complete without blocking\", \"ibm-dejobs: No sitemap found for https://ibm.dejobs.org/jobs/\", \"climate-finance-solutions-greenhouse: Greenhouse board token 'climatefinancesolutions' returned 404\", \"iata-careers: [Errno 35] write could not complete without blocking\", \"coinbase-careers: Greenhouse board token 'coinbase' returned 404\", \"ava-labs-greenhouse: Greenhouse board token 'avalabs' returned 404\", \"coinbase-careers-base: Greenhouse board token 'basejobs' returned 404\", \"coinbase-careers-cdp: Greenhouse board token 'cdpjobs' returned 404\", \"wordware-ai-ashby: Ashby board token 'wordware.ai' returned 404\", \"azuki-ashby: Ashby board token 'azuki' returned 404\", \"overtime-careers: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"meridian-ashby: Ashby board token 'meridian' returned 404\", \"mentiora-ai-careers: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"indeed-careers: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"zebra-eightfold: No sitemap found for https://zebra.eightfold.ai/careers\", \"tesla-careers: module 'src.metrics' has no attribute 'browser_headless_coerced_total'\", \"semrush-careers: Recruitee API base 'https://semrush.recruitee.com' returned 404\", \"persistent-systems-careers: pagination fetch failed for https://apipersistent.zwayam.com/jobs/search?companyId=MTQ5Nzc%3D&domain=careers.persistent.com&filterCri=%7B%22paginationStartNo%22%3A0%2C%22selectedCall%22%3A%22sort%22%2C%22sortCriteria%22%3A%7B%22name%22%3A%22modifiedDate%22%2C%22isAscending%22%3Afalse%7D%2C%22numberOfRecordsPerPage%22%3A9%7D after 3 attempts (error=JSONDecodeError)\", \"freeplay-ashby: Ashby board token 'freeplay' returned 404\", \"thumbtack-greenhouse: Greenhouse board token 'thumbtack' returned 404\", \"morse-micro-greenhouse: Greenhouse board token 'morsemicro' returned 404\", \"motion-ashby: Ashby board token 'motion' returned 404\", \"gelato-greenhouse: Greenhouse board token 'gelato' returned 404\", \"skillshare-lever: Lever board token 'skillshare' returned 404\", \"general-dynamics-gdels: No sitemap found for https://www.gdels.com/en/jobs\", \"skylo-technologies-greenhouse: Greenhouse board token 'skylotechnologies' returned 404\", \"trailer-park-group-greenhouse: Greenhouse board token 'trailerpark' returned 404\", \"advantest-careers-tw: module 'src.metrics' has no attribute 'browser_navigate_fallback_total'\", \"tsmc-main: No sitemap found for https://careers.tsmc.com/en_US/careers\", \"airnxt-ashby: Ashby board token 'airnxt' returned 404\", \"brightflag-greenhouse: Greenhouse board token 'brightflag' returned 404\", \"alchemy-greenhouse: Greenhouse board token 'alchemy' returned 404\", \"possible-finance-greenhouse: Greenhouse board token 'possiblefinancialinc' returned 404\", \"ng-cash-careers: pagination fetch failed for https://revolutpeople.com/api/ngcash/external/v3/postings?page=2 after 1 attempts (status=404)\", \"uncountable-lever: Lever board token 'uncountable' returned 404\"]"
+    },
+    {
+      "run_date": "2026-05-13",
+      "started_at": "2026-05-13 17:33:01",
+      "finished_at": "2026-05-13T23:56:05",
+      "duration_seconds": 22984.0,
+      "tz_suspect": false,
+      "jobs_scraped": 6050,
+      "jobs_new": 28,
+      "jobs_shortlisted": 50,
+      "errors": "[\"greenhouse/openai: HTTP 404: https://boards.greenhouse.io/v1/boards/openai/jobs?content=true\", \"greenhouse/zapier: HTTP 404: https://boards.greenhouse.io/v1/boards/zapier/jobs?content=true\", \"greenhouse/plaid: HTTP 404: https://boards.greenhouse.io/v1/boards/plaid/jobs?content=true\", \"greenhouse/coinbase: HTTP 404: https://boards.greenhouse.io/v1/boards/coinbase/jobs?content=true\", \"greenhouse/confluent: HTTP 404: https://boards.greenhouse.io/v1/boards/confluent/jobs?content=true\", \"greenhouse/supabase: HTTP 404: https://boards.greenhouse.io/v1/boards/supabase/jobs?content=true\", \"greenhouse/retool: HTTP 404: https://boards.greenhouse.io/v1/boards/retool/jobs?content=true\", \"greenhouse/zendesk: HTTP 404: https://boards.greenhouse.io/v1/boards/zendesk/jobs?content=true\", \"greenhouse/cohere: HTTP 404: https://boards.greenhouse.io/v1/boards/cohere/jobs?content=true\", \"greenhouse/rippling: HTTP 404: https://boards.greenhouse.io/v1/boards/rippling/jobs?content=true\", \"greenhouse/palantir: HTTP 404: https://boards.greenhouse.io/v1/boards/palantir/jobs?content=true\", \"greenhouse/benchling: HTTP 404: https://boards.greenhouse.io/v1/boards/benchling/jobs?content=true\", \"greenhouse/hashicorp: HTTP 404: https://boards.greenhouse.io/v1/boards/hashicorp/jobs?content=true\", \"greenhouse/bloomberg: HTTP 404: https://boards.greenhouse.io/v1/boards/bloomberg/jobs?content=true\", \"greenhouse/snyk: HTTP 404: https://boards.greenhouse.io/v1/boards/snyk/jobs?content=true\", \"greenhouse/posthog: HTTP 404: https://boards.greenhouse.io/v1/boards/posthog/jobs?content=true\", \"greenhouse/cohesity: HTTP 404: https://boards.greenhouse.io/v1/boards/cohesity/jobs?content=true\", \"greenhouse/sentry: HTTP 404: https://boards.greenhouse.io/v1/boards/sentry/jobs?content=true\", \"greenhouse/huggingface: HTTP 404: https://boards.greenhouse.io/v1/boards/huggingface/jobs?content=true\", \"greenhouse/snowflake: HTTP 404: https://boards.greenhouse.io/v1/boards/snowflake/jobs?content=true\", \"greenhouse/notion: HTTP 404: https://boards.greenhouse.io/v1/boards/notion/jobs?content=true\"]"
+    },
+    {
+      "run_date": "2026-05-11",
+      "started_at": "2026-05-11 20:51:21",
+      "finished_at": "2026-05-11T16:53:37",
+      "duration_seconds": -14264.0,
+      "tz_suspect": true,
+      "jobs_scraped": 5156,
+      "jobs_new": 226,
+      "jobs_shortlisted": 50,
+      "errors": "[\"greenhouse/snowflake: HTTP 404: https://boards.greenhouse.io/v1/boards/snowflake/jobs?content=true\", \"greenhouse/notion: HTTP 404: https://boards.greenhouse.io/v1/boards/notion/jobs?content=true\", \"greenhouse/openai: HTTP 404: https://boards.greenhouse.io/v1/boards/openai/jobs?content=true\", \"greenhouse/zapier: HTTP 404: https://boards.greenhouse.io/v1/boards/zapier/jobs?content=true\", \"greenhouse/supabase: HTTP 404: https://boards.greenhouse.io/v1/boards/supabase/jobs?content=true\", \"greenhouse/plaid: HTTP 404: https://boards.greenhouse.io/v1/boards/plaid/jobs?content=true\", \"greenhouse/sentry: HTTP 404: https://boards.greenhouse.io/v1/boards/sentry/jobs?content=true\", \"greenhouse/bloomberg: HTTP 404: https://boards.greenhouse.io/v1/boards/bloomberg/jobs?content=true\", \"greenhouse/coinbase: HTTP 404: https://boards.greenhouse.io/v1/boards/coinbase/jobs?content=true\", \"greenhouse/zendesk: HTTP 404: https://boards.greenhouse.io/v1/boards/zendesk/jobs?content=true\", \"greenhouse/cohere: HTTP 404: https://boards.greenhouse.io/v1/boards/cohere/jobs?content=true\", \"greenhouse/retool: HTTP 404: https://boards.greenhouse.io/v1/boards/retool/jobs?content=true\", \"greenhouse/rippling: HTTP 404: https://boards.greenhouse.io/v1/boards/rippling/jobs?content=true\", \"greenhouse/uber: HTTP 404: https://boards.greenhouse.io/v1/boards/uber/jobs?content=true\", \"greenhouse/palantir: HTTP 404: https://boards.greenhouse.io/v1/boards/palantir/jobs?content=true\", \"greenhouse/posthog: HTTP 404: https://boards.greenhouse.io/v1/boards/posthog/jobs?content=true\", \"greenhouse/snyk: HTTP 404: https://boards.greenhouse.io/v1/boards/snyk/jobs?content=true\", \"greenhouse/huggingface: HTTP 404: https://boards.greenhouse.io/v1/boards/huggingface/jobs?content=true\", \"lever/temporal: HTTP 404: https://api.lever.co/v0/postings/temporal?mode=json&limit=50\", \"lever/vercel: HTTP 404: https://api.lever.co/v0/postings/vercel?mode=json&limit=50\", \"lever/linear: HTTP 404: https://api.lever.co/v0/postings/linear?mode=json&limit=50\", \"lever/ramp: HTTP 404: https://api.lever.co/v0/postings/ramp?mode=json&limit=50\", \"lever/pulumi: HTTP 404: https://api.lever.co/v0/postings/pulumi?mode=json&limit=50\", \"amazon/amazon: unexpected: 'int' object is not iterable\"]"
+    },
+    {
+      "run_date": "2026-05-07",
+      "started_at": "2026-05-07 05:36:20",
+      "finished_at": "2026-05-07T13:20:54",
+      "duration_seconds": 27874.0,
+      "tz_suspect": false,
+      "jobs_scraped": 5401,
+      "jobs_new": 728,
+      "jobs_shortlisted": 50,
+      "errors": "[\"greenhouse/zapier: HTTP 404: https://boards.greenhouse.io/v1/boards/zapier/jobs?content=true\", \"greenhouse/supabase: HTTP 404: https://boards.greenhouse.io/v1/boards/supabase/jobs?content=true\", \"greenhouse/plaid: HTTP 404: https://boards.greenhouse.io/v1/boards/plaid/jobs?content=true\", \"greenhouse/bloomberg: HTTP 404: https://boards.greenhouse.io/v1/boards/bloomberg/jobs?content=true\", \"greenhouse/coinbase: HTTP 404: https://boards.greenhouse.io/v1/boards/coinbase/jobs?content=true\", \"greenhouse/zendesk: HTTP 404: https://boards.greenhouse.io/v1/boards/zendesk/jobs?content=true\", \"greenhouse/cohere: HTTP 404: https://boards.greenhouse.io/v1/boards/cohere/jobs?content=true\", \"greenhouse/retool: HTTP 404: https://boards.greenhouse.io/v1/boards/retool/jobs?content=true\", \"greenhouse/rippling: HTTP 404: https://boards.greenhouse.io/v1/boards/rippling/jobs?content=true\", \"greenhouse/uber: HTTP 404: https://boards.greenhouse.io/v1/boards/uber/jobs?content=true\", \"greenhouse/palantir: HTTP 404: https://boards.greenhouse.io/v1/boards/palantir/jobs?content=true\", \"greenhouse/posthog: HTTP 404: https://boards.greenhouse.io/v1/boards/posthog/jobs?content=true\", \"greenhouse/snyk: HTTP 404: https://boards.greenhouse.io/v1/boards/snyk/jobs?content=true\", \"greenhouse/huggingface: HTTP 404: https://boards.greenhouse.io/v1/boards/huggingface/jobs?content=true\", \"greenhouse/sentry: HTTP 404: https://boards.greenhouse.io/v1/boards/sentry/jobs?content=true\", \"greenhouse/snowflake: HTTP 404: https://boards.greenhouse.io/v1/boards/snowflake/jobs?content=true\", \"greenhouse/notion: HTTP 404: https://boards.greenhouse.io/v1/boards/notion/jobs?content=true\", \"greenhouse/openai: HTTP 404: https://boards.greenhouse.io/v1/boards/openai/jobs?content=true\", \"lever/pulumi: HTTP 404: https://api.lever.co/v0/postings/pulumi?mode=json&limit=50\", \"lever/ramp: HTTP 404: https://api.lever.co/v0/postings/ramp?mode=json&limit=50\", \"lever/temporal: HTTP 404: https://api.lever.co/v0/postings/temporal?mode=json&limit=50\", \"lever/vercel: HTTP 404: https://api.lever.co/v0/postings/vercel?mode=json&limit=50\", \"lever/linear: HTTP 404: https://api.lever.co/v0/postings/linear?mode=json&limit=50\", \"amazon/amazon: unexpected: 'int' object is not iterable\"]"
+    },
+    {
+      "run_date": "2026-05-06",
+      "started_at": "2026-05-06 22:08:22",
+      "finished_at": "2026-05-06T18:08:43",
+      "duration_seconds": -14379.0,
+      "tz_suspect": true,
+      "jobs_scraped": 4730,
+      "jobs_new": 4730,
+      "jobs_shortlisted": 50,
+      "errors": "[\"greenhouse/huggingface: HTTP 404: https://boards.greenhouse.io/v1/boards/huggingface/jobs?content=true\", \"greenhouse/snowflake: HTTP 404: https://boards.greenhouse.io/v1/boards/snowflake/jobs?content=true\", \"greenhouse/notion: HTTP 404: https://boards.greenhouse.io/v1/boards/notion/jobs?content=true\", \"greenhouse/openai: HTTP 404: https://boards.greenhouse.io/v1/boards/openai/jobs?content=true\", \"greenhouse/zapier: HTTP 404: https://boards.greenhouse.io/v1/boards/zapier/jobs?content=true\", \"greenhouse/supabase: HTTP 404: https://boards.greenhouse.io/v1/boards/supabase/jobs?content=true\", \"greenhouse/sentry: HTTP 404: https://boards.greenhouse.io/v1/boards/sentry/jobs?content=true\", \"greenhouse/plaid: HTTP 404: https://boards.greenhouse.io/v1/boards/plaid/jobs?content=true\", \"greenhouse/coinbase: HTTP 404: https://boards.greenhouse.io/v1/boards/coinbase/jobs?content=true\", \"greenhouse/zendesk: HTTP 404: https://boards.greenhouse.io/v1/boards/zendesk/jobs?content=true\", \"greenhouse/cohere: HTTP 404: https://boards.greenhouse.io/v1/boards/cohere/jobs?content=true\", \"greenhouse/retool: HTTP 404: https://boards.greenhouse.io/v1/boards/retool/jobs?content=true\", \"greenhouse/rippling: HTTP 404: https://boards.greenhouse.io/v1/boards/rippling/jobs?content=true\", \"greenhouse/palantir: HTTP 404: https://boards.greenhouse.io/v1/boards/palantir/jobs?content=true\", \"greenhouse/posthog: HTTP 404: https://boards.greenhouse.io/v1/boards/posthog/jobs?content=true\", \"greenhouse/snyk: HTTP 404: https://boards.greenhouse.io/v1/boards/snyk/jobs?content=true\", \"lever/vercel: HTTP 404: https://api.lever.co/v0/postings/vercel?mode=json&limit=50\", \"lever/linear: HTTP 404: https://api.lever.co/v0/postings/linear?mode=json&limit=50\", \"lever/pulumi: HTTP 404: https://api.lever.co/v0/postings/pulumi?mode=json&limit=50\", \"lever/ramp: HTTP 404: https://api.lever.co/v0/postings/ramp?mode=json&limit=50\", \"lever/temporal: HTTP 404: https://api.lever.co/v0/postings/temporal?mode=json&limit=50\"]"
+    }
+  ]
+}
