@@ -23,7 +23,7 @@ API_MONITORS = frozenset({
     "greenhouse", "lever", "ashby", "smartrecruiters", "workable", "recruitee", "workday", "pinpoint",
     "breezy", "personio", "rippling", "gem", "jobylon", "oracle_hcm", "eightfold", "join", "mokahr",
     "hireology", "dvinci", "deel", "almacareer", "traffit", "softgarden", "bite", "amazon", "rss",
-    "recruiter_co_kr", "notion",
+    "recruiter_co_kr", "notion", "keka", "greythr", "zoho_recruit",
 })
 
 _TTL_S = 24 * 3600
