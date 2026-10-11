@@ -28,7 +28,7 @@ Infra: `docker-compose.yml` provides Postgres 16 and Redis 7. Migrations: `alemb
 | `src/processing/cpu.py` | Enrichment: location/salary/seniority/occupation/technology resolve | jobseek, adapted |
 | `src/processing/r2_stage.py` | Content hashing (R2 upload unused) | jobseek |
 | `src/queries/*.py` | SQL for monitor/scrape/lookups | jobseek, adapted |
-| `src/core/monitors/` | 41 monitor types (see SCRAPING_REPORT §2) | jobseek |
+| `src/core/monitors/` | 37 monitor types (see SCRAPING_REPORT §2) | jobseek |
 | `src/core/scrapers/` | 16 scraper types | jobseek |
 | `src/core/*_resolve.py`, `salary_extract.py`, `experience_extract.py` | Enrichment extractors | jobseek |
 | `src/shared/http.py`, `http_retry.py` | httpx client factory (SSRF transport, UA), retry helper | jobseek |
