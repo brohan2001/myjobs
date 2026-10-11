@@ -60,3 +60,17 @@ def test_returns_list_of_salary_ranges():
     out = extract_inr("10-15 LPA, or 12-16 LPA for senior")
     assert all(isinstance(r, SalaryRange) for r in out)
     assert len(out) == 2
+
+
+def test_unified_extractor_picks_up_inr():
+    from src.core.salary_extract import extract_salary_unified
+
+    sr = extract_salary_unified("<p>Location: Bengaluru. CTC: 18-24 LPA plus ESOPs.</p>")
+    assert sr == SalaryRange(18 * L, 24 * L, "INR", "yearly")
+
+
+def test_unified_extractor_still_handles_usd():
+    from src.core.salary_extract import extract_salary_unified
+
+    sr = extract_salary_unified("<p>The base pay range is $120,000 - $150,000 per year.</p>")
+    assert sr is not None and sr.currency == "USD"
