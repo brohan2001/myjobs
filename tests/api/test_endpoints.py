@@ -306,3 +306,9 @@ def test_job_includes_company_type(client, pool):
     pool.fetch_rows = [make_job_row(0)]
     body = client.get("/api/v1/jobs").json()
     assert body["jobs"][0]["company"]["type"] == "product"
+
+
+def test_jobs_notice_days_validation(client, pool):
+    assert client.get("/api/v1/jobs?notice_days=60").status_code == 200
+    assert 60 in pool.calls[0][2]
+    assert client.get("/api/v1/jobs?notice_days=500").status_code == 422

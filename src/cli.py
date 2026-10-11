@@ -76,6 +76,7 @@ async def _run_worker(*, browser: bool, sync_first: bool) -> None:
     from src.db import close_all_pools, create_local_pool
     from src.redis_queue import close_redis
     from src.shared.http import create_http_client
+    from src.processing.notice import run_notice_loop
     from src.workers.pipeline import run_pipeline
 
     if sync_first:
@@ -91,7 +92,10 @@ async def _run_worker(*, browser: bool, sync_first: bool) -> None:
     try:
         # create_http_client installs the SSRF guard, default headers and certifi context.
         async with create_http_client() as http:
-            runs = [run_pipeline(local_pool, http, shutdown_event, browser=False)]
+            runs = [
+                run_pipeline(local_pool, http, shutdown_event, browser=False),
+                run_notice_loop(local_pool, shutdown_event),
+            ]
             if browser:
                 runs.append(run_pipeline(local_pool, http, shutdown_event, browser=True))
             await asyncio.gather(*runs)
