@@ -55,3 +55,30 @@ export interface LocationSearchResult {
   type: string;
   code: string | null;
 }
+
+export interface CoverageAtsItem {
+  ats: string;
+  boards: number;
+  healthy: number;
+  failing: number;
+  gone: number;
+  last_success_at: string | null;
+}
+
+export interface CoverageCountryItem {
+  country: string;
+  companies: number;
+  companies_hiring: number;
+}
+
+export interface CoverageCityItem {
+  city: string;
+  companies: number;
+}
+
+export interface CoverageResponse {
+  by_ats: CoverageAtsItem[];
+  by_country: CoverageCountryItem[];
+  india_by_city: CoverageCityItem[];
+}
+

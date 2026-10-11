@@ -1,4 +1,3 @@
-import { CITIES } from "./constants";
 import { LocationItem } from "./types";
 
 export const EU_COUNTRIES = new Set([
@@ -16,137 +15,74 @@ export interface LocationFilterObject {
 
 export type LocationFilter = string | LocationFilterObject | null | undefined;
 
-interface ParsedFilter {
-  type: "country" | "eu" | "city" | "none";
-  value?: string;
-  locationId?: number;
-}
-
 const CITY_SLUGS: Record<string, string> = {
-  blr: "Bengaluru",
-  bom: "Mumbai",
-  ncr: "Delhi NCR",
-  hyd: "Hyderabad",
-  pnq: "Pune",
-  maa: "Chennai",
+  blr: "bengaluru",
+  bom: "mumbai",
+  ncr: "delhi",
+  hyd: "hyderabad",
+  pnq: "pune",
+  maa: "chennai",
 };
 
-function parseFilter(filter?: LocationFilter): ParsedFilter {
-  if (!filter) return { type: "none" };
-
-  if (typeof filter === "object") {
-    if (filter.country) {
-      const c = filter.country.toUpperCase();
-      if (c === "EU") return { type: "eu" };
-      if (c === "ALL") return { type: "none" };
-      return { type: "country", value: c };
-    }
-    if (filter.city || filter.name) {
-      return { type: "city", value: (filter.city || filter.name) ?? "" };
-    }
-    if (filter.location != null) {
-      const numId = Number(filter.location);
-      const city = CITIES.find((c) => c.id === numId);
-      if (city) return { type: "city", value: city.name, locationId: numId };
-      return { type: "city", locationId: numId };
-    }
-    return { type: "none" };
-  }
-
-  const s = filter.trim();
-  if (!s || s === "all:" || s.toLowerCase() === "all" || s.toLowerCase() === "worldwide") {
-    return { type: "none" };
-  }
-
-  // Handle prefix styles like in:, us:, eu:, in:1277333, in:blr
-  if (s.startsWith("in:")) {
-    const sub = s.slice(3).trim();
-    if (!sub) return { type: "country", value: "IN" };
-    if (CITY_SLUGS[sub.toLowerCase()]) {
-      return { type: "city", value: CITY_SLUGS[sub.toLowerCase()] };
-    }
-    const numId = Number(sub);
-    if (!Number.isNaN(numId)) {
-      const city = CITIES.find((c) => c.id === numId);
-      if (city) return { type: "city", value: city.name, locationId: numId };
-    }
-    return { type: "city", value: sub };
-  }
-
-  if (s === "us:" || s.toUpperCase() === "US" || s.toLowerCase() === "in the us" || s.toLowerCase() === "united states") {
-    return { type: "country", value: "US" };
-  }
-
-  if (s === "eu:" || s.toUpperCase() === "EU" || s.toLowerCase() === "in the eu or uk" || s.toLowerCase() === "europe") {
-    return { type: "eu" };
-  }
-
-  if (s.toUpperCase() === "IN" || s.toLowerCase() === "in india" || s.toLowerCase() === "india") {
-    return { type: "country", value: "IN" };
-  }
-
-  // If slug matches known city
-  if (CITY_SLUGS[s.toLowerCase()]) {
-    return { type: "city", value: CITY_SLUGS[s.toLowerCase()] };
-  }
-
-  // Otherwise assume city name
-  return { type: "city", value: s.replace(/^in\s+/i, "") };
-}
-
-function matchesCity(loc: LocationItem, cityName: string): boolean {
-  if (!loc.name) return false;
-  const raw = loc.name.toLowerCase();
-  const target = cityName.toLowerCase();
-
-  // Alias-aware checks for Indian metropolitan regions
-  if (target.includes("bengaluru") || target.includes("bangalore")) {
-    return raw.includes("bengaluru") || raw.includes("bangalore");
-  }
-  if (target.includes("delhi") || target.includes("ncr")) {
-    return raw.includes("delhi") || raw.includes("noida") || raw.includes("gurugram") || raw.includes("gurgaon") || raw.includes("ncr");
-  }
-  if (target.includes("mumbai") || target.includes("bombay")) {
-    return raw.includes("mumbai") || raw.includes("bombay");
-  }
-
-  return raw.includes(target);
-}
-
-function matchesLocation(loc: LocationItem, parsed: ParsedFilter): boolean {
-  if (parsed.type === "none") return false;
-
-  if (parsed.type === "country" && parsed.value) {
-    return (loc.country?.toUpperCase() ?? "") === parsed.value;
-  }
-
-  if (parsed.type === "eu") {
-    const code = loc.country?.toUpperCase() ?? "";
-    return EU_COUNTRIES.has(code);
-  }
-
-  if (parsed.type === "city") {
-    if (parsed.locationId != null && loc.id === parsed.locationId) {
-      return true;
-    }
-    if (parsed.value) {
-      return matchesCity(loc, parsed.value);
-    }
-  }
-
-  return false;
-}
+const CITY_IDS: Record<number, string> = {
+  1277333: "bengaluru",
+  1275339: "mumbai",
+  1273294: "delhi",
+  1269843: "hyderabad",
+  1259229: "pune",
+  1264527: "chennai",
+};
 
 export function orderLocations(
   locations: LocationItem[] | null | undefined,
   filter?: LocationFilter
 ): LocationItem[] {
-  if (!locations || locations.length <= 1) {
+  if (!locations || locations.length <= 1 || !filter) {
     return locations ? [...locations] : [];
   }
 
-  const parsed = parseFilter(filter);
-  if (parsed.type === "none") {
+  let country = "";
+  let isEu = false;
+  let city = "";
+  let locId: number | undefined;
+
+  if (typeof filter === "object") {
+    if (filter.country) {
+      const c = filter.country.toUpperCase();
+      if (c === "EU") isEu = true;
+      else if (c !== "ALL") country = c;
+    }
+    city = (filter.city || filter.name || "").toLowerCase();
+    if (filter.location != null) locId = Number(filter.location);
+  } else {
+    const s = filter.trim();
+    if (!s || s === "all:" || s.toLowerCase() === "all" || s.toLowerCase() === "worldwide") {
+      return [...locations];
+    }
+    if (s.startsWith("in:")) {
+      const sub = s.slice(3).toLowerCase();
+      if (!sub) country = "IN";
+      else if (CITY_SLUGS[sub]) city = CITY_SLUGS[sub];
+      else if (!Number.isNaN(Number(sub))) locId = Number(sub);
+      else city = sub;
+    } else if (s === "us:" || s.toUpperCase() === "US" || s.toLowerCase() === "in the us" || s.toLowerCase() === "united states") {
+      country = "US";
+    } else if (s === "eu:" || s.toUpperCase() === "EU" || s.toLowerCase() === "in the eu or uk" || s.toLowerCase() === "europe") {
+      isEu = true;
+    } else if (s.toUpperCase() === "IN" || s.toLowerCase() === "in india" || s.toLowerCase() === "india") {
+      country = "IN";
+    } else if (CITY_SLUGS[s.toLowerCase()]) {
+      city = CITY_SLUGS[s.toLowerCase()];
+    } else {
+      city = s.replace(/^in\s+/i, "").toLowerCase();
+    }
+  }
+
+  if (locId != null && !city) {
+    city = CITY_IDS[locId] ?? "";
+  }
+
+  if (!country && !isEu && !city && locId == null) {
     return [...locations];
   }
 
@@ -154,17 +90,31 @@ export function orderLocations(
   const rest: LocationItem[] = [];
 
   for (const loc of locations) {
-    if (matchesLocation(loc, parsed)) {
-      matches.push(loc);
-    } else {
-      rest.push(loc);
+    const c = loc.country?.toUpperCase() ?? "";
+    const n = (loc.name ?? "").toLowerCase();
+    let hit = false;
+
+    if (country) {
+      hit = c === country;
+    } else if (isEu) {
+      hit = c === "GB" || c === "UK" || EU_COUNTRIES.has(c);
+    } else if (locId != null && loc.id === locId) {
+      hit = true;
+    } else if (city && n) {
+      if (city.includes("bengaluru") || city.includes("bangalore")) {
+        hit = n.includes("bengaluru") || n.includes("bangalore");
+      } else if (city.includes("delhi") || city.includes("ncr")) {
+        hit = n.includes("delhi") || n.includes("noida") || n.includes("gurugram") || n.includes("gurgaon") || n.includes("ncr");
+      } else if (city.includes("mumbai") || city.includes("bombay")) {
+        hit = n.includes("mumbai") || n.includes("bombay");
+      } else {
+        hit = n.includes(city);
+      }
     }
+
+    if (hit) matches.push(loc);
+    else rest.push(loc);
   }
 
-  // If no location matched the filter, return original list preserved
-  if (matches.length === 0) {
-    return [...locations];
-  }
-
-  return [...matches, ...rest];
+  return matches.length > 0 ? [...matches, ...rest] : [...locations];
 }

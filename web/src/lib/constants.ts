@@ -47,21 +47,3 @@ export const CURRENCIES = [
   { value: "USD", label: "in dollars" },
 ] as const;
 
-export const ATS_NAMES: Record<string, string> = {
-  greenhouse: "Greenhouse",
-  lever: "Lever",
-  ashby: "Ashby",
-  workday: "Workday",
-  smartrecruiters: "SmartRecruiters",
-  workable: "Workable",
-  oracle_hcm: "Oracle HCM",
-  dom: "Career site",
-  eightfold: "Eightfold",
-  icims: "iCIMS",
-};
-
-export const WORK_MODE_NAMES: Record<string, string> = {
-  remote: "Remote",
-  hybrid: "Hybrid",
-  onsite: "On-site",
-};

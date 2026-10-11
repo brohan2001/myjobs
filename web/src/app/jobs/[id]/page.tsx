@@ -5,7 +5,10 @@ import { formatAtsName } from "@/lib/ats";
 import { formatSalary, relativeTime } from "@/lib/format";
 import { RATES } from "@/lib/rates";
 import { formatWorkModes } from "@/lib/work_modes";
+import { Footer } from "@/components/Footer";
 import { ThemeToggle } from "@/components/ThemeToggle";
+
+export const revalidate = 30;
 
 interface JobDetailPageProps {
   params: Promise<{ id: string }>;
@@ -96,6 +99,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
           </p>
         )}
       </main>
+      <Footer />
     </div>
   );
 }

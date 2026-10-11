@@ -10,21 +10,15 @@ const MODE_MAP: Record<string, string> = {
 export function formatWorkModes(
   workModes?: (string | null | undefined)[] | null
 ): string {
-  if (!workModes || !Array.isArray(workModes) || workModes.length === 0) {
-    return "";
-  }
+  if (!workModes?.length) return "";
 
   const parts: string[] = [];
-
   for (const m of workModes) {
     if (!m || typeof m !== "string") continue;
-    const key = m.trim().toLowerCase();
-    if (!key || key === "undefined" || key === "null") continue;
-
-    const label = MODE_MAP[key] ?? (key.charAt(0).toUpperCase() + key.slice(1));
-    if (label && !parts.includes(label)) {
-      parts.push(label);
-    }
+    const k = m.trim().toLowerCase();
+    if (!k || k === "undefined" || k === "null") continue;
+    const label = MODE_MAP[k] ?? (k.charAt(0).toUpperCase() + k.slice(1));
+    if (!parts.includes(label)) parts.push(label);
   }
 
   return parts.join(" / ");

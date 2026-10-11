@@ -2,6 +2,9 @@ import { fetchJobs, fetchStats } from "@/lib/api";
 import { PLACES } from "@/lib/constants";
 import { Job, Stats } from "@/lib/types";
 import { FeedClient } from "@/components/FeedClient";
+import { Footer } from "@/components/Footer";
+
+export const revalidate = 30;
 
 interface PageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -63,6 +66,7 @@ export default async function FeedPage({ searchParams }: PageProps) {
         initialNextCursor={initialNextCursor}
         initialStats={stats}
         initialError={initialError}
+        footer={<Footer />}
       />
     </>
   );
