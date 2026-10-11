@@ -1,0 +1,452 @@
+<!doctype html>
+<!--
+A: Ledger mockup of the feed screen. Static HTML/CSS/vanilla JS, no build step.
+Sample data is inlined from sample-jobs.json (one real row, the rest hand-written; salaries invented).
+Fonts load from Google Fonts for this mockup only; production would self-host the same variable font files.
+Direction A, Ledger: newspaper classifieds. Newsreader (serif) + Public Sans (tabular figures). Paper and ink with one red accent.
+Keys: j/k move between rows, Enter "opens" (logs and toasts), / focuses search, Esc leaves the search box.
+Currency demo rates are fixed: 1 USD = 84 INR, 1 EUR = 92 INR, 1 GBP = 108 INR. 1 LPA = 100,000 INR a year.
+
+WCAG contrast ratios (computed with the relative-luminance formula; AA needs 4.5 for text, 3 for UI edges):
+  ink on paper (body, titles)        light #1A1814 on #F6F2E7  15.85:1 (need 4.5)
+  ink on paper (body, titles)        dark  #EEE8D8 on #161410  15.04:1 (need 4.5)
+  muted on paper (meta, labels)      light #575245 on #F6F2E7  6.96:1 (need 4.5)
+  muted on paper (meta, labels)      dark  #AAA28D on #161410  7.24:1 (need 4.5)
+  accent on paper (fresh time, divider) light #A3211A on #F6F2E7  6.73:1 (need 4.5)
+  accent on paper (fresh time, divider) dark  #FF8E7C on #161410  8.24:1 (need 4.5)
+  accent on row hover                light #A3211A on #ECE6D4  6.03:1 (need 4.5)
+  accent on row hover                dark  #FF8E7C on #201D17  7.53:1 (need 4.5)
+  ink on row hover                   light #1A1814 on #ECE6D4  14.21:1 (need 4.5)
+  ink on row hover                   dark  #EEE8D8 on #201D17  13.74:1 (need 4.5)
+  muted on row hover                 light #575245 on #ECE6D4  6.24:1 (need 4.5)
+  muted on row hover                 dark  #AAA28D on #201D17  6.61:1 (need 4.5)
+  control edge on paper (UI, 3:1)    light #8A826C on #F6F2E7  3.42:1 (need 3.0)
+  control edge on paper (UI, 3:1)    dark  #7D765F on #161410  4.05:1 (need 3.0)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Newest jobs - A: Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,600&family=Public+Sans:wght@400;600;700&display=swap">
+<style>
+:root{--bg:#F6F2E7;--ink:#1A1814;--mute:#575245;--hair:#CDC5AF;--edge:#8A826C;--acc:#A3211A;--sel:#ECE6D4;}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161410;--ink:#EEE8D8;--mute:#AAA28D;--hair:#38342A;--edge:#7D765F;--acc:#FF8E7C;--sel:#201D17;}}
+:root[data-theme=dark]{--bg:#161410;--ink:#EEE8D8;--mute:#AAA28D;--hair:#38342A;--edge:#7D765F;--acc:#FF8E7C;--sel:#201D17;}
+:root[data-theme=light]{--bg:#F6F2E7;--ink:#1A1814;--mute:#575245;--hair:#CDC5AF;--edge:#8A826C;--acc:#A3211A;--sel:#ECE6D4;}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+ol,ul{list-style:none;margin:0;padding:0}
+button,select,input{font:inherit;color:inherit}
+a{color:inherit}
+[hidden]{display:none!important}
+.toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);max-width:calc(100vw - 32px);padding:10px 14px;opacity:0;pointer-events:none;transition:opacity .15s;z-index:9}
+.toast.on{opacity:1}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+body{background:var(--bg);color:var(--ink);font:400 16px/1.45 'Public Sans',system-ui,-apple-system,'Segoe UI',sans-serif;font-variant-numeric:tabular-nums lining-nums}
+.skip{position:absolute;left:-999px;top:0;background:var(--ink);color:var(--bg);padding:8px 12px}
+.skip:focus{left:8px;top:8px;z-index:10}
+.wrap{max-width:1200px;margin:0 auto;padding:0 16px 56px}
+.mast{padding:20px 0 10px;border-bottom:3px double var(--ink)}
+.mast-top{display:flex;align-items:baseline;gap:14px}
+.brand{font:italic 600 34px/1 'Newsreader',Georgia,'Times New Roman',serif;margin:0;letter-spacing:-.01em}
+.edition{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute);font-weight:600}
+.tbtn{margin-left:auto;background:none;border:1px solid var(--edge);padding:6px 10px;min-height:36px;cursor:pointer;font-size:13px}
+.tbtn::after{content:'Dark'}
+.tbtn[data-now=dark]::after{content:'Light'}
+.fresh{margin:8px 0 0;font-size:13px;color:var(--mute)}
+.layout{display:block}
+.rail{padding:12px 0 8px;border-bottom:1px solid var(--hair)}
+.fg{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 2px;margin-bottom:2px}
+.fg h2{flex:0 0 76px;margin:0;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+.opts{display:flex;flex-wrap:wrap;flex:1 1 0;min-width:0}
+.opts.cities{flex-basis:100%;padding-left:76px}
+.opt{appearance:none;background:none;border:0;border-bottom:2px solid transparent;font-size:15px;padding:6px 8px 3px;min-height:34px;cursor:pointer;color:var(--ink)}
+.opt:hover{border-bottom-color:var(--hair)}
+.opt[aria-pressed=true]{font-weight:700;border-bottom-color:var(--acc)}
+.find{display:flex;align-items:baseline;gap:0;margin-top:6px}
+.find input{flex:1;min-width:0;background:none;border:0;border-bottom:1.5px solid var(--ink);padding:8px 0 6px;font-size:16px;min-height:40px;border-radius:0}
+.find input::placeholder{color:var(--mute);opacity:1}
+.find kbd{font:600 11px 'Public Sans',sans-serif;color:var(--mute);border:1px solid var(--edge);padding:1px 6px;margin-left:8px}
+.listhead{display:flex;justify-content:space-between;align-items:baseline;padding:14px 0 6px}
+.listhead h2{margin:0;font:600 13px/1.3 'Public Sans',sans-serif;letter-spacing:.04em;color:var(--mute)}
+.list{border-top:1px solid var(--ink)}
+.row{display:grid;grid-template-columns:52px minmax(0,1fr);column-gap:14px;padding:12px 4px 12px 0;border-bottom:1px solid var(--hair);cursor:pointer;outline:none}
+.row:hover{background:var(--sel)}
+.row:focus{background:var(--sel);box-shadow:inset 3px 0 0 var(--acc)}
+.t{text-align:right;font-weight:700;font-size:14px;padding-top:4px;white-space:nowrap}
+.is-fresh .t{color:var(--acc)}
+.title{font:600 19px/1.22 'Newsreader',Georgia,serif;text-decoration:none;display:inline}
+.title:hover{text-decoration:underline;text-decoration-thickness:1px}
+.meta{font-size:14px;color:var(--mute);margin-top:3px}
+.meta .co{color:var(--ink);font-weight:600}
+.meta span+span::before{content:' / ';color:var(--hair)}
+.side{grid-column:2;display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:3px;font-size:13px}
+.pay{font-weight:700;font-size:14px}
+.pay:empty{display:none}
+.ats{color:var(--mute);letter-spacing:.06em;text-transform:uppercase;font-size:11px;padding-top:2px}
+.div{padding:14px 0 10px;border-top:3px double var(--acc);font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--acc);margin-top:-1px}
+.state{padding:36px 0 24px;max-width:34em}
+.state-h{font:600 27px/1.2 'Newsreader',Georgia,serif;margin:0 0 8px}
+.state-p{margin:0 0 16px;color:var(--mute)}
+.btn{background:none;border:1.5px solid var(--ink);padding:9px 16px;min-height:44px;cursor:pointer;margin:0 8px 8px 0}
+.btn:hover{background:var(--ink);color:var(--bg)}
+.btn-quiet{border-color:transparent;text-decoration:underline}
+.load-line{margin:0;padding:18px 0 10px;color:var(--mute);font-style:italic}
+.sk{display:grid;grid-template-columns:52px 1fr;column-gap:14px;padding:14px 0;border-bottom:1px solid var(--hair);height:78px}
+.sk i{display:block;background:var(--hair);height:12px;animation:p 1.2s ease-in-out infinite alternate}
+.sk i:first-child{width:34px;justify-self:end}
+.sk i+i{width:70%;height:16px}
+@keyframes p{from{opacity:.45}to{opacity:1}}
+.demo{margin-top:36px;padding-top:12px;border-top:1px solid var(--hair);font-size:13px;color:var(--mute)}
+.demo a{margin:0 4px}
+.demo a[aria-current=true]{color:var(--ink);font-weight:700}
+.demo p{margin:6px 0 0}
+.toast{background:var(--ink);color:var(--bg);font-size:14px}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.row:focus-visible{outline:none}
+@media (min-width:900px){
+  .wrap{padding:0 32px 72px}
+  .mast{padding-top:28px}
+  .brand{font-size:44px}
+  .layout{display:grid;grid-template-columns:240px minmax(0,1fr);column-gap:48px}
+  .rail{position:sticky;top:16px;align-self:start;border-bottom:0;padding:22px 0}
+  .fg{display:block;margin-bottom:18px}
+  .fg h2{padding-bottom:6px;border-bottom:1px solid var(--ink);margin-bottom:4px}
+  .opts.cities{padding-left:14px;flex-direction:row;margin-top:2px}
+  .opts.cities .opt{font-size:14px}
+  .listhead{padding-top:22px}
+  .row{grid-template-columns:64px minmax(0,1fr) 170px;padding:14px 8px 14px 0}
+  .t{font-size:15px}
+  .title{font-size:21px}
+  .side{grid-column:3;grid-row:1;flex-direction:column;align-items:flex-end;gap:2px;margin-top:2px;text-align:right}
+  .sk{grid-template-columns:64px 1fr}
+}
+
+</style>
+</head>
+<body>
+<a class="skip" href="#list">Skip to the list</a>
+<div class="wrap">
+<header class="mast">
+  <div class="mast-top"><h1 class="brand">myjobs</h1><span class="edition">Newest first</span><button class="tbtn" data-act="theme" type="button"></button></div>
+  <p class="fresh" data-out="fresh"></p>
+</header>
+<div class="layout">
+<form class="rail" role="search" aria-label="Filters" onsubmit="return false">
+  <div class="fg"><h2>Where</h2>
+    <div class="opts regions">
+      <button class="opt" type="button" data-set="region:in" aria-pressed="false">India</button>
+      <button class="opt" type="button" data-set="region:all" aria-pressed="false">Everywhere</button>
+      <button class="opt" type="button" data-set="region:us" aria-pressed="false">US</button>
+      <button class="opt" type="button" data-set="region:eu" aria-pressed="false">EU</button>
+    </div>
+    <div class="opts cities" data-when-region="in" role="group" aria-label="City">
+      <button class="opt" type="button" data-set="city:blr" aria-pressed="false">Bengaluru</button>
+      <button class="opt" type="button" data-set="city:bom" aria-pressed="false">Mumbai</button>
+      <button class="opt" type="button" data-set="city:ncr" aria-pressed="false">Delhi NCR</button>
+      <button class="opt" type="button" data-set="city:hyd" aria-pressed="false">Hyderabad</button>
+      <button class="opt" type="button" data-set="city:pnq" aria-pressed="false">Pune</button>
+      <button class="opt" type="button" data-set="city:maa" aria-pressed="false">Chennai</button>
+    </div>
+  </div>
+  <div class="fg"><h2>Work mode</h2><div class="opts">
+    <button class="opt" type="button" data-set="mode:" aria-pressed="false">Any</button>
+    <button class="opt" type="button" data-set="mode:remote" aria-pressed="false">Remote</button>
+    <button class="opt" type="button" data-set="mode:hybrid" aria-pressed="false">Hybrid</button>
+    <button class="opt" type="button" data-set="mode:onsite" aria-pressed="false">On-site</button>
+  </div></div>
+  <div class="fg"><h2>Posted</h2><div class="opts">
+    <button class="opt" type="button" data-set="within:60" aria-pressed="false">1 hour</button>
+    <button class="opt" type="button" data-set="within:1440" aria-pressed="false">24 hours</button>
+    <button class="opt" type="button" data-set="within:4320" aria-pressed="false">3 days</button>
+    <button class="opt" type="button" data-set="within:10080" aria-pressed="false">7 days</button>
+  </div></div>
+  <div class="fg"><h2>Pay in</h2><div class="opts">
+    <button class="opt" type="button" data-set="cur:native" aria-pressed="false">As posted</button>
+    <button class="opt" type="button" data-set="cur:inr" aria-pressed="false">&#8377; INR</button>
+    <button class="opt" type="button" data-set="cur:usd" aria-pressed="false">$ USD</button>
+  </div></div>
+  <label class="find"><span class="sr">Search jobs</span><input id="q" type="search" placeholder="Title, company, city" autocomplete="off"><kbd>/</kbd></label>
+</form>
+<main>
+  <div class="listhead"><h2 data-out="count" aria-live="polite"></h2></div>
+  <ol id="list" class="list" aria-label="Jobs, newest first"></ol>
+  <footer class="demo">Demo states:
+    <a href="#" data-view="live">Live</a> / <a href="#" data-view="loading">Loading</a> / <a href="#" data-view="empty">Empty</a> / <a href="#" data-view="error">Error</a>
+    <p>Sample data. Salaries are invented; conversions use a fixed demo rate (1 USD = 84 INR).</p>
+  </footer>
+</main>
+</div>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+window.DESIGN={
+ row:function(r,i){
+  return '<li class="row'+(r.fresh?' is-fresh':'')+'" data-i="'+i+'" tabindex="-1">'+
+   '<span class="t"><span aria-hidden="true">'+r.ago+'</span><span class="sr">'+r.agoLong+'</span></span>'+
+   '<div class="main"><a class="title" href="#">'+esc(r.title)+'</a>'+
+   '<div class="meta"><span class="co">'+esc(r.company)+'</span><span>'+esc(r.loc)+'</span><span>'+r.mode+'</span></div></div>'+
+   '<div class="side"><span class="pay">'+r.sal+'</span><span class="ats">'+esc(r.ats)+'</span></div></li>';
+ },
+ divider:function(n){return '<li class="div" role="separator">The '+n+' above are new since your last visit \u00B7 Fri 9 Oct, 6:20 pm</li>';},
+ skeleton:function(){return '<li class="sk" aria-hidden="true"><i></i><i></i></li>';}
+};
+</script>
+<script>
+(function () {
+'use strict';
+var DOC = {"stats":{"active_jobs":329166,"companies_hiring":2680,"new_last_24h":37182,"updated_minutes_ago":4},"jobs":[{"title":"Senior Backend Engineer, Payments","company":"Razorpay","locations":["Bengaluru, India"],"work_modes":["hybrid"],"salary":{"min":3200000,"max":4800000,"currency":"INR","period":"year","demo":true},"first_seen_at":"2026-10-11T08:38:00Z","ats":"greenhouse","synthetic":true},{"title":"Staff Site Reliability Engineer","company":"Stripe","locations":["Remote, United States"],"work_modes":["remote"],"salary":{"min":185000,"max":245000,"currency":"USD","period":"year","demo":true},"first_seen_at":"2026-10-11T08:37:00Z","ats":"greenhouse","synthetic":true},{"title":"Senior Technology Lead, L4B Customer & Partner Experience","company":"Logitech","locations":["Chennai, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T08:36:00Z","ats":"workday"},{"title":"Product Designer, Growth","company":"Swiggy","locations":["Bangalore, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T08:33:00Z","ats":"lever","synthetic":true},{"title":"Data Engineer II","company":"Flipkart","locations":["Bengaluru, India"],"work_modes":["onsite"],"salary":{"min":2400000,"max":3400000,"currency":"INR","period":"year","demo":true},"first_seen_at":"2026-10-11T08:29:00Z","ats":"smartrecruiters","synthetic":true},{"title":"Machine Learning Engineer, Ranking","company":"Spotify","locations":["London, United Kingdom"],"work_modes":["hybrid"],"salary":{"min":78000,"max":102000,"currency":"GBP","period":"year","demo":true},"first_seen_at":"2026-10-11T08:25:00Z","ats":"lever","synthetic":true},{"title":"Associate, Technology Risk","company":"Goldman Sachs","locations":["Hyderabad, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T08:21:00Z","ats":"oracle_hcm","synthetic":true},{"title":"Android Engineer","company":"PhonePe","locations":["Bengaluru, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T08:14:00Z","ats":"greenhouse","synthetic":true},{"title":"Platform Engineer, Kubernetes","company":"Datadog","locations":["Paris, France","Remote, France"],"work_modes":["remote"],"salary":{"min":72000,"max":96000,"currency":"EUR","period":"year","demo":true},"first_seen_at":"2026-10-11T08:07:00Z","ats":"greenhouse","synthetic":true},{"title":"Full Stack Developer","company":"Freshworks","locations":["Chennai, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T08:02:00Z","ats":"greenhouse","synthetic":true},{"title":"Software Development Engineer in Test","company":"Microsoft","locations":["Hyderabad, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T07:48:00Z","ats":"eightfold","synthetic":true},{"title":"Growth Marketing Manager","company":"Meesho","locations":["Bengaluru, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T07:36:00Z","ats":"lever","synthetic":true},{"title":"Senior Security Engineer","company":"Cloudflare","locations":["London, United Kingdom","Lisbon, Portugal"],"work_modes":["hybrid","remote"],"salary":null,"first_seen_at":"2026-10-11T07:30:00Z","ats":"greenhouse","synthetic":true},{"title":"Backend Engineer, Core Banking","company":"Juspay","locations":["Bengaluru, India"],"work_modes":["onsite"],"salary":{"min":2800000,"max":4200000,"currency":"INR","period":"year","demo":true},"first_seen_at":"2026-10-11T07:15:00Z","ats":"ashby","synthetic":true},{"title":"Frontend Engineer, Checkout","company":"CRED","locations":["Bengaluru, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T06:50:00Z","ats":"lever","synthetic":true},{"title":"Staff Engineer, Developer Tools","company":"Figma","locations":["San Francisco, United States"],"work_modes":["hybrid"],"salary":{"min":210000,"max":290000,"currency":"USD","period":"year","demo":true},"first_seen_at":"2026-10-11T06:35:00Z","ats":"greenhouse","synthetic":true},{"title":"Business Analyst","company":"Delhivery","locations":["Gurugram, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T06:20:00Z","ats":"workday","synthetic":true},{"title":"Customer Success Manager, Enterprise","company":"Freshworks","locations":["Mumbai, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T05:45:00Z","ats":"greenhouse","synthetic":true},{"title":"Embedded Software Engineer, Wireless","company":"Qualcomm","locations":["Bengaluru, India","Hyderabad, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T05:10:00Z","ats":"workday","synthetic":true},{"title":"Cloud Support Engineer","company":"Cisco","locations":["Bengaluru, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-11T04:20:00Z","ats":"eightfold","synthetic":true},{"title":"Senior Frontend Engineer","company":"Adyen","locations":["Amsterdam, Netherlands"],"work_modes":["hybrid"],"salary":{"min":75000,"max":105000,"currency":"EUR","period":"year","demo":true},"first_seen_at":"2026-10-11T03:40:00Z","ats":"greenhouse","synthetic":true},{"title":"GPU Software Engineer, Drivers","company":"NVIDIA","locations":["Pune, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T03:20:00Z","ats":"workday","synthetic":true},{"title":"Backend Engineer, Trading Systems","company":"Zerodha","locations":["Bengaluru, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T02:10:00Z","ats":"dom","synthetic":true},{"title":"Financial Analyst","company":"Tata Motors","locations":["Pune, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-11T00:50:00Z","ats":"oracle_hcm","synthetic":true},{"title":"Solutions Architect","company":"Atlassian","locations":["Remote, United States"],"work_modes":["remote"],"salary":{"min":165000,"max":220000,"currency":"USD","period":"year","demo":true},"first_seen_at":"2026-10-11T00:00:00Z","ats":"lever","synthetic":true},{"title":"Technical Program Manager","company":"Intel","locations":["Bengaluru, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-10T23:20:00Z","ats":"workday","synthetic":true},{"title":"Content Designer","company":"Nykaa","locations":["Mumbai, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-10T21:50:00Z","ats":"lever","synthetic":true},{"title":"Site Reliability Engineer","company":"Zoho","locations":["Chennai, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-10T20:20:00Z","ats":"dom","synthetic":true},{"title":"Engineering Manager, Platform","company":"Postman","locations":["Bengaluru, India","Remote, India"],"work_modes":["remote","hybrid"],"salary":{"min":5200000,"max":7500000,"currency":"INR","period":"year","demo":true},"first_seen_at":"2026-10-10T18:50:00Z","ats":"ashby","synthetic":true},{"title":"Platform Engineer","company":"Julius Baer","locations":["Zurich, Switzerland"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-10T18:00:00Z","ats":"workday","synthetic":true},{"title":"Operations Associate","company":"Eternal","locations":["Gurgaon, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-10T17:20:00Z","ats":"greenhouse","synthetic":true},{"title":"Research Engineer, Indic Languages","company":"Sarvam AI","locations":["Bengaluru, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-10T15:50:00Z","ats":"ashby","synthetic":true},{"title":"QA Engineer","company":"Paytm","locations":["Noida, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-10T14:00:00Z","ats":"lever","synthetic":true},{"title":"Mobile Engineer, iOS","company":"Dream11","locations":["Mumbai, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-10T11:40:00Z","ats":"greenhouse","synthetic":true},{"title":"Infrastructure Engineer","company":"Revolut","locations":["London, United Kingdom"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-10T07:40:00Z","ats":"greenhouse","synthetic":true},{"title":"Senior Data Scientist","company":"Chargebee","locations":["Remote, India"],"work_modes":["remote"],"salary":{"min":3000000,"max":4500000,"currency":"INR","period":"year","demo":true},"first_seen_at":"2026-10-10T04:20:00Z","ats":"ashby","synthetic":true},{"title":"Staff Product Designer","company":"Canva","locations":["Berlin, Germany"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-09T13:20:00Z","ats":"smartrecruiters","synthetic":true},{"title":"Backend Engineer, Orders","company":"Lenskart","locations":["Gurugram, India"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-09T08:20:00Z","ats":"lever","synthetic":true},{"title":"Network Engineer","company":"OVHcloud","locations":["Roubaix, France"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-08T17:20:00Z","ats":"dom","synthetic":true},{"title":"Application Developer","company":"Infosys","locations":["Pune, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-08T12:20:00Z","ats":"dom","synthetic":true},{"title":"Developer Advocate","company":"Vercel","locations":["Remote, United States"],"work_modes":["remote"],"salary":null,"first_seen_at":"2026-10-07T14:40:00Z","ats":"ashby","synthetic":true},{"title":"Senior iOS Engineer","company":"Ola Electric","locations":["Bengaluru, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-07T01:20:00Z","ats":"lever","synthetic":true},{"title":"Product Manager, Payments","company":"Wise","locations":["London, United Kingdom"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-05T22:40:00Z","ats":"greenhouse","synthetic":true},{"title":"Data Analyst","company":"TCS","locations":["Mumbai, India"],"work_modes":["onsite"],"salary":null,"first_seen_at":"2026-10-05T06:00:00Z","ats":"dom","synthetic":true},{"title":"Support Engineer","company":"Notion","locations":["San Francisco, United States"],"work_modes":["hybrid"],"salary":null,"first_seen_at":"2026-10-04T13:20:00Z","ats":"greenhouse","synthetic":true}]};
+var JOBS = DOC.jobs, STATS = DOC.stats;
+var REF = Date.parse('2026-10-11T08:40:00Z'), T0 = Date.now();
+var RATE = { INR: 1, USD: 84, EUR: 92, GBP: 108 };   // fixed demo rates, INR per unit
+var SYM = { INR: '₹', USD: '$', EUR: '€', GBP: '£' };
+var CITIES = {
+  blr: { code: 'BLR', label: 'Bengaluru', region: 'in', re: /bengaluru|bangalore/i },
+  bom: { code: 'BOM', label: 'Mumbai', region: 'in', re: /mumbai|thane/i },
+  ncr: { code: 'DEL', label: 'Delhi NCR', region: 'in', re: /delhi|gurugram|gurgaon|noida|ghaziabad/i },
+  hyd: { code: 'HYD', label: 'Hyderabad', region: 'in', re: /hyderabad/i },
+  pnq: { code: 'PNQ', label: 'Pune', region: 'in', re: /pune/i },
+  maa: { code: 'MAA', label: 'Chennai', region: 'in', re: /chennai/i },
+  sfo: { code: 'SFO', label: 'San Francisco', region: 'us', re: /san francisco|palo alto|mountain view/i },
+  lon: { code: 'LON', label: 'London', region: 'eu', re: /london/i }
+};
+var REGIONS = {
+  'in': { label: 'India', phrase: 'in India', re: /india/i },
+  all: { label: 'Everywhere', phrase: 'worldwide' },
+  us: { label: 'US', phrase: 'in the US', re: /united states/i },
+  eu: { label: 'EU/UK', phrase: 'in the EU or UK', re: /germany|france|netherlands|ireland|spain|sweden|poland|portugal|united kingdom|italy|switzerland/i }
+};
+var WINDOWS = [
+  { v: 60, phrase: 'last hour', short: '1h' },
+  { v: 1440, phrase: 'last 24 hours', short: '24h' },
+  { v: 4320, phrase: 'last 3 days', short: '3d' },
+  { v: 10080, phrase: 'last 7 days', short: '7d' }
+];
+var ATS = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', smartrecruiters: 'SmartRecruiters',
+  workable: 'Workable', oracle_hcm: 'Oracle HCM', dom: 'Career site', eightfold: 'Eightfold', icims: 'iCIMS' };
+var MODES = { remote: 'Remote', hybrid: 'Hybrid', onsite: 'On-site' };
+var NEW_N = 6;
+var S = { region: 'in', city: '', mode: '', within: 1440, cur: 'native', q: '', view: 'live' };
+var D = window.DESIGN;
+var $ = function (s, r) { return (r || document).querySelector(s); };
+var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+var LIST = $('#list'), cursor = -1;
+
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+function nowMs() { return REF + (Date.now() - T0); }
+function ageMin(j) { return Math.max(0, Math.round((nowMs() - Date.parse(j.first_seen_at)) / 60000)); }
+function agoShort(m) { return m < 1 ? 'now' : m < 60 ? m + 'm' : m < 1440 ? Math.floor(m / 60) + 'h' : Math.floor(m / 1440) + 'd'; }
+function agoLong(m) {
+  if (m < 1) return 'just now';
+  if (m < 60) return m + ' min ago';
+  if (m < 1440) { var h = Math.floor(m / 60); return h + (h === 1 ? ' hour' : ' hours') + ' ago'; }
+  var d = Math.floor(m / 1440); return d + (d === 1 ? ' day' : ' days') + ' ago';
+}
+function trim1(n) { return String(Math.round(n * 10) / 10).replace(/\.0$/, ''); }
+function lpa(inr) { var v = inr / 1e5; return v >= 10 ? String(Math.round(v)) : trim1(v); }
+function fmtSalary(s) {
+  if (!s) return '';
+  var c = S.cur === 'native' ? s.currency : (S.cur === 'inr' ? 'INR' : 'USD');
+  var k = RATE[s.currency] / RATE[c], lo = s.min * k, hi = s.max * k;
+  if (c === 'INR') return '₹' + lpa(lo) + '–' + lpa(hi) + ' LPA';
+  return SYM[c] + Math.round(lo / 1000) + '–' + Math.round(hi / 1000) + 'k';
+}
+function cityKey(j) {
+  for (var key in CITIES) { var re = CITIES[key].re; if (j.locations.some(function (l) { return re.test(l); })) return key; }
+  return '';
+}
+function codeOf(j) {
+  var k = cityKey(j); if (k) return CITIES[k].code;
+  var first = j.locations[0] || '';
+  if (/^remote/i.test(first)) return 'RMT';
+  return first.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || '---';
+}
+function placeLabel() { return S.city ? 'in ' + CITIES[S.city].label : REGIONS[S.region].phrase; }
+function winPhrase() { return WINDOWS.filter(function (w) { return w.v === S.within; })[0].phrase; }
+function locText(j) {
+  var l = j.locations[0] || '';
+  return j.locations.length > 1 ? l + ' +' + (j.locations.length - 1) : l;
+}
+function matches(j) {
+  var re;
+  if (S.city) { re = CITIES[S.city].re; if (!j.locations.some(function (l) { return re.test(l); })) return false; }
+  if (S.region !== 'all') { re = REGIONS[S.region].re; if (!j.locations.some(function (l) { return re.test(l); })) return false; }
+  if (S.mode && j.work_modes.indexOf(S.mode) < 0) return false;
+  if (S.q) {
+    var blob = (j.title + ' ' + j.company + ' ' + j.locations.join(' ') + ' ' + j.ats).toLowerCase();
+    if (!S.q.toLowerCase().split(/\s+/).every(function (t) { return blob.indexOf(t) >= 0; })) return false;
+  }
+  return true;
+}
+function model(j, i) {
+  var m = ageMin(j);
+  return { j: j, i: i, age: m, ago: agoShort(m), agoLong: agoLong(m), fresh: m < 60,
+    title: j.title, company: j.company, loc: locText(j), code: codeOf(j),
+    modes: j.work_modes.map(function (x) { return MODES[x]; }), mode: j.work_modes.map(function (x) { return MODES[x]; }).join(' / '),
+    sal: fmtSalary(j.salary), ats: ATS[j.ats] || j.ats };
+}
+function results() {
+  return JOBS.map(model).filter(function (r) { return r.age <= S.within && matches(r.j); })
+    .sort(function (a, b) { return a.age - b.age; });
+}
+
+function stateHTML(kind) {
+  var h, p = '', b = '';
+  if (kind === 'error') {
+    h = 'We can’t reach the feed right now.';
+    p = 'That’s on our side, not your connection. Give it a moment, then try again.';
+    b = '<button class="btn" data-act="retry">Try again</button>';
+  } else {
+    var wi = WINDOWS.map(function (w) { return w.v; }).indexOf(S.within);
+    h = 'Nothing ' + placeLabel() + ' in the ' + winPhrase() + '.';
+    if (wi < WINDOWS.length - 1) {
+      p = 'Postings land in bursts. A wider window usually helps.';
+      b = '<button class="btn" data-act="widen">Try ' + WINDOWS[wi + 1].phrase.replace('last ', '') + '?</button>';
+    } else {
+      p = 'Try dropping a filter or two.';
+      b = '<button class="btn" data-act="everywhere">Look worldwide</button>';
+    }
+    if (S.q || S.mode) b += ' <button class="btn btn-quiet" data-act="clear">Clear search and mode</button>';
+  }
+  return '<li class="state state-' + kind + '" role="' + (kind === 'error' ? 'alert' : 'status') + '"><p class="state-h">' + h + '</p><p class="state-p">' + p + '</p><div class="state-b">' + b + '</div></li>';
+}
+function loadingHTML() {
+  var rows = '';
+  for (var i = 0; i < 9; i++) rows += D.skeleton(i);
+  return '<li class="state-load" role="status"><span class="sr">Loading the newest jobs</span><p class="load-line">Checking ' + STATS.companies_hiring.toLocaleString('en-US') + ' career sites for new postings…</p></li>' + rows;
+}
+
+function sync() {
+  $$('[data-set]').forEach(function (el) {
+    var p = el.getAttribute('data-set').split(':'), k = p[0], v = p[1], on;
+    if (k === 'city') on = S.city === v; else on = String(S[k]) === v;
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  $$('select[data-sel]').forEach(function (el) {
+    var k = el.getAttribute('data-sel');
+    el.value = k === 'place' ? S.region + ':' + S.city : String(S[k]);
+    var out = el.parentNode.querySelector('[data-label]');
+    if (out) out.textContent = el.options[el.selectedIndex].text;
+  });
+  $$('[data-when-region]').forEach(function (el) { el.hidden = el.getAttribute('data-when-region') !== S.region; });
+  $$('[data-view]').forEach(function (el) { el.setAttribute('aria-current', el.getAttribute('data-view') === S.view ? 'true' : 'false'); });
+  var q = $('#q'); if (q && document.activeElement !== q) q.value = S.q;
+}
+function render() {
+  var out = '', list, n = 0;
+  var fresh = $$('[data-out=fresh]');
+  fresh.forEach(function (el) {
+    el.textContent = 'Updated ' + STATS.updated_minutes_ago + ' min ago · ' + STATS.active_jobs.toLocaleString('en-US') + ' open jobs · ' + STATS.companies_hiring.toLocaleString('en-US') + ' companies';
+  });
+  LIST.setAttribute('aria-busy', S.view === 'loading' ? 'true' : 'false');
+  cursor = -1;
+  if (S.view === 'loading') { LIST.innerHTML = loadingHTML(); setCount('Loading…'); return; }
+  if (S.view === 'error') { LIST.innerHTML = stateHTML('error'); setCount('Feed unavailable'); return; }
+  list = results();
+  if (S.view === 'empty' || !list.length) { LIST.innerHTML = stateHTML('empty'); setCount('0 jobs ' + placeLabel() + ', ' + winPhrase()); return; }
+  var lastGroup = null;
+  list.forEach(function (r, i) {
+    if (D.group) {
+      var g = D.group(r);
+      if (g !== lastGroup) { out += D.groupHeader(g, list.filter(function (x) { return D.group(x) === g; }).length); lastGroup = g; }
+    }
+    if (i === NEW_N && list.length > NEW_N) out += D.divider(NEW_N);
+    out += D.row(r, i);
+    n++;
+  });
+  LIST.innerHTML = out;
+  var first = $('.row', LIST); if (first) first.tabIndex = 0;
+  setCount(n + (n === 1 ? ' job ' : ' jobs ') + placeLabel() + ', ' + winPhrase());
+  if (D.after) D.after(list, S);
+}
+function setCount(t) { $$('[data-out=count]').forEach(function (el) { el.textContent = t; }); }
+function update() { sync(); render(); }
+
+function set(k, v) {
+  if (k === 'place') { var p = v.split(':'); S.region = p[0]; S.city = p[1] || ''; }
+  else if (k === 'city') { if (S.city === v) S.city = ''; else { S.city = v; S.region = CITIES[v].region; } }
+  else if (k === 'region') { S.region = v; if (S.city && CITIES[S.city].region !== v) S.city = ''; }
+  else if (k === 'within') S.within = +v;
+  else S[k] = v;
+  if (k !== 'view' && S.view === 'empty') S.view = 'live';
+  update();
+}
+
+var toastT;
+function toast(msg) {
+  var t = $('#toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('on'); }, 2600);
+}
+function openRow(el) {
+  var r = results()[+el.getAttribute('data-i')]; if (!r) return;
+  var msg = 'Would open: ' + r.title + ' at ' + r.company + ' (' + r.ats + ')';
+  console.log(msg); toast(msg);
+}
+function moveTo(i) {
+  var rows = $$('.row', LIST); if (!rows.length) return;
+  cursor = Math.max(0, Math.min(rows.length - 1, i));
+  rows.forEach(function (r) { r.tabIndex = -1; });
+  rows[cursor].tabIndex = 0; rows[cursor].focus();
+  rows[cursor].scrollIntoView({ block: 'nearest' });
+}
+
+document.addEventListener('click', function (e) {
+  var t = e.target, el;
+  if ((el = t.closest('[data-set]'))) { var p = el.getAttribute('data-set').split(':'); set(p[0], p[1]); return; }
+  if ((el = t.closest('[data-view]'))) { e.preventDefault(); S.view = el.getAttribute('data-view'); update(); return; }
+  if ((el = t.closest('[data-act]'))) {
+    var a = el.getAttribute('data-act');
+    if (a === 'theme') {
+      var cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      applyTheme(cur === 'dark' ? 'light' : 'dark', true);
+    }
+    if (a === 'retry') { S.view = 'loading'; update(); setTimeout(function () { S.view = 'live'; update(); }, 900); }
+    if (a === 'widen') { var i = WINDOWS.map(function (w) { return w.v; }).indexOf(S.within); S.within = WINDOWS[Math.min(i + 1, 3)].v; S.view = 'live'; update(); }
+    if (a === 'everywhere') { S.region = 'all'; S.city = ''; S.view = 'live'; update(); }
+    if (a === 'clear') { S.q = ''; S.mode = ''; S.view = 'live'; update(); }
+    return;
+  }
+  if ((el = t.closest('.row'))) { if (t.closest('a')) e.preventDefault(); openRow(el); }
+});
+document.addEventListener('change', function (e) {
+  var el = e.target.closest('select[data-sel]'); if (el) set(el.getAttribute('data-sel'), el.value);
+});
+$('#q').addEventListener('input', function (e) { S.q = e.target.value.trim(); render(); });
+document.addEventListener('keydown', function (e) {
+  var tag = (e.target.tagName || '').toLowerCase();
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (tag === 'input') { if (e.key === 'Escape') e.target.blur(); return; }
+  if (tag === 'select' || tag === 'textarea') return;
+  if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
+  else if (e.key === 'j') { e.preventDefault(); moveTo(cursor + 1); }
+  else if (e.key === 'k') { e.preventDefault(); moveTo(cursor < 0 ? 0 : cursor - 1); }
+  else if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('row')) { e.preventDefault(); openRow(e.target); }
+});
+LIST.addEventListener('focusin', function (e) {
+  var row = e.target.closest && e.target.closest('.row');
+  if (row) cursor = $$('.row', LIST).indexOf(row);
+});
+
+function applyTheme(t, store) {
+  document.documentElement.setAttribute('data-theme', t);
+  if (store) { try { localStorage.setItem('theme', t); } catch (x) {} }
+  $$('[data-act=theme]').forEach(function (b) { b.setAttribute('aria-label', 'Switch to ' + (t === 'dark' ? 'light' : 'dark') + ' theme'); b.setAttribute('data-now', t); });
+}
+try { var st = localStorage.getItem('theme'); if (st) document.documentElement.setAttribute('data-theme', st); } catch (x) {}
+applyTheme(document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'), false);
+window.addEventListener('pagehide', function () { try { localStorage.setItem('lastVisit', new Date().toISOString()); } catch (x) {} });
+update();
+})();
+
+</script>
+</body>
+</html>
