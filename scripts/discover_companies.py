@@ -116,6 +116,13 @@ def main(argv: list[str] | None = None) -> int:
             if col not in company_fields:
                 company_fields.append(col)
         _domains, slugs, _urls = existing_index(companies, boards)
+        board_slugs = {b["board_slug"] for b in boards if b.get("board_slug")}
+
+        def _unique_board(board: dict) -> dict:
+            board["board_slug"] = unique_slug(board["board_slug"], board_slugs)
+            board_slugs.add(board["board_slug"])
+            return board
+
         added = 0
         for o in outcomes:
             if o.status != "accepted":
@@ -123,14 +130,14 @@ def main(argv: list[str] | None = None) -> int:
             if o.candidate.slug and o.candidate.slug in slugs:
                 # Re-discovery: keep the company, add its new board.
                 _company, board = registry_rows(o, o.candidate.slug)
-                boards.append(board)
+                boards.append(_unique_board(board))
                 added += 1
                 continue
             slug = unique_slug(o.candidate.name, slugs)
             slugs.add(slug)
             company, board = registry_rows(o, slug)
             companies.append(company)
-            boards.append(board)
+            boards.append(_unique_board(board))
             added += 1
         _write(DATA / "companies.csv", company_fields, companies)
         _write(DATA / "boards.csv", board_fields, boards)

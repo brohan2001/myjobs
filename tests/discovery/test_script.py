@@ -293,3 +293,31 @@ class TestDiscoverCompaniesScript:
         assert rc == 0
         assert captured_kwargs.get("concurrency") == 4
         assert captured_kwargs.get("min_jobs") == 3
+
+
+def test_apply_keeps_board_slugs_unique(tmp_path, monkeypatch):
+    """Re-discovered boards must not reuse a board_slug still held by the old (gone) board."""
+    import csv as _csv
+    import scripts.discover_companies as script
+    from src.discovery.pipeline import Candidate, Outcome
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "companies.csv").write_text("slug,name,website,industry,tier,enabled\nacme,Acme,https://acme.com,,2,true\n")
+    (data / "boards.csv").write_text(
+        "company_slug,board_slug,board_url,monitor_type,monitor_config,scraper_type,scraper_config\n"
+        "acme,acme-greenhouse,https://job-boards.greenhouse.io/acmeold,greenhouse,,skip,\n"
+    )
+    monkeypatch.setattr(script, "DATA", data)
+
+    async def fake_run(*a, **k):
+        c = Candidate(name="Acme", website="https://acme.com", slug="acme")
+        return [Outcome(c, "accepted", "verified", board_url="https://job-boards.greenhouse.io/acmenew",
+                        monitor_type="greenhouse", jobs_found=3)]
+
+    monkeypatch.setattr(script, "run", fake_run)
+    cands = tmp_path / "c.csv"
+    cands.write_text("slug,name,website\nacme,Acme,https://acme.com\n")
+    script.main([str(cands), "--rediscover", "--apply", "--out-dir", str(tmp_path / "out")])
+    slugs = [r["board_slug"] for r in _csv.DictReader(open(data / "boards.csv"))]
+    assert slugs == ["acme-greenhouse", "acme-greenhouse-2"]
