@@ -33,6 +33,7 @@ class JobFilters:
     since: datetime | None = None
     seniority: str | None = None
     occupation: str | None = None
+    max_years: int | None = None  # jobs whose minimum experience requirement is <= this (or unstated)
     cursor: tuple[datetime, UUID] | None = None
     limit: int = 50
 
@@ -96,6 +97,8 @@ _JOB_COLUMNS = """
     jp.salary_max,
     jp.salary_currency,
     jp.salary_period,
+    jp.experience_min,
+    jp.experience_max,
     jp.first_seen_at,
     jp.last_seen_at,
     c.slug              AS company_slug,
@@ -136,6 +139,8 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
             f"jp.occupation_id IN (SELECT id FROM occupation WHERE slug = {p} "
             f"OR parent_id = (SELECT id FROM occupation WHERE slug = {p}))"
         )
+    if f.max_years is not None:
+        where.append(f"(jp.experience_min IS NULL OR jp.experience_min <= {arg(int(f.max_years))})")
     if f.cursor:
         ts, pid = f.cursor
         where.append(f"(jp.first_seen_at, jp.id) < ({arg(ts)}, {arg(pid)})")
