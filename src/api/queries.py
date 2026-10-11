@@ -42,6 +42,7 @@ class JobFilters:
     occupation: str | None = None
     max_years: int | None = None  # jobs whose minimum experience requirement is <= this (or unstated)
     company_types: tuple[str, ...] | None = None
+    notice_days: int | None = None  # the seeker's notice period: jobs accepting at least this (or unstated)
     cursor: tuple[datetime, UUID] | None = None
     limit: int = 50
 
@@ -107,6 +108,7 @@ _JOB_COLUMNS = """
     jp.salary_period,
     jp.experience_min,
     jp.experience_max,
+    jp.notice_max_days,
     jp.first_seen_at,
     jp.last_seen_at,
     c.slug              AS company_slug,
@@ -150,6 +152,8 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
         )
     if f.max_years is not None:
         where.append(f"(jp.experience_min IS NULL OR jp.experience_min <= {arg(int(f.max_years))})")
+    if f.notice_days is not None:
+        where.append(f"(jp.notice_max_days IS NULL OR jp.notice_max_days >= {arg(int(f.notice_days))})")
     if f.company_types:
         unknown = set(f.company_types) - set(COMPANY_TYPES)
         if unknown:
