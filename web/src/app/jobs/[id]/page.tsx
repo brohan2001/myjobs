@@ -1,10 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchJob } from "@/lib/api";
-import { ATS_NAMES, WORK_MODE_NAMES } from "@/lib/constants";
+import { formatAtsName } from "@/lib/ats";
 import { formatSalary, relativeTime } from "@/lib/format";
 import { RATES } from "@/lib/rates";
+import { formatWorkModes } from "@/lib/work_modes";
+import { Footer } from "@/components/Footer";
 import { ThemeToggle } from "@/components/ThemeToggle";
+
+export const revalidate = 30;
 
 interface JobDetailPageProps {
   params: Promise<{ id: string }>;
@@ -26,7 +30,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
   }
 
   const timeString = relativeTime(job.first_seen_at);
-  const atsName = ATS_NAMES[job.ats?.toLowerCase()] ?? job.ats;
+  const atsName = formatAtsName(job.ats);
 
   // Formatted location
   let locationText = "Remote";
@@ -41,9 +45,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
     locationText = job.locations_raw.join("; ");
   }
 
-  const modesText = (job.work_modes || [])
-    .map((m) => WORK_MODE_NAMES[m.toLowerCase()] ?? m)
-    .join(" / ");
+  const modesText = formatWorkModes(job.work_modes);
 
   const salaryText = formatSalary(job.salary, "native", RATES);
 
@@ -97,6 +99,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
           </p>
         )}
       </main>
+      <Footer />
     </div>
   );
 }

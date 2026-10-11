@@ -1,4 +1,4 @@
-import { Job, JobsResponse, LocationSearchResult, Stats } from "./types";
+import { CoverageResponse, Job, JobsResponse, LocationSearchResult, Stats } from "./types";
 
 const DEFAULT_API_ORIGIN = "http://127.0.0.1:8090";
 
@@ -55,7 +55,7 @@ export async function fetchJobs(params: FetchJobsParams = {}): Promise<JobsRespo
   const url = `${baseUrl}/api/v1/jobs${query ? `?${query}` : ""}`;
 
   const res = await fetch(url, {
-    cache: "no-store",
+    next: { revalidate: 30 },
   });
 
   if (!res.ok) {
@@ -70,7 +70,7 @@ export async function fetchJob(id: string): Promise<Job | null> {
   const url = `${baseUrl}/api/v1/jobs/${encodeURIComponent(id)}`;
 
   const res = await fetch(url, {
-    cache: "no-store",
+    next: { revalidate: 30 },
   });
 
   if (res.status === 404) {
@@ -90,7 +90,7 @@ export async function fetchStats(): Promise<Stats | null> {
     const url = `${baseUrl}/api/v1/stats`;
 
     const res = await fetch(url, {
-      cache: "no-store",
+      next: { revalidate: 30 },
     });
 
     if (!res.ok) {
@@ -112,7 +112,7 @@ export async function fetchLocations(query: string): Promise<LocationSearchResul
     const url = `${baseUrl}/api/v1/locations?q=${encodeURIComponent(query.trim())}`;
 
     const res = await fetch(url, {
-      cache: "no-store",
+      next: { revalidate: 30 },
     });
 
     if (!res.ok) {
@@ -125,3 +125,23 @@ export async function fetchLocations(query: string): Promise<LocationSearchResul
     return [];
   }
 }
+
+export async function fetchCoverage(): Promise<CoverageResponse | null> {
+  try {
+    const baseUrl = getApiBaseUrl();
+    const url = `${baseUrl}/api/v1/coverage`;
+
+    const res = await fetch(url, {
+      next: { revalidate: 30 },
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
