@@ -4,7 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJobs } from "@/lib/api";
 import { collapseRuns } from "@/lib/collapse";
-import { PLACES, WINDOWS } from "@/lib/constants";
+import { PASS_THROUGH_FILTERS, PassThroughFilter, PLACES, WINDOWS } from "@/lib/constants";
 import { Job, Stats } from "@/lib/types";
 import { FeedHeader } from "./FeedHeader";
 import { JobList, VisibleFeedItem } from "./JobList";
@@ -33,7 +33,9 @@ export function FeedClient({
   const countryParam = searchParams.get("country");
   const locationParam = searchParams.get("location");
   const companyParam = searchParams.get("company") ?? "";
-  const workModeParam = searchParams.get("work_mode") ?? "";
+  const passThrough = Object.fromEntries(
+    PASS_THROUGH_FILTERS.map((key) => [key, searchParams.get(key) ?? ""])
+  ) as Record<PassThroughFilter, string>;
   const sinceParam = searchParams.get("since") ?? "24h";
   const qParam = searchParams.get("q") ?? "";
 
@@ -120,8 +122,8 @@ export function FeedClient({
       return;
     }
 
-    if (key === "work_mode") {
-      updateQueryParams({ work_mode: value || null });
+    if ((PASS_THROUGH_FILTERS as readonly string[]).includes(key)) {
+      updateQueryParams({ [key]: value || null });
       return;
     }
 
@@ -153,7 +155,7 @@ export function FeedClient({
         country: selectedPlace?.country,
         location: selectedPlace?.location,
         company: companyParam || undefined,
-        work_mode: workModeParam,
+        ...passThrough,
         since: sinceParam,
         cursor: nextCursor,
       });
@@ -177,7 +179,7 @@ export function FeedClient({
         country: selectedPlace?.country,
         location: selectedPlace?.location,
         company: companyParam || undefined,
-        work_mode: workModeParam,
+        ...passThrough,
         since: sinceParam,
       });
       setJobs(res.jobs);
@@ -334,14 +336,18 @@ export function FeedClient({
   };
 
   const handleClearFilters = () => {
-    updateQueryParams({ q: null, work_mode: null, company: null });
+    updateQueryParams({
+      q: null,
+      company: null,
+      ...Object.fromEntries(PASS_THROUGH_FILTERS.map((key) => [key, null])),
+    });
   };
 
   return (
     <div className="wrap">
       <FeedHeader
         stats={initialStats}
-        workMode={workModeParam}
+        filters={passThrough}
         placeValue={initialPlace}
         since={sinceParam}
         currency={currency}

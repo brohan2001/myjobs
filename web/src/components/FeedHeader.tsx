@@ -2,13 +2,22 @@
 
 import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
-import { CURRENCIES, PLACES, WINDOWS, WORK_MODES } from "@/lib/constants";
+import {
+  COMPANY_TYPES,
+  CURRENCIES,
+  EXPERIENCE,
+  NOTICE,
+  PassThroughFilter,
+  PLACES,
+  WINDOWS,
+  WORK_MODES,
+} from "@/lib/constants";
 import { Stats } from "@/lib/types";
 import { ThemeToggle } from "./ThemeToggle";
 
 interface FeedHeaderProps {
   stats: Stats | null;
-  workMode: string;
+  filters: Record<PassThroughFilter, string>;
   placeValue: string;
   since: string;
   currency: string;
@@ -19,7 +28,7 @@ interface FeedHeaderProps {
 
 export function FeedHeader({
   stats,
-  workMode,
+  filters,
   placeValue,
   since,
   currency,
@@ -43,6 +52,7 @@ export function FeedHeader({
   };
 
   // Find labels for the active sentence values
+  const workMode = filters.work_mode;
   const currentMode = WORK_MODES.find((m) => m.value === workMode) ?? WORK_MODES[0];
   const currentPlace = PLACES.find((p) => p.value === placeValue) ?? PLACES[0];
   const currentSince = WINDOWS.find((w) => w.value === since) ?? WINDOWS[1];
@@ -105,7 +115,28 @@ export function FeedHeader({
               ))}
             </select>
           </span>{" "}
-          from the{" "}
+          at{" "}
+          <SentenceSelect
+            options={COMPANY_TYPES}
+            value={filters.company_type}
+            label="Company type"
+            onChange={(v) => onFilterChange("company_type", v)}
+          />{" "}
+          for{" "}
+          <SentenceSelect
+            options={EXPERIENCE}
+            value={filters.max_years}
+            label="Experience"
+            onChange={(v) => onFilterChange("max_years", v)}
+          />
+          , open to{" "}
+          <SentenceSelect
+            options={NOTICE}
+            value={filters.notice_days}
+            label="Your notice period"
+            onChange={(v) => onFilterChange("notice_days", v)}
+          />
+          , from the{" "}
           <span className="ctl dot">
             <span data-label>{currentSince.label}</span>
             <select
@@ -149,5 +180,28 @@ export function FeedHeader({
         </label>
       </form>
     </header>
+  );
+}
+
+interface SentenceSelectProps {
+  options: readonly { value: string; label: string }[];
+  value: string;
+  label: string;
+  onChange: (value: string) => void;
+}
+
+function SentenceSelect({ options, value, label, onChange }: SentenceSelectProps) {
+  const current = options.find((o) => o.value === value) ?? options[0];
+  return (
+    <span className="ctl">
+      <span data-label>{current.label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }

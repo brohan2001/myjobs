@@ -10,6 +10,7 @@ export interface Company {
   name: string;
   website: string | null;
   logo: string | null;
+  type?: string | null;
 }
 
 export interface Salary {
