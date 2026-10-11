@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { ATS_NAMES, WORK_MODE_NAMES } from "@/lib/constants";
+import { formatAtsName } from "@/lib/ats";
 import { formatSalary, relativeTime } from "@/lib/format";
 import { orderLocations } from "@/lib/locations";
 import { RATES } from "@/lib/rates";
 import { Job } from "@/lib/types";
+import { formatWorkModes } from "@/lib/work_modes";
 
 interface JobRowProps {
   job: Job;
@@ -49,16 +50,14 @@ export function JobRow({
     locationText = job.locations_raw[0];
   }
 
-  // Work modes formatted
-  const modesText = (job.work_modes || [])
-    .map((m) => WORK_MODE_NAMES[m.toLowerCase()] ?? m)
-    .join(" / ");
+  // Work modes formatted (never "undefined", empty when array is empty)
+  const modesText = formatWorkModes(job.work_modes);
 
   // Salary formatted
   const salaryText = formatSalary(job.salary, currency, RATES);
 
   // ATS formatted
-  const atsName = ATS_NAMES[job.ats?.toLowerCase()] ?? job.ats;
+  const atsName = formatAtsName(job.ats);
 
   return (
     <li
