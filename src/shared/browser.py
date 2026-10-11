@@ -63,6 +63,7 @@ DEFAULT_WAIT = "networkidle"
 DEFAULT_WAIT_FALLBACK = "domcontentloaded"
 DEFAULT_TIMEOUT = 30_000
 CONTEXT_TIMEOUT = 120_000  # hard cap: no single Playwright operation exceeds 2 minutes
+CLOSE_TIMEOUT_S = 10  # a wedged browser must not hang cleanup (and with it, task cancellation)
 VALID_WAIT_STRATEGIES = frozenset({"load", "domcontentloaded", "networkidle", "commit"})
 OVERLAY_SELECTORS = (
     '[class*="cookie-banner"]',
@@ -229,6 +230,19 @@ def _resolve_headless(requested_headless: bool) -> tuple[bool, bool]:
     return False, False
 
 
+async def _close_quietly(closing) -> None:
+    """Await a Playwright ``close()`` with a time limit, ignoring errors.
+
+    Runs in ``finally`` blocks, often while a cancellation is unwinding. An
+    unbounded close on a wedged browser blocks that cancellation forever, so
+    ``asyncio.wait_for`` timeouts upstream never fire.
+    """
+    try:
+        await asyncio.wait_for(closing, timeout=CLOSE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - includes TimeoutError
+        log.warning("browser.close_failed", timeout_s=CLOSE_TIMEOUT_S)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -366,8 +380,8 @@ async def open_page(
         yield page
     finally:
         if context:
-            await context.close()
-        await browser.close()
+            await _close_quietly(context.close())
+        await _close_quietly(browser.close())
 
 
 @asynccontextmanager
@@ -427,8 +441,7 @@ async def _open_persistent_page(
             await page.goto(warmup_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
         yield page
     finally:
-        with contextlib.suppress(Exception):
-            await context.close()
+        await _close_quietly(context.close())
         shutil.rmtree(user_data_dir, ignore_errors=True)
 
 

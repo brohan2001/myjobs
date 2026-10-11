@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import csv
 import json
+import logging
+import os
 import re
 import sys
 import time
@@ -130,8 +131,13 @@ def main(argv: list[str] | None = None) -> int:
                 if time.monotonic() - last_progress[0] > args.idle_timeout:
                     log.warning("discovery.stalled", extra={"idle_s": args.idle_timeout, "done": len(fresh)})
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    done, _ = await asyncio.wait({task}, timeout=60)
+                    if not done:
+                        # Something swallowed the cancel; asyncio.run() would hang awaiting it on
+                        # shutdown. Finished work is already journaled, so exit for --resume.
+                        log.error("discovery.cancel_stuck", extra={"done": len(fresh)})
+                        logging.shutdown()
+                        os._exit(3)
                     return fresh
 
         outcomes = previous + asyncio.run(_with_watchdog())
