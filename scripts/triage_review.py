@@ -6,7 +6,7 @@ Usage:
 Keys:
     a: accept
     r: reject
-    s: skip
+    s: skip for now (asked again next session)
     u <url>: retry with a new careers URL
     q: quit
 """
@@ -486,8 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                 break
 
             if choice == "s":
-                apply_decision(triage_path, row, "skip")
-                write_outputs(out_dir)
+                # Not recorded: a skipped company comes back next session.
                 break
 
             if choice.startswith("u"):
