@@ -308,6 +308,7 @@ class TestPureHelpers:
             "category": "saas",
             "source": "referral",
             "country": "IN",
+            "slug": "",
             "status": "accepted",
             "reason": "verified",
             "board_url": "https://boards.greenhouse.io/test",
@@ -612,7 +613,7 @@ class TestRun:
         monkeypatch.setattr("src.discovery.pipeline.evaluate", mock_evaluate)
         monkeypatch.setattr(
             "src.shared.http.create_http_client",
-            lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
         )
 
         outcomes = await run(candidates, companies, boards)
@@ -636,7 +637,7 @@ class TestRun:
         monkeypatch.setattr("src.discovery.pipeline.evaluate", fake_evaluate)
         monkeypatch.setattr(
             "src.shared.http.create_http_client",
-            lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
         )
 
         outcomes = await run(candidates, companies, boards)
@@ -658,7 +659,7 @@ class TestRun:
         monkeypatch.setattr("src.discovery.pipeline.evaluate", mock_evaluate)
         monkeypatch.setattr(
             "src.shared.http.create_http_client",
-            lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
         )
 
         outcomes = await run(candidates, companies, boards)
@@ -680,7 +681,7 @@ class TestRun:
         monkeypatch.setattr("src.discovery.pipeline.evaluate", slow_evaluate)
         monkeypatch.setattr(
             "src.shared.http.create_http_client",
-            lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
         )
 
         outcomes = await run(candidates, companies, boards, per_company_timeout=0.01)
@@ -707,7 +708,7 @@ class TestRun:
         monkeypatch.setattr("src.discovery.pipeline.evaluate", fake_evaluate)
         monkeypatch.setattr(
             "src.shared.http.create_http_client",
-            lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
         )
 
         outcomes = await run(candidates, companies, boards)
@@ -734,7 +735,7 @@ class TestRun:
         monkeypatch.setattr("src.discovery.pipeline.evaluate", fake_evaluate)
         monkeypatch.setattr(
             "src.shared.http.create_http_client",
-            lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
         )
 
         outcomes = await run(candidates, companies, boards)
