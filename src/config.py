@@ -42,12 +42,12 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     worker_id_prefix: str = ""
-    crawler_db_pool_max: int = 10
+    crawler_db_pool_max: int = 20
     metrics_port: int = 9091
 
     # Pipeline concurrency (per-instance)
-    discovery_concurrency: int = 20
-    monitor_concurrency: int = 5
+    discovery_concurrency: int = 40
+    monitor_concurrency: int = 20  # single-instance default; per-domain rate limits still apply
     raw_buffer_size: int = 10
     done_buffer_size: int = 10
     writeback_concurrency: int = 5
