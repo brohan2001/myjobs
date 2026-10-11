@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-10-11T12:17:36.067503+00:00",
+  "candidates": 85,
+  "status": {
+    "review": 70,
+    "accepted": 14,
+    "duplicate": 1
+  },
+  "accepted_by_ats": {
+    "ashby": 10,
+    "greenhouse": 3,
+    "rippling": 1
+  },
+  "accepted_jobs": 305,
+  "review_reasons": {
+    "generic monitor (dom) found N URLs; needs a human check": 16,
+    "no careers board detected": 13,
+    "timed out after Ns": 5,
+    "generic monitor (sitemap) found N URLs; needs a human check": 10,
+    "discovery error": 24,
+    "only N jobs parsed": 1,
+    "monitor error": 1
+  }
+}
