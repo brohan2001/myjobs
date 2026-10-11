@@ -19,7 +19,6 @@ from pathlib import Path
 
 import asyncpg
 
-DB_DSN = "postgresql://crawler:crawler@localhost:5432/crawler"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CHUNK = 2000
 
@@ -27,6 +26,9 @@ CHUNK = 2000
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.core.seniority_resolve import match_seniority
 from src.core.occupation_resolve import match_occupation
+from src.config import settings
+
+DB_DSN = settings.local_database_url
 
 
 async def load_seniority(conn: asyncpg.Connection) -> dict[str, int]:
@@ -153,7 +155,7 @@ async def backfill_occupation(conn: asyncpg.Connection, occ_ids: dict[str, int])
 
 
 async def main() -> None:
-    print(f"Connecting to {DB_DSN}")
+    print("Connecting to Postgres...")
     conn = await asyncpg.connect(DB_DSN)
     try:
         print("Loading taxonomy tables…")

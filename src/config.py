@@ -1,8 +1,6 @@
 """Crawler settings — pydantic-settings based configuration.
 
 All settings are read from environment variables (and .env / .env.local files).
-Scoring/keyword constants live in src/scoring_config.py so they don't conflict
-with this Settings class.
 """
 
 from __future__ import annotations
@@ -37,6 +35,10 @@ class Settings(BaseSettings):
 
     # Graceful drain on SIGTERM/SIGINT
     shutdown_grace_seconds: int = 30
+
+    # Public API
+    api_rate_limit_per_minute: int = 120
+    api_cors_origins: str = ""  # comma-separated; empty = same-origin only
 
     log_level: str = "INFO"
     worker_id_prefix: str = ""

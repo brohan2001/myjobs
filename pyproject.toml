@@ -17,14 +17,12 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
-    "anthropic>=0.49.0",
-    "ddgs>=9.0.0",
-    "pdfplumber>=0.11.0",
     "structlog>=24.4",
     "selectolax>=0.4.7",
     "fast-langdetect>=0.3",
     "pypdf>=6.10.2",
     "jmespath>=1.0",
+    "nh3>=0.2.17",
     # jobseek pipeline stack
     "asyncpg>=0.29",
     "redis[asyncio]>=5.0",
@@ -35,13 +33,19 @@ dependencies = [
     "polars>=1.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+"src.api" = ["static/*"]
+"src" = ["lua/*.lua"]
+
 [project.scripts]
 myjobs = "src.cli:myjobs_main"
-crawler = "src.cli:crawler_main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
