@@ -212,7 +212,6 @@ def test_cursor_tampered():
         decode_cursor(tampered)
 
 
-@pytest.mark.xfail(strict=True, reason="decode_cursor: UUID(<int>) raises AttributeError, not caught -> HTTP 500 instead of 400 (queries.py:68-69)")
 def test_cursor_non_string_uuid_is_invalid_filter():
     with pytest.raises(InvalidFilter):
         decode_cursor(_b64(["2026-01-01T00:00:00+00:00", 5]))
