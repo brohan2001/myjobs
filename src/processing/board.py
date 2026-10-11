@@ -951,6 +951,7 @@ async def _process_one_board_streaming(
                                             t_ids,
                                             occ_id,
                                             sen_id,
+                                            _coerce_locations(j.locations),
                                         )
                                     )
                                     r2_staging.append((j, t_ids))
@@ -1142,6 +1143,7 @@ async def _process_one_board_streaming(
                                         t_ids,
                                         occ_id,
                                         sen_id,
+                                        _coerce_locations(j.locations),
                                     )
                                 )
                             await conn.copy_records_to_table("_rich_updates", records=records)
