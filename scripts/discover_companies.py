@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import csv
 import json
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -81,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": dict(summary),
         "accepted_by_ats": dict(by_ats),
         "accepted_jobs": sum(o.jobs_found for o in outcomes if o.status == "accepted"),
-        "review_reasons": dict(Counter(o.reason.split(":")[0] for o in outcomes if o.status == "review")),
+        "review_reasons": dict(Counter(re.sub(r"\d+", "N", o.reason.split(":")[0]) for o in outcomes if o.status == "review")),
     }
     (args.out_dir / "discovery_report.json").write_text(json.dumps(report, indent=2))
     log.info("discovery.summary", extra=report)

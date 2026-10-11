@@ -124,7 +124,9 @@ def _build_async_client(kwargs: dict[str, Any], **extra: Any) -> httpx.AsyncClie
     return httpx.AsyncClient(**kw)
 
 
-def create_http_client(*, verify: bool = True, use_proxy: bool = False) -> httpx.AsyncClient:
+def create_http_client(
+    *, verify: bool = True, use_proxy: bool = False, max_connections: int | None = None
+) -> httpx.AsyncClient:
     """Create an httpx client, optionally routed through the active proxy provider.
 
     Every client returned here runs through
@@ -135,7 +137,12 @@ def create_http_client(*, verify: bool = True, use_proxy: bool = False) -> httpx
     :mod:`src.shared.ssrf` for the guard contract and the deployment
     allowlist (Typesense / Postgres / Redis / proxy URL).
     """
-    return _build_async_client(_client_kwargs(verify=verify, use_proxy=use_proxy))
+    kwargs = _client_kwargs(verify=verify, use_proxy=use_proxy)
+    if max_connections:
+        kwargs["limits"] = httpx.Limits(
+            max_connections=max_connections, max_keepalive_connections=max_connections // 2
+        )
+    return _build_async_client(kwargs)
 
 
 def create_nossl_http_client(*, use_proxy: bool = False) -> httpx.AsyncClient:
