@@ -61,6 +61,7 @@ class Outcome:
     monitor_type: str = ""
     monitor_config: dict = field(default_factory=dict)
     jobs_found: int = 0
+    scraper_type: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,15 @@ def robots_allows(robots_txt: str | None, url: str, agent: str = ROBOTS_AGENT) -
     parser = RobotFileParser()
     parser.parse(robots_txt.splitlines())
     return parser.can_fetch(agent, url)
+
+
+_JOBPOSTING_RE = re.compile(r'"@type"\s*:\s*\[?\s*"JobPosting"', re.IGNORECASE)
+GENERIC_MONITORS = frozenset({"sitemap", "dom", "nextdata", "inline"})
+
+
+def has_jobposting_jsonld(html: str) -> bool:
+    """True when the page embeds schema.org JobPosting structured data."""
+    return bool(_JOBPOSTING_RE.search(html or ""))
 
 
 def load_candidates(path: Path) -> list[Candidate]:
@@ -147,7 +157,7 @@ def registry_rows(outcome: Outcome, slug: str) -> tuple[dict, dict]:
         "board_url": outcome.board_url,
         "monitor_type": outcome.monitor_type,
         "monitor_config": json.dumps(outcome.monitor_config) if outcome.monitor_config else "",
-        "scraper_type": "",
+        "scraper_type": outcome.scraper_type,
         "scraper_config": "",
     }
     return company, board
@@ -196,6 +206,23 @@ async def _find_board(c: Candidate, client: httpx.AsyncClient) -> tuple[str, str
     return best.url, best.monitor_type, best.monitor_config or {}
 
 
+async def _sample_is_jobs(client: httpx.AsyncClient, urls: list[str], sample: int = 3) -> bool:
+    """At least 2 of ``sample`` evenly spread URLs (or all, if fewer) carry JobPosting JSON-LD."""
+    if not urls:
+        return False
+    step = max(1, len(urls) // sample)
+    picks = urls[::step][:sample]
+    hits = 0
+    for url in picks:
+        try:
+            resp = await client.get(url, timeout=15)
+            if resp.status_code == 200 and has_jobposting_jsonld(resp.text):
+                hits += 1
+        except httpx.HTTPError:
+            continue
+    return hits >= min(2, len(picks))
+
+
 async def evaluate(
     c: Candidate,
     client: httpx.AsyncClient,
@@ -232,6 +259,11 @@ async def evaluate(
         out.reason = f"only {out.jobs_found} jobs parsed"
         return out
     if monitor_type not in TRUSTED_MONITORS:
+        # Generic detectors can count ordinary pages as jobs. Accept only when sampled
+        # URLs really are job postings (schema.org JobPosting), scraped via json-ld.
+        if monitor_type in GENERIC_MONITORS and await _sample_is_jobs(client, sorted(result.urls)):
+            out.status, out.reason, out.scraper_type = "accepted", "verified via JobPosting JSON-LD", "json-ld"
+            return out
         out.reason = f"generic monitor ({monitor_type}) found {out.jobs_found} URLs; needs a human check"
         return out
     out.status, out.reason = "accepted", "verified"
@@ -244,7 +276,7 @@ async def run(
     boards: list[dict],
     *,
     concurrency: int = 8,
-    per_company_timeout: float = 90.0,
+    per_company_timeout: float = 150.0,
     min_jobs: int = 1,
     rediscover: bool = False,
 ) -> list[Outcome]:

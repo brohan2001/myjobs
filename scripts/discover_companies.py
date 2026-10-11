@@ -60,7 +60,8 @@ def _outcomes_from_accepted(path: Path) -> list[Outcome]:
                           country=r.get("country", "IN") or "IN", slug=r.get("slug", ""))
             cfg = json.loads(r["monitor_config"]) if r.get("monitor_config") else {}
             out.append(Outcome(c, "accepted", "verified", board_url=r["board_url"], monitor_type=r["monitor_type"],
-                               monitor_config=cfg, jobs_found=int(r.get("jobs_found") or 0)))
+                               monitor_config=cfg, jobs_found=int(r.get("jobs_found") or 0),
+                               scraper_type=r.get("scraper_type", "")))
     return out
 
 

@@ -309,6 +309,7 @@ class TestPureHelpers:
             "source": "referral",
             "country": "IN",
             "slug": "",
+            "scraper_type": "",
             "status": "accepted",
             "reason": "verified",
             "board_url": "https://boards.greenhouse.io/test",
@@ -743,3 +744,49 @@ class TestRun:
         assert outcomes[0].status == "accepted"
         assert outcomes[0].reason == "verified"
         assert outcomes[0].jobs_found == 12
+
+
+def test_has_jobposting_jsonld():
+    from src.discovery.pipeline import has_jobposting_jsonld
+
+    assert has_jobposting_jsonld('<script type="application/ld+json">{"@type": "JobPosting", "title": "x"}</script>')
+    assert has_jobposting_jsonld('{"@context":"https://schema.org","@type":["JobPosting"]}')
+    assert not has_jobposting_jsonld('{"@type": "Organization"}')
+    assert not has_jobposting_jsonld("")
+
+
+async def test_generic_sitemap_accepted_when_samples_are_jobpostings(monkeypatch):
+    import httpx
+
+    from src.core.monitor import MonitorResult
+    from src.discovery import pipeline
+
+    urls = {f"https://acme.in/careers/job-{i}" for i in range(30)}
+
+    async def fake_find(c, client):
+        return "https://acme.in/careers", "sitemap", {}
+
+    async def fake_monitor(board_url, monitor_type, config, client):
+        return MonitorResult(urls=set(urls))
+
+    async def fake_robots(client, url, cache):
+        return None
+
+    monkeypatch.setattr(pipeline, "_find_board", fake_find)
+    monkeypatch.setattr("src.core.monitor.monitor_one", fake_monitor)
+    monkeypatch.setattr("src.core.monitors.monitor_needs_browser", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "_fetch_robots", fake_robots)
+
+    def handler(req):
+        return httpx.Response(200, text='<script type="application/ld+json">{"@type":"JobPosting"}</script>')
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        out = await pipeline.evaluate(pipeline.Candidate(name="Acme", website="https://acme.in"), client)
+    assert out.status == "accepted" and out.scraper_type == "json-ld"
+
+    def plain(req):
+        return httpx.Response(200, text="<html>About us</html>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(plain)) as client:
+        out = await pipeline.evaluate(pipeline.Candidate(name="Acme", website="https://acme.in"), client)
+    assert out.status == "review" and "generic monitor" in out.reason
