@@ -205,7 +205,7 @@ async def test_greythr_discover_fixture(fixture_json, make_client):
 
     # Locations
     assert jobs[0].locations is None  # internal location ids ("4") are dropped
-    assert jobs[2].locations == ["1"]
+    assert jobs[2].locations is None  # internal location ids are dropped
 
     # Descriptions and fields
     assert jobs[0].description and jobs[0].description.startswith(("<p>", "<h3>", "<"))
