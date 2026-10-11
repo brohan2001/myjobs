@@ -63,6 +63,13 @@ Upstream switched from an identifying UA to a Chrome UA after WAF blocks on seve
 (`src/shared/http.py:41`). Switching back blind could silently cost India-relevant coverage. Plan: A/B a sample of ~200 boards with
 an honest UA in Phase 2B, then decide with data. robots.txt permission checks (2B.1) are independent of this and still planned.
 
+**A/B result (2026-10-12, `scripts/ua_ab_test.py`, 200 non-browser boards, 100 API + 100 site):** 187 same, 1 honest-blocked
+(i2cat on talentclue: 7 jobs with Chrome, 0 with the honest UA), 12 failed under both UAs, 0 honest-fewer. Data in
+`docs/research/ua_ab/2026-10-12.{md,json}`. The honest UA costs 0.5% of working boards, but the WAF-protected hosts that
+prompted upstream's switch (Infosys, Deloitte, L'Oréal, Bain, umantis) were not in the sample. Recommendation: switch the
+default to `myjobs-bot/<ver> (+repo URL)` with a Chrome-UA allowlist for those hosts. **Awaiting the user's call** because it
+changes how the live crawler identifies itself.
+
 ## D15: Feed design direction C, "Field notes" (Default, 2026-10-11; user may override)
 Picked while the user was away and had asked for autonomous progress. Reasons: the strongest phone layout of the three (the first
 job sits above the fold at 375 px), the most legible face (Atkinson Hyperlegible) for a mobile, India-first audience, and
