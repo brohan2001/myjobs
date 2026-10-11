@@ -1,0 +1,652 @@
+{
+  "source": "postgres",
+  "generated_at": "2026-10-11T08:29:11.584717+00:00",
+  "companies": {
+    "total": 2878,
+    "with_active_postings": 2680
+  },
+  "boards_by_crawler_type": [
+    {
+      "crawler_type": "greenhouse",
+      "total": 1558,
+      "enabled": 1532,
+      "failing": 4,
+      "disabled": 26,
+      "failure_pct": 0.3
+    },
+    {
+      "crawler_type": "ashby",
+      "total": 695,
+      "enabled": 687,
+      "failing": 10,
+      "disabled": 8,
+      "failure_pct": 1.4
+    },
+    {
+      "crawler_type": "dom",
+      "total": 124,
+      "enabled": 124,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "lever",
+      "total": 121,
+      "enabled": 118,
+      "failing": 9,
+      "disabled": 3,
+      "failure_pct": 7.4
+    },
+    {
+      "crawler_type": "join",
+      "total": 110,
+      "enabled": 110,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "api_sniffer",
+      "total": 107,
+      "enabled": 107,
+      "failing": 39,
+      "disabled": 0,
+      "failure_pct": 36.4
+    },
+    {
+      "crawler_type": "workday",
+      "total": 100,
+      "enabled": 100,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "pinpoint",
+      "total": 62,
+      "enabled": 62,
+      "failing": 12,
+      "disabled": 0,
+      "failure_pct": 19.4
+    },
+    {
+      "crawler_type": "sitemap",
+      "total": 51,
+      "enabled": 48,
+      "failing": 5,
+      "disabled": 3,
+      "failure_pct": 9.8
+    },
+    {
+      "crawler_type": "recruitee",
+      "total": 48,
+      "enabled": 47,
+      "failing": 7,
+      "disabled": 1,
+      "failure_pct": 14.6
+    },
+    {
+      "crawler_type": "rss",
+      "total": 43,
+      "enabled": 43,
+      "failing": 11,
+      "disabled": 0,
+      "failure_pct": 25.6
+    },
+    {
+      "crawler_type": "smartrecruiters",
+      "total": 25,
+      "enabled": 25,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "workable",
+      "total": 17,
+      "enabled": 17,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "eightfold",
+      "total": 15,
+      "enabled": 13,
+      "failing": 2,
+      "disabled": 2,
+      "failure_pct": 13.3
+    },
+    {
+      "crawler_type": "oracle_hcm",
+      "total": 13,
+      "enabled": 13,
+      "failing": 11,
+      "disabled": 0,
+      "failure_pct": 84.6
+    },
+    {
+      "crawler_type": "nextdata",
+      "total": 12,
+      "enabled": 12,
+      "failing": 9,
+      "disabled": 0,
+      "failure_pct": 75.0
+    },
+    {
+      "crawler_type": "personio",
+      "total": 8,
+      "enabled": 8,
+      "failing": 7,
+      "disabled": 0,
+      "failure_pct": 87.5
+    },
+    {
+      "crawler_type": "inline",
+      "total": 7,
+      "enabled": 7,
+      "failing": 2,
+      "disabled": 0,
+      "failure_pct": 28.6
+    },
+    {
+      "crawler_type": "gem",
+      "total": 6,
+      "enabled": 6,
+      "failing": 6,
+      "disabled": 0,
+      "failure_pct": 100.0
+    },
+    {
+      "crawler_type": "jobylon",
+      "total": 6,
+      "enabled": 6,
+      "failing": 5,
+      "disabled": 0,
+      "failure_pct": 83.3
+    },
+    {
+      "crawler_type": "notion",
+      "total": 6,
+      "enabled": 6,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "almacareer",
+      "total": 5,
+      "enabled": 5,
+      "failing": 5,
+      "disabled": 0,
+      "failure_pct": 100.0
+    },
+    {
+      "crawler_type": "breezy",
+      "total": 4,
+      "enabled": 4,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "mokahr",
+      "total": 4,
+      "enabled": 4,
+      "failing": 1,
+      "disabled": 0,
+      "failure_pct": 25.0
+    },
+    {
+      "crawler_type": "ycombinator",
+      "total": 4,
+      "enabled": 4,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "rippling",
+      "total": 3,
+      "enabled": 3,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "amazon",
+      "total": 1,
+      "enabled": 1,
+      "failing": 1,
+      "disabled": 0,
+      "failure_pct": 100.0
+    },
+    {
+      "crawler_type": "deel",
+      "total": 1,
+      "enabled": 1,
+      "failing": 1,
+      "disabled": 0,
+      "failure_pct": 100.0
+    },
+    {
+      "crawler_type": "phenom",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "recruiter_co_kr",
+      "total": 1,
+      "enabled": 1,
+      "failing": 1,
+      "disabled": 0,
+      "failure_pct": 100.0
+    },
+    {
+      "crawler_type": "softgarden",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    },
+    {
+      "crawler_type": "umantis",
+      "total": 1,
+      "enabled": 1,
+      "failing": 0,
+      "disabled": 0,
+      "failure_pct": 0.0
+    }
+  ],
+  "boards_totals": {
+    "total": 3160,
+    "enabled": 3117,
+    "failing": 148,
+    "disabled": 43
+  },
+  "active_postings_by_crawler_type": [
+    {
+      "crawler_type": "greenhouse",
+      "active_postings": 67976
+    },
+    {
+      "crawler_type": "workday",
+      "active_postings": 60126
+    },
+    {
+      "crawler_type": "sitemap",
+      "active_postings": 30440
+    },
+    {
+      "crawler_type": "api_sniffer",
+      "active_postings": 27821
+    },
+    {
+      "crawler_type": "amazon",
+      "active_postings": 20326
+    },
+    {
+      "crawler_type": "eightfold",
+      "active_postings": 19784
+    },
+    {
+      "crawler_type": "oracle_hcm",
+      "active_postings": 17691
+    },
+    {
+      "crawler_type": "ashby",
+      "active_postings": 13721
+    },
+    {
+      "crawler_type": "rss",
+      "active_postings": 9192
+    },
+    {
+      "crawler_type": "nextdata",
+      "active_postings": 7069
+    },
+    {
+      "crawler_type": "dom",
+      "active_postings": 5961
+    },
+    {
+      "crawler_type": "lever",
+      "active_postings": 5684
+    },
+    {
+      "crawler_type": "smartrecruiters",
+      "active_postings": 2582
+    },
+    {
+      "crawler_type": "join",
+      "active_postings": 792
+    },
+    {
+      "crawler_type": "recruitee",
+      "active_postings": 745
+    },
+    {
+      "crawler_type": "pinpoint",
+      "active_postings": 600
+    },
+    {
+      "crawler_type": "almacareer",
+      "active_postings": 428
+    },
+    {
+      "crawler_type": "workable",
+      "active_postings": 405
+    },
+    {
+      "crawler_type": "gem",
+      "active_postings": 116
+    },
+    {
+      "crawler_type": "deel",
+      "active_postings": 112
+    },
+    {
+      "crawler_type": "mokahr",
+      "active_postings": 101
+    },
+    {
+      "crawler_type": "jobylon",
+      "active_postings": 68
+    },
+    {
+      "crawler_type": "personio",
+      "active_postings": 67
+    },
+    {
+      "crawler_type": "rippling",
+      "active_postings": 47
+    },
+    {
+      "crawler_type": "breezy",
+      "active_postings": 39
+    },
+    {
+      "crawler_type": "softgarden",
+      "active_postings": 25
+    },
+    {
+      "crawler_type": "recruiter_co_kr",
+      "active_postings": 24
+    },
+    {
+      "crawler_type": "notion",
+      "active_postings": 20
+    },
+    {
+      "crawler_type": "ycombinator",
+      "active_postings": 16
+    },
+    {
+      "crawler_type": "inline",
+      "active_postings": 11
+    },
+    {
+      "crawler_type": "umantis",
+      "active_postings": 8
+    }
+  ],
+  "top_companies_by_active_postings": [
+    {
+      "company": "amazon",
+      "name": "Amazon",
+      "active_postings": 20326
+    },
+    {
+      "company": "walmart",
+      "name": "Walmart",
+      "active_postings": 14625
+    },
+    {
+      "company": "ping-an-insurance",
+      "name": "Ping An Insurance",
+      "active_postings": 13306
+    },
+    {
+      "company": "rtx",
+      "name": "RTX",
+      "active_postings": 8735
+    },
+    {
+      "company": "citigroup",
+      "name": "Citi",
+      "active_postings": 7556
+    },
+    {
+      "company": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "active_postings": 7398
+    },
+    {
+      "company": "kotak-mahindra-bank",
+      "name": "Kotak Mahindra Bank",
+      "active_postings": 7039
+    },
+    {
+      "company": "bajaj-finserv",
+      "name": "Bajaj Finserv",
+      "active_postings": 6480
+    },
+    {
+      "company": "apple",
+      "name": "Apple",
+      "active_postings": 5115
+    },
+    {
+      "company": "barclays",
+      "name": "Barclays",
+      "active_postings": 4569
+    },
+    {
+      "company": "google",
+      "name": "Google",
+      "active_postings": 4210
+    },
+    {
+      "company": "lockheed-martin",
+      "name": "Lockheed Martin",
+      "active_postings": 3908
+    },
+    {
+      "company": "meituan",
+      "name": "Meituan",
+      "active_postings": 3294
+    },
+    {
+      "company": "micron",
+      "name": "Micron Technology",
+      "active_postings": 3100
+    },
+    {
+      "company": "general-dynamics",
+      "name": "General Dynamics",
+      "active_postings": 2718
+    },
+    {
+      "company": "northrop-grumman",
+      "name": "Northrop Grumman",
+      "active_postings": 2716
+    },
+    {
+      "company": "nvidia",
+      "name": "Nvidia",
+      "active_postings": 2661
+    },
+    {
+      "company": "boeing",
+      "name": "Boeing",
+      "active_postings": 2630
+    },
+    {
+      "company": "airbus",
+      "name": "Airbus",
+      "active_postings": 2612
+    },
+    {
+      "company": "sap",
+      "name": "SAP",
+      "active_postings": 2120
+    },
+    {
+      "company": "qualcomm",
+      "name": "Qualcomm",
+      "active_postings": 2114
+    },
+    {
+      "company": "allianz-suisse",
+      "name": "Allianz Suisse",
+      "active_postings": 2016
+    },
+    {
+      "company": "anduril-industries",
+      "name": "Anduril Industries",
+      "active_postings": 1919
+    },
+    {
+      "company": "applied-materials",
+      "name": "Applied Materials",
+      "active_postings": 1914
+    },
+    {
+      "company": "hcltech",
+      "name": "HCL Technologies",
+      "active_postings": 1854
+    },
+    {
+      "company": "cognizant",
+      "name": "Cognizant",
+      "active_postings": 1819
+    },
+    {
+      "company": "hsbc",
+      "name": "HSBC",
+      "active_postings": 1717
+    },
+    {
+      "company": "spacex",
+      "name": "SpaceX",
+      "active_postings": 1682
+    },
+    {
+      "company": "speechify",
+      "name": "Speechify",
+      "active_postings": 1658
+    },
+    {
+      "company": "bank-of-america",
+      "name": "Bank of America",
+      "active_postings": 1651
+    },
+    {
+      "company": "microsoft",
+      "name": "Microsoft",
+      "active_postings": 1635
+    },
+    {
+      "company": "ford",
+      "name": "Ford Motor Company",
+      "active_postings": 1607
+    },
+    {
+      "company": "deutsche-bank",
+      "name": "Deutsche Bank",
+      "active_postings": 1537
+    },
+    {
+      "company": "infosys",
+      "name": "Infosys",
+      "active_postings": 1535
+    },
+    {
+      "company": "goldman-sachs",
+      "name": "Goldman Sachs",
+      "active_postings": 1525
+    },
+    {
+      "company": "capitalone",
+      "name": "Capital One",
+      "active_postings": 1523
+    },
+    {
+      "company": "salesforce",
+      "name": "Salesforce",
+      "active_postings": 1438
+    },
+    {
+      "company": "vodafone",
+      "name": "Vodafone",
+      "active_postings": 1432
+    },
+    {
+      "company": "omnicom",
+      "name": "Omnicom",
+      "active_postings": 1411
+    },
+    {
+      "company": "china-telecom",
+      "name": "China Telecom",
+      "active_postings": 1383
+    },
+    {
+      "company": "paloaltonetworks",
+      "name": "Palo Alto Networks",
+      "active_postings": 1377
+    },
+    {
+      "company": "luxoft",
+      "name": "Luxoft",
+      "active_postings": 1346
+    },
+    {
+      "company": "u-s-bank",
+      "name": "U.S. Bank",
+      "active_postings": 1301
+    },
+    {
+      "company": "amd",
+      "name": "AMD",
+      "active_postings": 1295
+    },
+    {
+      "company": "lam-research",
+      "name": "Lam Research",
+      "active_postings": 1290
+    },
+    {
+      "company": "volkswagen-group",
+      "name": "Volkswagen Group",
+      "active_postings": 1265
+    },
+    {
+      "company": "mastercard",
+      "name": "Mastercard",
+      "active_postings": 1206
+    },
+    {
+      "company": "adobe",
+      "name": "Adobe",
+      "active_postings": 1191
+    },
+    {
+      "company": "visa",
+      "name": "Visa",
+      "active_postings": 1186
+    },
+    {
+      "company": "infineon",
+      "name": "Infineon Technologies",
+      "active_postings": 1176
+    }
+  ],
+  "boards_success_last_48h": 0,
+  "latest_daily_runs": []
+}
