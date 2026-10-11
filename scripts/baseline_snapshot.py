@@ -307,7 +307,14 @@ async def collect_pg(conn: Any) -> dict[str, list[dict]]:
     """Run every query on an asyncpg-like connection (``await conn.fetch(sql)``)."""
     rows: dict[str, list[dict]] = {}
     for name, sql in PG_QUERIES.items():
-        rows[name] = [dict(r) for r in await conn.fetch(sql)]
+        try:
+            rows[name] = [dict(r) for r in await conn.fetch(sql)]
+        except Exception as exc:  # noqa: BLE001
+            # daily_runs was dropped in migration 0009 (continuous worker, no daily runs).
+            if name == "recent_runs" and type(exc).__name__ == "UndefinedTableError":
+                rows[name] = []
+                continue
+            raise
     return rows
 
 

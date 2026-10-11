@@ -71,7 +71,7 @@ def decode_cursor(value: str | None) -> tuple[datetime, UUID] | None:
         padded = value + "=" * (-len(value) % 4)
         ts, pid = json.loads(base64.urlsafe_b64decode(padded.encode()))
         return datetime.fromisoformat(ts), UUID(pid)
-    except (binascii.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (binascii.Error, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
         raise InvalidFilter("invalid cursor") from exc
 
 
