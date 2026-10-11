@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myjobs: latest jobs</title>
+<link rel="stylesheet" href="/static/feed.css">
+</head>
+<body>
+<header>
+  <h1>myjobs</h1>
+  <p id="stats" aria-live="polite">Loading…</p>
+</header>
+<form id="filters" role="search">
+  <input id="q" type="search" placeholder="Title or company" autocomplete="off" aria-label="Search title or company">
+  <div class="chips" role="group" aria-label="Region">
+    <button type="button" data-country="" aria-pressed="true">Everywhere</button>
+    <button type="button" data-country="IN" aria-pressed="false">India</button>
+    <button type="button" data-country="US" aria-pressed="false">US</button>
+    <button type="button" data-country="EU" aria-pressed="false">EU</button>
+    <button type="button" data-mode="remote" aria-pressed="false">Remote</button>
+  </div>
+  <select id="since" aria-label="Posted within">
+    <option value="">Any time</option>
+    <option value="24h">Last 24 hours</option>
+    <option value="3d">Last 3 days</option>
+    <option value="7d">Last week</option>
+  </select>
+</form>
+<main>
+  <ol id="jobs"></ol>
+  <p id="empty" hidden>Nothing matches that. Try a wider region or an older date.</p>
+  <button id="more" type="button" hidden>More jobs</button>
+</main>
+<footer>Interim page. The real UI is coming in Phase 3. Data comes from public company career boards.</footer>
+<script src="/static/feed.js"></script>
+</body>
+</html>
