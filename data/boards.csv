@@ -3221,3 +3221,7 @@ moengage,moengage-pinpoint,https://www.moengage.com/careers,pinpoint,"{""slug"":
 bureau-id,bureau-id-ashby,https://www.bureau.id/careers,ashby,"{""token"": ""bureau"", ""jobs"": 19}",,
 tata-consultancy-services,tata-consultancy-services-greenhouse,https://www.tcs.com/careers,greenhouse,"{""token"": ""tcs"", ""jobs"": 99}",,
 wipro,wipro-rss,https://careers.wipro.com,rss,"{""preset"": ""successfactors"", ""feed_url"": ""https://careers.wipro.com/googlefeed.xml"", ""jobs"": 5794}",,
+rebel-foods,rebel-foods-smartrecruiters,https://jobs.smartrecruiters.com/rebelfoods,smartrecruiters,"{""token"": ""rebelfoods"", ""jobs"": 1}",,
+route-mobile,route-mobile-sitemap,https://routemobile.com/careers,sitemap,"{""sitemap_url"": ""https://routemobile.com/careers/sitemap.xml"", ""urls"": 167}",json-ld,
+metlife-global-operations-india,metlife-global-operations-india-lever,https://jobs.metlife.com,lever,"{""token"": ""metlife"", ""jobs"": 39}",,
+moody-s-india,moody-s-india-sitemap,https://careers.moodys.com,sitemap,"{""sitemap_url"": ""https://careers.moodys.com/sitemap.xml"", ""urls"": 630}",json-ld,
