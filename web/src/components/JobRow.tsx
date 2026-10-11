@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { ATS_NAMES, WORK_MODE_NAMES } from "@/lib/constants";
+import { formatAtsName } from "@/lib/ats";
 import { formatSalary, relativeTime } from "@/lib/format";
+import { orderLocations } from "@/lib/locations";
 import { RATES } from "@/lib/rates";
 import { Job } from "@/lib/types";
+import { formatWorkModes } from "@/lib/work_modes";
 
 interface JobRowProps {
   job: Job;
   index: number;
   currency: string;
+  placeFilter?: string;
   isFocused?: boolean;
   onFocus?: () => void;
   onOpen?: () => void;
@@ -19,6 +22,7 @@ export function JobRow({
   job,
   index,
   currency,
+  placeFilter,
   isFocused = false,
   onFocus,
   onOpen,
@@ -33,28 +37,23 @@ export function JobRow({
 
   // Formatted location
   let locationText = "Remote";
-  if (job.locations && job.locations.length > 0) {
-    const valid = job.locations.filter((l) => l.name);
-    if (valid.length > 0) {
-      const first = valid[0].name ?? "";
-      locationText = valid.length > 1 ? `${first} +${valid.length - 1}` : first;
-    } else if (job.locations_raw && job.locations_raw.length > 0) {
-      locationText = job.locations_raw[0];
-    }
-  } else if (job.locations_raw && job.locations_raw.length > 0) {
+  const orderedLocations = orderLocations(job.locations, placeFilter);
+  const validLocs = orderedLocations?.filter((l) => l.name);
+  if (validLocs && validLocs.length > 0) {
+    const first = validLocs[0].name ?? "";
+    locationText = validLocs.length > 1 ? `${first} +${validLocs.length - 1}` : first;
+  } else if (job.locations_raw?.[0]) {
     locationText = job.locations_raw[0];
   }
 
-  // Work modes formatted
-  const modesText = (job.work_modes || [])
-    .map((m) => WORK_MODE_NAMES[m.toLowerCase()] ?? m)
-    .join(" / ");
+  // Work modes formatted (never "undefined", empty when array is empty)
+  const modesText = formatWorkModes(job.work_modes);
 
   // Salary formatted
   const salaryText = formatSalary(job.salary, currency, RATES);
 
   // ATS formatted
-  const atsName = ATS_NAMES[job.ats?.toLowerCase()] ?? job.ats;
+  const atsName = formatAtsName(job.ats);
 
   return (
     <li

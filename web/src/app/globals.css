@@ -677,3 +677,141 @@ a {
     top: 20px;
   }
 }
+
+/* Footer */
+.footer {
+  margin-top: 48px;
+  padding-top: 20px;
+  border-top: 1px solid var(--rule);
+  font-size: 14px;
+  color: var(--mute);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-note {
+  margin: 0;
+}
+
+.footer-links {
+  margin: 0;
+}
+
+.footer-links a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.footer-links a:hover {
+  color: var(--moss);
+}
+
+.footer-sep {
+  margin: 0 4px;
+  color: var(--rule);
+}
+
+/* Coverage Page */
+.coverage-page {
+  padding-top: 16px;
+}
+
+.coverage-header {
+  margin: 18px 0 28px;
+}
+
+.coverage-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  line-height: 1.25;
+}
+
+.coverage-intro {
+  font-size: 17px;
+  color: var(--mute);
+  margin: 0;
+}
+
+.coverage-error {
+  padding: 24px 0;
+  color: var(--clay);
+  font-weight: 700;
+}
+
+.coverage-section {
+  margin-top: 36px;
+}
+
+.coverage-section-title {
+  font-size: 19px;
+  font-weight: 700;
+  margin: 0 0 12px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin-bottom: 24px;
+}
+
+.plain-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.plain-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-weight: 700;
+  color: var(--mute);
+  border-bottom: 1.5px solid var(--ink);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.plain-table td {
+  padding: 10px 14px;
+  border-bottom: 1px dashed var(--rule);
+  color: var(--ink);
+}
+
+.plain-table tr:hover td {
+  background: var(--sel);
+}
+
+.plain-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.plain-table .healthy-cell {
+  color: var(--moss);
+  font-weight: 700;
+}
+
+.plain-table .failing-cell {
+  color: var(--clay);
+}
+
+.plain-table .gone-cell {
+  color: var(--mute);
+}
+
+.plain-table .time-cell {
+  color: var(--mute);
+  white-space: nowrap;
+}
+
+.plain-table .empty-cell {
+  color: var(--mute);
+  font-style: italic;
+  text-align: center;
+  padding: 18px 14px;
+}
+
