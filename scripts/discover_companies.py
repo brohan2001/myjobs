@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
 import time
 from collections import Counter
@@ -76,6 +77,17 @@ def _outcomes_from_accepted(path: Path) -> list[Outcome]:
         return [_outcome_from_row({**r, "status": "accepted"}) for r in csv.DictReader(f)]
 
 
+def _dump_tasks(_signum, _frame) -> None:
+    """SIGUSR1: print every asyncio task's stack to stderr (diagnose hangs with ``kill -USR1 <pid>``)."""
+    try:
+        tasks = asyncio.all_tasks()
+    except RuntimeError:
+        return
+    for t in tasks:
+        t.print_stack(file=sys.stderr)
+    sys.stderr.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("candidates", type=Path)
@@ -122,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
                 f.write(json.dumps(outcome_dict(o)) + "\n")
 
         async def _with_watchdog() -> list[Outcome]:
+            signal.signal(signal.SIGUSR1, _dump_tasks)
             task = asyncio.create_task(run(todo, companies, boards, concurrency=args.concurrency,
                                            min_jobs=args.min_jobs, rediscover=args.rediscover, on_outcome=_record))
             while True:
