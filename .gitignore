@@ -1,8 +1,6 @@
 jobs.db
 .env
 .history/
-output/*/
-!output/.gitkeep
 .claude/
 __pycache__/
 *.py[cod]
@@ -17,3 +15,4 @@ build/
 private/
 jobs.db-*
 scripts/scraping_status.json
+output/
