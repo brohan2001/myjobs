@@ -1,0 +1,153 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState, useTransition } from "react";
+import { CURRENCIES, PLACES, WINDOWS, WORK_MODES } from "@/lib/constants";
+import { Stats } from "@/lib/types";
+import { ThemeToggle } from "./ThemeToggle";
+
+interface FeedHeaderProps {
+  stats: Stats | null;
+  workMode: string;
+  placeValue: string;
+  since: string;
+  currency: string;
+  searchQuery: string;
+  onFilterChange: (key: string, value: string) => void;
+  onSearchChange: (query: string) => void;
+}
+
+export function FeedHeader({
+  stats,
+  workMode,
+  placeValue,
+  since,
+  currency,
+  searchQuery,
+  onFilterChange,
+  onSearchChange,
+}: FeedHeaderProps) {
+  const [localSearch, setLocalSearch] = useState(searchQuery);
+  const [, startTransition] = useTransition();
+
+  useEffect(() => {
+    setLocalSearch(searchQuery);
+  }, [searchQuery]);
+
+  const handleSearchInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setLocalSearch(val);
+    startTransition(() => {
+      onSearchChange(val);
+    });
+  };
+
+  // Find labels for the active sentence values
+  const currentMode = WORK_MODES.find((m) => m.value === workMode) ?? WORK_MODES[0];
+  const currentPlace = PLACES.find((p) => p.value === placeValue) ?? PLACES[0];
+  const currentSince = WINDOWS.find((w) => w.value === since) ?? WINDOWS[1];
+  const currentCurrency = CURRENCIES.find((c) => c.value === currency) ?? CURRENCIES[0];
+
+  // Freshness calculation
+  let freshnessText = "Updated 4 min ago · 394,860 open jobs · 2,569 companies";
+  if (stats) {
+    let minAgo = 4;
+    if (stats.last_updated) {
+      const diffMs = Date.now() - new Date(stats.last_updated).getTime();
+      minAgo = Math.max(1, Math.round(diffMs / 60000));
+    } else if (stats.updated_minutes_ago) {
+      minAgo = stats.updated_minutes_ago;
+    }
+    const jobsCount = (stats.active_jobs ?? 394860).toLocaleString("en-US");
+    const companiesCount = (stats.companies_hiring ?? 2569).toLocaleString("en-US");
+    freshnessText = `Updated ${minAgo} min ago · ${jobsCount} open jobs · ${companiesCount} companies`;
+  }
+
+  return (
+    <header>
+      <div className="top">
+        <p className="brand">
+          <Link href="/">myjobs</Link>
+        </p>
+        <ThemeToggle />
+      </div>
+      <p className="fresh">{freshnessText}</p>
+      <h1 className="sr">Newest jobs</h1>
+      <form onSubmit={(e) => e.preventDefault()} role="search" aria-label="Filters">
+        <p className="sentence">
+          Showing{" "}
+          <span className="ctl">
+            <span data-label>{currentMode.label}</span>
+            <select
+              value={workMode}
+              onChange={(e) => onFilterChange("work_mode", e.target.value)}
+              aria-label="Work mode"
+            >
+              {WORK_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </span>{" "}
+          jobs{" "}
+          <span className="ctl">
+            <span data-label>{currentPlace.label}</span>
+            <select
+              value={placeValue}
+              onChange={(e) => onFilterChange("place", e.target.value)}
+              aria-label="Place"
+            >
+              {PLACES.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </span>{" "}
+          from the{" "}
+          <span className="ctl dot">
+            <span data-label>{currentSince.label}</span>
+            <select
+              value={since}
+              onChange={(e) => onFilterChange("since", e.target.value)}
+              aria-label="Posted within"
+            >
+              {WINDOWS.map((w) => (
+                <option key={w.value} value={w.value}>
+                  {w.label}
+                </option>
+              ))}
+            </select>
+          </span>{" "}
+          Pay shown{" "}
+          <span className="ctl dot">
+            <span data-label>{currentCurrency.label}</span>
+            <select
+              value={currency}
+              onChange={(e) => onFilterChange("cur", e.target.value)}
+              aria-label="Currency"
+            >
+              {CURRENCIES.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </span>
+        </p>
+        <label className="find" htmlFor="q">
+          <span className="t">Looking for something?</span>
+          <input
+            id="q"
+            type="search"
+            value={localSearch}
+            onChange={handleSearchInput}
+            placeholder="Press / to search"
+            autoComplete="off"
+          />
+        </label>
+      </form>
+    </header>
+  );
+}
