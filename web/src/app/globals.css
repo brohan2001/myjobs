@@ -291,6 +291,45 @@ a {
   border-left-color: var(--moss);
 }
 
+.row-more {
+  padding: 11px 8px 11px 10px;
+  background: none;
+  color: var(--mute);
+}
+
+.row-more .more-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  flex-wrap: wrap;
+}
+
+.row-more .more-text {
+  font-weight: 500;
+  color: var(--mute);
+}
+
+.row-more:hover .more-text,
+.row-more.focused .more-text {
+  color: var(--ink);
+}
+
+.row-more .more-sep {
+  color: var(--rule);
+}
+
+.row-more .more-company-link {
+  font-size: 13px;
+  color: var(--mute);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.row-more .more-company-link:hover {
+  color: var(--moss);
+}
+
 .when {
   margin: 0 0 2px;
   font-size: 14px;

@@ -1,12 +1,13 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJobs } from "@/lib/api";
+import { collapseRuns } from "@/lib/collapse";
 import { PLACES, WINDOWS } from "@/lib/constants";
 import { Job, Stats } from "@/lib/types";
 import { FeedHeader } from "./FeedHeader";
-import { JobList } from "./JobList";
+import { JobList, VisibleFeedItem } from "./JobList";
 import { SidebarNotes } from "./SidebarNotes";
 
 interface FeedClientProps {
@@ -31,6 +32,7 @@ export function FeedClient({
   // URL state
   const countryParam = searchParams.get("country");
   const locationParam = searchParams.get("location");
+  const companyParam = searchParams.get("company") ?? "";
   const workModeParam = searchParams.get("work_mode") ?? "";
   const sinceParam = searchParams.get("since") ?? "24h";
   const qParam = searchParams.get("q") ?? "";
@@ -55,6 +57,7 @@ export function FeedClient({
   const [currency, setCurrency] = useState("native");
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [expandedRunKeys, setExpandedRunKeys] = useState<Set<string>>(() => new Set());
 
   // Sync initial jobs when initial props change
   useEffect(() => {
@@ -62,6 +65,7 @@ export function FeedClient({
     setNextCursor(initialNextCursor);
     setIsError(initialError);
     setFocusedIndex(-1);
+    setExpandedRunKeys(new Set());
   }, [initialJobs, initialNextCursor, initialError]);
 
   // Load currency preference from localStorage
@@ -148,6 +152,7 @@ export function FeedClient({
         q: qParam,
         country: selectedPlace?.country,
         location: selectedPlace?.location,
+        company: companyParam || undefined,
         work_mode: workModeParam,
         since: sinceParam,
         cursor: nextCursor,
@@ -171,6 +176,7 @@ export function FeedClient({
         q: qParam,
         country: selectedPlace?.country,
         location: selectedPlace?.location,
+        company: companyParam || undefined,
         work_mode: workModeParam,
         since: sinceParam,
       });
@@ -194,9 +200,61 @@ export function FeedClient({
   };
 
   // Open job
-  const handleOpenJob = (job: Job) => {
+  const handleOpenJob = useCallback((job: Job) => {
     window.open(job.url, "_blank", "noopener,noreferrer");
-  };
+  }, []);
+
+  // Collapse runs and compute visible items
+  const collapsedItems = useMemo(() => collapseRuns(jobs), [jobs]);
+
+  const visibleItems = useMemo(() => {
+    const items: VisibleFeedItem[] = [];
+    for (const item of collapsedItems) {
+      if (item.kind === "job") {
+        items.push(item);
+      } else {
+        const runKey = `${item.company.slug}:${item.hidden[0]?.id}`;
+        if (expandedRunKeys.has(runKey)) {
+          for (const job of item.hidden) {
+            items.push({ kind: "job", job });
+          }
+        } else {
+          items.push({ ...item, runKey });
+        }
+      }
+    }
+    return items;
+  }, [collapsedItems, expandedRunKeys]);
+
+  const handleExpandRun = useCallback((runKey: string) => {
+    setExpandedRunKeys((prev) => {
+      const next = new Set(prev);
+      next.add(runKey);
+      return next;
+    });
+  }, []);
+
+  const buildCompanyHref = useCallback(
+    (slug: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("company", slug);
+      params.delete("cursor");
+      const qs = params.toString();
+      return qs ? `/?${qs}` : `/?company=${encodeURIComponent(slug)}`;
+    },
+    [searchParams]
+  );
+
+  // Keep focus in view when visible items expand
+  useEffect(() => {
+    if (focusedIndex >= 0 && focusedIndex < visibleItems.length) {
+      const active = document.activeElement;
+      if (active && active !== document.body && active.tagName !== "INPUT") {
+        const el = document.querySelector(`[data-i="${focusedIndex}"]`) as HTMLElement | null;
+        el?.focus();
+      }
+    }
+  }, [visibleItems, focusedIndex]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -222,7 +280,7 @@ export function FeedClient({
       } else if (e.key === "j") {
         e.preventDefault();
         setFocusedIndex((prev) => {
-          const next = Math.min(jobs.length - 1, prev + 1);
+          const next = Math.min(visibleItems.length - 1, prev + 1);
           const el = document.querySelector(`[data-i="${next}"]`) as HTMLElement | null;
           el?.focus();
           el?.scrollIntoView({ block: "nearest" });
@@ -238,16 +296,22 @@ export function FeedClient({
           return next;
         });
       } else if (e.key === "Enter") {
-        if (focusedIndex >= 0 && focusedIndex < jobs.length) {
-          e.preventDefault();
-          handleOpenJob(jobs[focusedIndex]);
+        if (focusedIndex >= 0 && focusedIndex < visibleItems.length) {
+          const item = visibleItems[focusedIndex];
+          if (item.kind === "job") {
+            e.preventDefault();
+            handleOpenJob(item.job);
+          } else if (item.kind === "more") {
+            e.preventDefault();
+            handleExpandRun(item.runKey);
+          }
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [jobs, focusedIndex]);
+  }, [visibleItems, focusedIndex, handleExpandRun, handleOpenJob]);
 
   // Labels for place and window
   const activePlace = PLACES.find((p) => p.value === initialPlace) ?? PLACES[0];
@@ -270,7 +334,7 @@ export function FeedClient({
   };
 
   const handleClearFilters = () => {
-    updateQueryParams({ q: null, work_mode: null });
+    updateQueryParams({ q: null, work_mode: null, company: null });
   };
 
   return (
@@ -292,6 +356,7 @@ export function FeedClient({
           </p>
           <JobList
             jobs={jobs}
+            visibleItems={visibleItems}
             currency={currency}
             placeFilter={initialPlace}
             isLoading={isLoading}
@@ -309,6 +374,8 @@ export function FeedClient({
             focusedIndex={focusedIndex}
             setFocusedIndex={setFocusedIndex}
             onOpenJob={handleOpenJob}
+            onExpandRun={handleExpandRun}
+            buildCompanyHref={buildCompanyHref}
           />
         </main>
         <SidebarNotes jobs={jobs} />
