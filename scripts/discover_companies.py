@@ -120,19 +120,21 @@ def main(argv: list[str] | None = None) -> int:
             with open(journal, "a", encoding="utf-8") as f:
                 f.write(json.dumps(outcome_dict(o)) + "\n")
 
-        async def _with_watchdog() -> None:
+        async def _with_watchdog() -> list[Outcome]:
             task = asyncio.create_task(run(todo, companies, boards, concurrency=args.concurrency,
                                            min_jobs=args.min_jobs, rediscover=args.rediscover, on_outcome=_record))
-            while not task.done():
-                await asyncio.sleep(15)
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=5)
+                if done:
+                    return task.result()
                 if time.monotonic() - last_progress[0] > args.idle_timeout:
                     log.warning("discovery.stalled", extra={"idle_s": args.idle_timeout, "done": len(fresh)})
                     task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                    return fresh
 
-        asyncio.run(_with_watchdog())
-        outcomes = previous + fresh
+        outcomes = previous + asyncio.run(_with_watchdog())
 
     review = [outcome_dict(o) for o in outcomes if o.status != "accepted"]
     if review:
