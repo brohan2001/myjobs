@@ -248,7 +248,6 @@ def build(dry_run: bool = False) -> None:
             "industry": industry_code,
             "tier": c.get("tier", 2),
             "enabled": "false" if not c.get("enabled", True) else "true",
-            "h1b_petitions_recent": "",
         })
 
         # Board rows
@@ -300,7 +299,6 @@ def build(dry_run: bool = False) -> None:
             "industry": industry_code,
             "tier": 2,
             "enabled": "true",
-            "h1b_petitions_recent": "",
         })
         out_boards.extend(boards)
         new_count += 1
@@ -342,7 +340,7 @@ def build(dry_run: bool = False) -> None:
         print("  Dry run — no files written.\n")
         return
 
-    COMPANY_FIELDS = ["slug", "name", "website", "industry", "tier", "enabled", "h1b_petitions_recent"]
+    COMPANY_FIELDS = ["slug", "name", "website", "industry", "tier", "enabled"]
     BOARD_FIELDS = ["company_slug", "board_slug", "board_url", "monitor_type", "monitor_config", "scraper_type", "scraper_config"]
 
     with open(OUT_COMPANIES, "w", newline="", encoding="utf-8") as f:
