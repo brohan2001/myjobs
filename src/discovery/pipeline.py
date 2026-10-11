@@ -208,6 +208,7 @@ async def _find_board(c: Candidate, client: httpx.AsyncClient) -> tuple[str, str
 
 async def _sample_is_jobs(client: httpx.AsyncClient, urls: list[str], sample: int = 3) -> bool:
     """At least 2 of ``sample`` evenly spread URLs (or all, if fewer) carry JobPosting JSON-LD."""
+    urls = [u for u in urls if u.startswith(("http://", "https://"))]
     if not urls:
         return False
     step = max(1, len(urls) // sample)
@@ -218,7 +219,7 @@ async def _sample_is_jobs(client: httpx.AsyncClient, urls: list[str], sample: in
             resp = await client.get(url, timeout=15)
             if resp.status_code == 200 and has_jobposting_jsonld(resp.text):
                 hits += 1
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             continue
     return hits >= min(2, len(picks))
 
@@ -313,6 +314,8 @@ async def run(
                     )
                 except TimeoutError:
                     o = Outcome(c, "review", f"timed out after {per_company_timeout:.0f}s")
+                except Exception as exc:  # noqa: BLE001 - one bad site must not stop the batch
+                    o = Outcome(c, "review", f"evaluation error: {type(exc).__name__}: {str(exc)[:120]}")
                 if o.status == "accepted" and o.board_url.rstrip("/") in board_urls:
                     o.status, o.reason = "duplicate", "board already in registry"
                 log.info("discovery.outcome", extra={"company": c.name, "status": o.status, "reason": o.reason,
