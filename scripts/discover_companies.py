@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import csv
 import json
 import re
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,18 +53,26 @@ def _write(path: Path, fields: list[str], rows: list[dict]) -> None:
         w.writerows(rows)
 
 
+def _outcome_from_row(r: dict) -> Outcome:
+    c = Candidate(name=r["name"], website=r["website"], careers_url=r.get("careers_url", ""),
+                  hq_city=r.get("hq_city", ""), category=r.get("category", ""), source=r.get("source", ""),
+                  country=r.get("country", "IN") or "IN", slug=r.get("slug", ""))
+    cfg = json.loads(r["monitor_config"]) if r.get("monitor_config") else {}
+    return Outcome(c, r.get("status", "accepted"), r.get("reason", "verified"), board_url=r.get("board_url", ""),
+                   monitor_type=r.get("monitor_type", ""), monitor_config=cfg,
+                   jobs_found=int(r.get("jobs_found") or 0), scraper_type=r.get("scraper_type", ""))
+
+
+def _load_journal(path: Path) -> list[Outcome]:
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [_outcome_from_row(json.loads(line)) for line in f if line.strip()]
+
+
 def _outcomes_from_accepted(path: Path) -> list[Outcome]:
-    out = []
     with open(path, newline="", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            c = Candidate(name=r["name"], website=r["website"], careers_url=r.get("careers_url", ""),
-                          hq_city=r.get("hq_city", ""), category=r.get("category", ""), source=r.get("source", ""),
-                          country=r.get("country", "IN") or "IN", slug=r.get("slug", ""))
-            cfg = json.loads(r["monitor_config"]) if r.get("monitor_config") else {}
-            out.append(Outcome(c, "accepted", "verified", board_url=r["board_url"], monitor_type=r["monitor_type"],
-                               monitor_config=cfg, jobs_found=int(r.get("jobs_found") or 0),
-                               scraper_type=r.get("scraper_type", "")))
-    return out
+        return [_outcome_from_row({**r, "status": "accepted"}) for r in csv.DictReader(f)]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,6 +85,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", type=Path, default=DATA / "candidates")
     ap.add_argument("--rediscover", action="store_true",
                     help="candidates are existing companies (CSV has a slug column) whose board went away")
+    ap.add_argument("--idle-timeout", type=float, default=600,
+                    help="stop (keeping finished results) if no company completes for this many seconds")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip candidates already recorded in <out-dir>/outcomes.jsonl and include them in the report")
     ap.add_argument("--apply-accepted", action="store_true",
                     help="treat the input as a previous run's accepted.csv and only apply it (no network)")
     args = ap.parse_args(argv)
@@ -85,14 +99,41 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         candidates = candidates[: args.limit]
 
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    journal = args.out_dir / "outcomes.jsonl"
     if args.apply_accepted:
         outcomes = _outcomes_from_accepted(args.candidates)
         args.apply = True
     else:
-        outcomes = asyncio.run(run(candidates, companies, boards, concurrency=args.concurrency, min_jobs=args.min_jobs,
-                                   rediscover=args.rediscover))
+        previous = _load_journal(journal) if args.resume else []
+        done = {o.candidate.website for o in previous}
+        if not args.resume and journal.exists():
+            journal.unlink()
+        todo = [c for c in candidates if c.website not in done]
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+        fresh: list[Outcome] = []
+        last_progress = [time.monotonic()]
+
+        def _record(o: Outcome) -> None:
+            fresh.append(o)
+            last_progress[0] = time.monotonic()
+            with open(journal, "a", encoding="utf-8") as f:
+                f.write(json.dumps(outcome_dict(o)) + "\n")
+
+        async def _with_watchdog() -> None:
+            task = asyncio.create_task(run(todo, companies, boards, concurrency=args.concurrency,
+                                           min_jobs=args.min_jobs, rediscover=args.rediscover, on_outcome=_record))
+            while not task.done():
+                await asyncio.sleep(15)
+                if time.monotonic() - last_progress[0] > args.idle_timeout:
+                    log.warning("discovery.stalled", extra={"idle_s": args.idle_timeout, "done": len(fresh)})
+                    task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_with_watchdog())
+        outcomes = previous + fresh
+
     review = [outcome_dict(o) for o in outcomes if o.status != "accepted"]
     if review:
         _write(args.out_dir / "review_queue.csv", list(review[0].keys()), review)
