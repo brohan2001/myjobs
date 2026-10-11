@@ -47,6 +47,9 @@ from src.logger import get_logger  # noqa: E402
 log = get_logger(__name__)
 
 BASE_URL = "https://download.geonames.org/export/dump/"
+# GeoNames writes Indian place names with transliteration marks ("Rājkot"); people write "Rajkot".
+ASCII_DISPLAY_COUNTRIES = frozenset({"IN"})
+
 FILES = ("countryInfo.txt", "admin1CodesASCII.txt", "cities15000.zip")
 DEFAULT_CACHE = Path.home() / ".cache" / "myjobs" / "geonames"
 LOCALE = "en"
@@ -339,8 +342,12 @@ def build_rows(
             continue
         region_id[(a.country_iso2, a.code.split(".", 1)[1])] = a.geoname_id
         rows.locations.append((a.geoname_id, parent, "region", None, [], None, None, a.code))
-        add_name(a.geoname_id, a.name, True)
-        add_name(a.geoname_id, a.ascii_name)
+        if a.country_iso2 in ASCII_DISPLAY_COUNTRIES:
+            add_name(a.geoname_id, a.ascii_name, True)
+            add_name(a.geoname_id, a.name)
+        else:
+            add_name(a.geoname_id, a.name, True)
+            add_name(a.geoname_id, a.ascii_name)
     for alias, iso2, code in REGION_ALIASES:
         rid = region_id.get((iso2, code))
         if rid is not None:
@@ -357,8 +364,12 @@ def build_rows(
         rows.locations.append(
             (ct.geoname_id, parent, "city", ct.population, [], ct.lat, ct.lng, None)
         )
-        add_name(ct.geoname_id, ct.name, True)
-        add_name(ct.geoname_id, ct.ascii_name)
+        if ct.country_iso2 in ASCII_DISPLAY_COUNTRIES:
+            add_name(ct.geoname_id, ct.ascii_name, True)
+            add_name(ct.geoname_id, ct.name)
+        else:
+            add_name(ct.geoname_id, ct.name, True)
+            add_name(ct.geoname_id, ct.ascii_name)
         for alt in ct.alternates:
             if is_latin_alias(alt):
                 add_name(ct.geoname_id, alt)
