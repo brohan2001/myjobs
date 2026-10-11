@@ -12,14 +12,14 @@ Every phase runs on its own `revamp/<phase>` branch and ends with green tests an
 
 ---
 
-## Status (2026-10-11, end of autonomous session)
+## Status (2026-10-12)
 | Phase | State | Notes |
 |---|---|---|
-| 0: Audit, privacy, plan | Done | Approved. PII purged from history |
+| 0: Audit, privacy, plan | Done | Approved. PII purged from history (again on 2026-10-12 for a fixture on `revamp/phase-1-feed`) |
 | 1: Public latest-jobs feed (revised, D10) | Done | Continuous worker, GeoNames, public API, coverage endpoint, robots.txt, Workday and WIP fixes |
-| 2A: Remove US assumptions, India model | Mostly done | Visa/H1B deleted, GeoNames with Indian aliases and ASCII names, INR/LPA salary. Open: notice period, experience bands, company-type taxonomy in the API |
-| 2B: Scraping and India expansion | In progress | Discovery pipeline with a review queue; 400 Indian candidates being verified; 16+ lost boards recovered. Open: Indian ATS adapters (needs research), A/B test of the User-Agent (D14) |
-| 3: UI | Built (direction C, D15) | Next.js feed, detail and coverage pages. The user may still swap the direction |
+| 2A: Remove US assumptions, India model | Done | Visa/H1B deleted, Indian aliases, INR/LPA salary, company-type taxonomy + filter (D21), experience filter, notice-period extraction + filter (D22) |
+| 2B: Scraping and India expansion | Done, apart from human triage | Keka/greytHR/Zoho adapters, discovery passes 1–2 (32 Indian boards added), review-queue triage tool (`scripts/triage_review.py`, 294 rows waiting), `myjobs health` alerts (D23), UA A/B run (D14: switch awaits the user) |
+| 3: UI | Built (direction C, D15) | Feed with sentence filters (place, work mode, company type, experience, notice period), detail and coverage pages |
 | 4: Infra proposal | Draft done | docs/INFRA_PROPOSAL.md. Awaiting the user's approval before anything is deployed |
 | 5: JSeek integration | Design draft done | docs/JSEEK_INTEGRATION.md |
 | Later: profiles, per-user scoring, tailoring | Not started | Deferred by D10 |
