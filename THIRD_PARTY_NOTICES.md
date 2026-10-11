@@ -35,3 +35,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## GeoNames
+
+Location data loaded by `scripts/load_geonames.py` comes from GeoNames (https://www.geonames.org),
+licensed under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/).
+The data isn't stored in this repository; it's downloaded at load time.

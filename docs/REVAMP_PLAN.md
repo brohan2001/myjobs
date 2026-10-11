@@ -16,7 +16,23 @@ Every phase runs on its own `revamp/<phase>` branch and ends with green tests an
 Delivered: `AUDIT.md`, `SCRAPING_REPORT.md`, `REPO_MAP.md`, `DECISIONS.md`, this plan, the PII history purge, the MIT notice, a pre-commit PII/secret guard, the baseline snapshot tool,
 and characterization tests. **Still open:** a *live* baseline run, which needs Docker (see Phase 1 task 1.0).
 
-## Phase 1: Generic profile system and per-user scoring (L)
+## Phase 1 (revised 2026-10-11, see DECISIONS D10): Public latest-jobs feed (M)
+Done on `revamp/phase-1-feed`:
+- Removed the reports, shortlist scoring, AI generation and visa/H1B logic.
+- Continuous worker (`myjobs worker`), with the SSRF-bypass fix.
+- GeoNames loader.
+- Public read-only API (`/api/v1/jobs|companies|locations|stats`) and an interim page.
+- Migration 0009.
+- API tests.
+
+Remaining feed work, in priority order:
+1. Workday multi-site error swallowing: surface it as a board failure.
+2. Re-resolve `location_ids` for postings enriched before GeoNames existed.
+3. Run the browser worker on a schedule.
+4. Stale-job expiry visibility.
+5. Phase 3 UI.
+
+## Later phase: Generic profile system and per-user scoring (L), deferred by D10
 Exit criteria:
 - No personal data in tracked code.
 - The sample profile drives the whole pipeline.
