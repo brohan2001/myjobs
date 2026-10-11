@@ -1,3 +1,4 @@
+import { PASS_THROUGH_FILTERS } from "./constants";
 import { CoverageResponse, Job, JobsResponse, LocationSearchResult, Stats } from "./types";
 
 const DEFAULT_API_ORIGIN = "http://127.0.0.1:8090";
@@ -17,6 +18,9 @@ export interface FetchJobsParams {
   location?: number | string;
   company?: string;
   work_mode?: string;
+  company_type?: string;
+  max_years?: string;
+  notice_days?: string;
   since?: string;
   cursor?: string;
   limit?: number;
@@ -38,8 +42,11 @@ export async function fetchJobs(params: FetchJobsParams = {}): Promise<JobsRespo
   if (params.company?.trim()) {
     searchParams.set("company", params.company.trim());
   }
-  if (params.work_mode?.trim()) {
-    searchParams.set("work_mode", params.work_mode.trim());
+  for (const key of PASS_THROUGH_FILTERS) {
+    const value = params[key]?.trim();
+    if (value) {
+      searchParams.set(key, value);
+    }
   }
   if (params.since?.trim()) {
     searchParams.set("since", params.since.trim());
