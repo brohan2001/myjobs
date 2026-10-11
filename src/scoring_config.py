@@ -13,7 +13,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
-RESUME_DIR = BASE_DIR / "Resume"
+# Personal files live in private/ (gitignored). Phase 1 replaces this with profile lookups.
+PRIVATE_DIR = Path(os.getenv("MYJOBS_PRIVATE_DIR", BASE_DIR / "private"))
+RESUME_DIR = Path(os.getenv("RESUME_DIR", PRIVATE_DIR / "resumes"))
+PROFILE_PATH = Path(os.getenv("PROFILE_PATH", PRIVATE_DIR / "profile.txt"))
 
 SKILL_GROUPS: dict[str, tuple[float, list[str]]] = {
     "languages": (1.0, [
@@ -78,15 +81,15 @@ RECENCY_BREAKPOINTS = [
 ]
 
 RESUME_MAP = {
-    "backend":   RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "frontend":  RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "fullstack": RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "mobile":    RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
-    "cloud":     RESUME_DIR / os.getenv("RESUME_CLOUD",   "resume_Cloud.pdf"),
-    "network":   RESUME_DIR / os.getenv("RESUME_NETWORK", "resume_Network.pdf"),
-    "ds":        RESUME_DIR / os.getenv("RESUME_DS",      "resume_DS.pdf"),
-    "ml":        RESUME_DIR / os.getenv("RESUME_ML",      "resume_ML_Publication.pdf"),
-    "other":     RESUME_DIR / os.getenv("RESUME_SWE",     "resume_SWE.pdf"),
+    "backend":   RESUME_DIR / os.getenv("RESUME_SWE",     "resume_swe.pdf"),
+    "frontend":  RESUME_DIR / os.getenv("RESUME_SWE",     "resume_swe.pdf"),
+    "fullstack": RESUME_DIR / os.getenv("RESUME_SWE",     "resume_swe.pdf"),
+    "mobile":    RESUME_DIR / os.getenv("RESUME_SWE",     "resume_swe.pdf"),
+    "cloud":     RESUME_DIR / os.getenv("RESUME_CLOUD",   "resume_cloud.pdf"),
+    "network":   RESUME_DIR / os.getenv("RESUME_NETWORK", "resume_network.pdf"),
+    "ds":        RESUME_DIR / os.getenv("RESUME_DS",      "resume_ds.pdf"),
+    "ml":        RESUME_DIR / os.getenv("RESUME_ML",      "resume_ml.pdf"),
+    "other":     RESUME_DIR / os.getenv("RESUME_SWE",     "resume_swe.pdf"),
 }
 
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")

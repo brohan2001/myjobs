@@ -1,0 +1,10 @@
+# gitleaks config: default rules + allowlist for known public values.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public client-side ATS/search keys that companies embed in their own career pages (inherited from jobseek board data), and doc examples."
+paths = [
+  '''data/boards\.csv''',
+  '''src/workspace/commands/help\.py''',
+]
