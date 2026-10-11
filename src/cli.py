@@ -202,6 +202,31 @@ def stats() -> None:
     console.print(table)
 
 
+@app.command()
+def health() -> None:
+    """Crawler health checks; exits 1 when an alert fires (for cron)."""
+    from src.health import evaluate, fetch_snapshot
+
+    async def _fetch():
+        from src.db import close_all_pools, create_local_pool
+        pool = await create_local_pool()
+        try:
+            return await fetch_snapshot(pool)
+        finally:
+            await close_all_pools()
+
+    snap = asyncio.run(_fetch())
+    alerts = evaluate(snap)
+    age = f"{snap.feed_age_minutes:.0f} min" if snap.feed_age_minutes is not None else "n/a"
+    console.print(f"newest posting: {age} · active boards: {snap.active_boards} · "
+                  f"overdue: {snap.overdue_boards} · gone in 24h: {snap.gone_last_day}")
+    for a in alerts:
+        console.print(f"[red]ALERT[/red] {a.check}: {a.message}")
+    if alerts:
+        raise typer.Exit(code=1)
+    console.print("[green]healthy[/green]")
+
+
 @app.command(name="prune-scrape-queues")
 def prune_scrape_queues() -> None:
     """Remove stale per-domain scrape queues from Redis."""
