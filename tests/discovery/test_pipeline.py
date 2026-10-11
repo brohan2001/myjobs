@@ -790,3 +790,25 @@ async def test_generic_sitemap_accepted_when_samples_are_jobpostings(monkeypatch
     async with httpx.AsyncClient(transport=httpx.MockTransport(plain)) as client:
         out = await pipeline.evaluate(pipeline.Candidate(name="Acme", website="https://acme.in"), client)
     assert out.status == "review" and "generic monitor" in out.reason
+
+    async def test_run_survives_one_candidate_raising(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        candidates = [Candidate(name="Bad", website="https://bad.com"), Candidate(name="Good", website="https://good.com")]
+
+        async def fake_evaluate(c, client, **kwargs):
+            if c.name == "Bad":
+                raise ValueError("unknown url type: '/undefined'")
+            return Outcome(c, "review", "no careers board detected")
+
+        monkeypatch.setattr("src.discovery.pipeline.evaluate", fake_evaluate)
+        monkeypatch.setattr(
+            "src.shared.http.create_http_client",
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200))),
+        )
+
+        outcomes = {o.candidate.name: o for o in await run(candidates, [], [])}
+        assert outcomes["Bad"].reason.startswith("evaluation error: ValueError")
+        assert outcomes["Good"].reason == "no careers board detected"
+
+    async def test_sample_is_jobs_skips_relative_urls(self) -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text="")))
+        assert await pipeline._sample_is_jobs(client, ["/undefined", "/also-relative"]) is False
