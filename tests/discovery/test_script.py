@@ -84,7 +84,7 @@ class TestDiscoverCompaniesScript:
         assert report["status"] == {"accepted": 1, "review": 1, "rejected": 1}
         assert report["accepted_by_ats"] == {"lever": 1}
         assert report["accepted_jobs"] == 5
-        assert report["review_reasons"] == {"generic monitor (sitemap) found 20 URLs; needs a human check": 1}
+        assert report["review_reasons"] == {"generic monitor (sitemap) found N URLs; needs a human check": 1}
 
         assert review_path.exists()
         with open(review_path, newline="", encoding="utf-8") as f:
