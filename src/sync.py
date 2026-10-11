@@ -40,15 +40,20 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 # ---------------------------------------------------------------------------
 
 _UPSERT_COMPANIES = """
-INSERT INTO company (slug, name, website, tier)
-SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::int[])
-  AS c(slug, name, website, tier)
+INSERT INTO company (slug, name, website, tier, extras)
+SELECT slug, name, website, tier, tags::jsonb
+FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::text[])
+  AS c(slug, name, website, tier, tags)
 ON CONFLICT (slug) DO UPDATE SET
     name    = COALESCE(EXCLUDED.name,    company.name),
     website = COALESCE(EXCLUDED.website, company.website),
     tier    = EXCLUDED.tier,
+    extras  = COALESCE(company.extras, '{}'::jsonb) || EXCLUDED.extras,
     updated_at = now()
 """
+
+# Optional registry tags in companies.csv, stored in company.extras.
+_COMPANY_TAG_COLUMNS = ("country", "hq_city", "company_type")
 
 # Generate a fresh UUID on first insert; reuse existing on conflict.
 # ON CONFLICT (board_url) so we don't need a Supabase-assigned ID.
@@ -165,6 +170,7 @@ async def sync_companies(conn, companies: pl.DataFrame, dry_run: bool) -> None:
     names: list[str] = []
     websites: list[str | None] = []
     tiers: list[int] = []
+    tags: list[str] = []
 
     for row in companies.iter_rows(named=True):
         enabled = row.get("enabled", "true")
@@ -174,12 +180,13 @@ async def sync_companies(conn, companies: pl.DataFrame, dry_run: bool) -> None:
         names.append(row["name"])
         websites.append(_or_none(row.get("website")))
         tiers.append(_int_or(row.get("tier"), 2))
+        tags.append(json.dumps({k: row[k] for k in _COMPANY_TAG_COLUMNS if row.get(k)}))
 
     if dry_run:
         log.info("sync.companies.dry_run", count=len(slugs))
         return
 
-    await conn.execute(_UPSERT_COMPANIES, slugs, names, websites, tiers)
+    await conn.execute(_UPSERT_COMPANIES, slugs, names, websites, tiers, tags)
     log.info("sync.companies.upserted", count=len(slugs))
 
 
