@@ -36,6 +36,10 @@ myjobs sync               # CSV → Postgres + Redis queues
 myjobs company list|add|disable
 
 python scripts/baseline_snapshot.py        # coverage snapshot → docs/baseline/
+python scripts/discover_companies.py data/candidates/india_companies.csv [--apply]   # candidate → verified board
+python scripts/discover_companies.py <gone.csv> --rediscover --apply                 # re-find boards that went away
+
+cd web && npm install && API_ORIGIN=http://127.0.0.1:8080 npm run dev               # Next.js feed (direction C)
 ```
 
 Env: copy `.env.example` → `.env` (`LOCAL_DATABASE_URL`, `REDIS_URL`, `API_RATE_LIMIT_PER_MINUTE`, `API_CORS_ORIGINS`, optional proxy settings).
@@ -48,13 +52,17 @@ Env: copy `.env.example` → `.env` (`LOCAL_DATABASE_URL`, `REDIS_URL`, `API_RAT
 data/companies.csv + data/boards.csv → src/sync.py → Postgres (company, job_board) + Redis queues
 src/workers/pipeline.py → src/core/monitors/* (37 types) → src/core/scrapers/* (16 types) → job_posting + descriptions
 src/processing/cpu.py enrichment (GeoNames locations, salary, seniority, occupation)
-src/api/ (FastAPI): /api/v1/jobs|jobs/{id}|companies|locations|stats + interim page in src/api/static/
+src/api/ (FastAPI): /api/v1/jobs|jobs/{id}|companies|locations|stats|coverage (+ interim page in src/api/static/)
+web/ (Next.js App Router + TS): server-rendered feed, job detail, coverage; talks to the API via /api rewrite
+src/discovery/ + scripts/discover_companies.py: candidate companies → careers board → ATS → robots/parse checks → registry or review queue
 ```
 
 - Config: `src/config.py` (pydantic-settings).
 - DB: Postgres via asyncpg (`src/db.py`); schema in alembic migrations 0001–0009.
 - Queue: `src/redis_queue.py` + `src/lua/*.lua` (per-key rate limit, leases, reaper, dead letter).
-- SSRF guard: `src/shared/ssrf.py`, installed by `create_http_client` (used by the worker).
+- SSRF guard: `src/shared/ssrf.py`, installed by `create_http_client` (used by the worker and discovery).
+- robots.txt: `src/shared/robots.py`. Site-reading monitors honour it; ATS API monitors (`API_MONITORS`) are exempt.
+- Delegation: agy for ~50% of the work (Gemini 3.8 Flash first). Briefs live in `delegation/`; verify with tests, not by reading code.
 
 ---
 

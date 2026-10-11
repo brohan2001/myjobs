@@ -39,7 +39,11 @@ Infra: `docker-compose.yml` provides Postgres 16 and Redis 7. Migrations: `alemb
 | `src/api/queries.py` | Feed SQL (pure `build_jobs_query`, keyset cursors) | myjobs |
 | `src/api/locations.py` | In-memory GeoNames index (country/macro → descendant ids, labels, search) | myjobs |
 | `src/api/ratelimit.py` | Per-IP fixed-window limiter (Redis or local) | myjobs |
-| `src/api/static/` | Interim feed page (replaced in Phase 3) | myjobs |
+| `src/api/static/` | Interim feed page (superseded by web/) | myjobs |
+| `src/discovery/pipeline.py` | Discovery: dedupe → board find → robots → parse validation → accept/review | myjobs |
+| `src/shared/robots.py` | robots.txt checks; `API_MONITORS` shared list | myjobs |
+| `src/core/salary_inr.py` | INR/LPA/lakh/crore salary extraction (wired into salary_extract) | myjobs (agy) |
+| `web/` | Next.js feed frontend (direction C) | myjobs (agy) |
 | `src/metrics.py` | Prometheus stubs | myjobs |
 | `src/logger.py` | `get_logger(__name__)` | myjobs |
 
@@ -47,12 +51,15 @@ Infra: `docker-compose.yml` provides Postgres 16 and Redis 7. Migrations: `alemb
 - `data/companies.csv`: `slug,name,website,industry,tier,enabled` (2,882 rows)
 - `data/boards.csv`: `company_slug,board_slug,board_url,monitor_type,monitor_config,scraper_type,scraper_config` (3,169 rows)
 - `data/{occupations,occupation_domains,seniority,technologies}.csv`: taxonomy (migration 0007)
+- `data/candidates/`: discovery inputs + review queues (india_companies.csv, rediscover/…)
 - `private/` (gitignored): real profile, resumes, PII patterns, target company notes
 
 ## Tests
 - `tests/characterization/`: no-network characterization tests for monitors, scrapers, retry, registry, baseline script
 - `tests/api/`: public API tests against a fake pool
 - `tests/test_load_geonames.py`: GeoNames parsing + resolver integration
+- `tests/discovery/`, `tests/test_robots.py`, `tests/test_salary_inr.py`, `tests/test_query_arity.py`
+- `web/src/lib/*.test.ts`: frontend contract tests (vitest)
 
 ## Docs
 `docs/AUDIT.md`, `docs/SCRAPING_REPORT.md`, `docs/REVAMP_PLAN.md`, `docs/DECISIONS.md`, `docs/baseline/`, `delegation/`.
