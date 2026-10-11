@@ -226,3 +226,51 @@ async def fetch_stats(pool: asyncpg.Pool) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(_STATS)
     return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Coverage / source health
+# ---------------------------------------------------------------------------
+
+_COVERAGE_BY_ATS = """
+SELECT jb.crawler_type AS ats,
+       COUNT(*) FILTER (WHERE jb.is_enabled)                                         AS boards,
+       COUNT(*) FILTER (WHERE jb.is_enabled AND jb.consecutive_failures = 0
+                        AND jb.last_success_at >= now() - interval '24 hours')       AS healthy,
+       COUNT(*) FILTER (WHERE jb.is_enabled AND jb.consecutive_failures > 0)         AS failing,
+       COUNT(*) FILTER (WHERE jb.board_status = 'gone')                              AS gone,
+       MAX(jb.last_success_at)                                                       AS last_success_at
+FROM job_board jb
+GROUP BY jb.crawler_type
+ORDER BY boards DESC
+"""
+
+_COVERAGE_BY_COUNTRY = """
+SELECT COALESCE(c.extras->>'country', 'unknown') AS country,
+       COUNT(DISTINCT c.id)                       AS companies,
+       COUNT(DISTINCT c.id) FILTER (WHERE EXISTS (
+           SELECT 1 FROM job_posting jp WHERE jp.company_id = c.id AND jp.is_active)) AS companies_hiring
+FROM company c
+GROUP BY 1
+ORDER BY companies DESC
+"""
+
+_COVERAGE_BY_CITY = """
+SELECT c.extras->>'hq_city' AS city, COUNT(*) AS companies
+FROM company c
+WHERE c.extras->>'country' = 'IN' AND c.extras->>'hq_city' IS NOT NULL
+GROUP BY 1
+ORDER BY companies DESC
+"""
+
+
+async def fetch_coverage(pool: asyncpg.Pool) -> dict:
+    async with pool.acquire() as conn:
+        by_ats = await conn.fetch(_COVERAGE_BY_ATS)
+        by_country = await conn.fetch(_COVERAGE_BY_COUNTRY)
+        by_city = await conn.fetch(_COVERAGE_BY_CITY)
+    return {
+        "by_ats": [dict(r) for r in by_ats],
+        "by_country": [dict(r) for r in by_country],
+        "india_by_city": [dict(r) for r in by_city],
+    }

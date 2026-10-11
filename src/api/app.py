@@ -259,6 +259,14 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
         s["last_updated"] = _iso(s.get("last_updated"))
         return JSONResponse(s, headers={"Cache-Control": "public, max-age=30"})
 
+    @app.get("/api/v1/coverage")
+    async def coverage(request: Request):
+        """Which sources the feed covers and how healthy they are."""
+        data = await queries.fetch_coverage(request.app.state.pool)
+        for row in data["by_ats"]:
+            row["last_success_at"] = _iso(row.get("last_success_at"))
+        return JSONResponse(data, headers={"Cache-Control": "public, max-age=300"})
+
     if _STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
