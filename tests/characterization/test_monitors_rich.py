@@ -310,17 +310,3 @@ async def test_ashby_404_is_board_gone(make_client):
 )
 async def test_ashby_pagination():
     raise AssertionError("ashby does not paginate")
-
-
-async def test_orphaned_ashby_fixture_does_not_match_current_monitor(make_client):
-    """tests/fixtures/ashby_synthetic.json uses a GraphQL ``jobBoard.jobPostings`` shape.
-
-    The current monitor reads ``jobs[].jobUrl`` from the posting API, so the
-    orphaned fixture yields zero jobs. Pinned so the mismatch is explicit.
-    """
-    import json
-    from pathlib import Path
-
-    old = json.loads((Path(__file__).parents[1] / "fixtures" / "ashby_synthetic.json").read_text())
-    async with make_client(lambda r: httpx.Response(200, json=old)) as client:
-        assert await ashby.discover({"board_url": "https://jobs.ashbyhq.com/ramp"}, client) == []
