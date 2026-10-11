@@ -14,7 +14,7 @@
     {
       "job_id": "jobs--987654321098765",
       "title": "Site Reliability Engineer",
-[redacted]
+      "description": "<p>Manage and improve the reliability of Google's infrastructure. We offer H-1B sponsorship for qualified candidates. Requirements: 2+ years of experience with Linux.</p>",
       "locations": [
         {"display": "Remote, USA"}
       ],
