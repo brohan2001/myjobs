@@ -1,0 +1,2849 @@
+{
+  "date": "2026-10-12",
+  "sample_size": 200,
+  "seed": 7,
+  "concurrency": 6,
+  "summary": {
+    "total": 200,
+    "api_total": 100,
+    "site_total": 100,
+    "counts": {
+      "same": 187,
+      "honest_blocked": 1,
+      "honest_fewer": 0,
+      "chrome_blocked": 0,
+      "both_failed": 12,
+      "honest_more": 0
+    },
+    "by_kind": {
+      "api": {
+        "same": 97,
+        "honest_blocked": 0,
+        "honest_fewer": 0,
+        "chrome_blocked": 0,
+        "both_failed": 3,
+        "honest_more": 0
+      },
+      "site": {
+        "same": 90,
+        "honest_blocked": 1,
+        "honest_fewer": 0,
+        "chrome_blocked": 0,
+        "both_failed": 9,
+        "honest_more": 0
+      }
+    },
+    "honest_blocked": [
+      {
+        "board_slug": "i2cat-talentclue",
+        "monitor_type": "api_sniffer",
+        "kind": "site",
+        "chrome_jobs": 7,
+        "honest_jobs": 0,
+        "honest_error": null
+      }
+    ]
+  },
+  "records": [
+    {
+      "board_slug": "plot-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 5,
+        "error": null
+      },
+      "honest": {
+        "jobs": 5,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "meituan-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 3078,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3080,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "bitfinex-recruitee",
+      "monitor_type": "recruitee",
+      "kind": "api",
+      "chrome": {
+        "jobs": 9,
+        "error": null
+      },
+      "honest": {
+        "jobs": 9,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ramp-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 165,
+        "error": null
+      },
+      "honest": {
+        "jobs": 165,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "medal-ashby-2",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 18,
+        "error": null
+      },
+      "honest": {
+        "jobs": 18,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "saber-interactive-careers-huntflow",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "splice-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "cdds-ag-join",
+      "monitor_type": "join",
+      "kind": "api",
+      "chrome": {
+        "jobs": 5,
+        "error": null
+      },
+      "honest": {
+        "jobs": 5,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "current-careers",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 20,
+        "error": null
+      },
+      "honest": {
+        "jobs": 20,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "yelp-icims",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "rhythm-software-inc-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "mphasis-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 179,
+        "error": null
+      },
+      "honest": {
+        "jobs": 179,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "kiavi-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ovhcloud-careers-industry",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 20,
+        "error": null
+      },
+      "honest": {
+        "jobs": 20,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "carv-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "infisical-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ably-uk-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lombard-odier-careers",
+      "monitor_type": "workday",
+      "kind": "api",
+      "chrome": {
+        "jobs": 70,
+        "error": null
+      },
+      "honest": {
+        "jobs": 70,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "itau-unibanco-careers",
+      "monitor_type": "nextdata",
+      "kind": "site",
+      "chrome": {
+        "jobs": 131,
+        "error": null
+      },
+      "honest": {
+        "jobs": 131,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "further-ai-careers",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 11,
+        "error": null
+      },
+      "honest": {
+        "jobs": 11,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "advantest-careers-jp",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 46,
+        "error": null
+      },
+      "honest": {
+        "jobs": 46,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "stable-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 7,
+        "error": null
+      },
+      "honest": {
+        "jobs": 7,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "the-mj-companies-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 20,
+        "error": null
+      },
+      "honest": {
+        "jobs": 20,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "mercedes-benz-careers-taleo",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 224,
+        "error": null
+      },
+      "honest": {
+        "jobs": 224,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "king-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 22,
+        "error": null
+      },
+      "honest": {
+        "jobs": 22,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "infosys-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ionq-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 132,
+        "error": null
+      },
+      "honest": {
+        "jobs": 132,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "telnyx-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 50,
+        "error": null
+      },
+      "honest": {
+        "jobs": 50,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lg-careers-global",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 234,
+        "error": null
+      },
+      "honest": {
+        "jobs": 234,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "amd-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1309,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1309,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "aviatrix-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 16,
+        "error": null
+      },
+      "honest": {
+        "jobs": 16,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "sureify-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 15,
+        "error": null
+      },
+      "honest": {
+        "jobs": 15,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "applied-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 325,
+        "error": null
+      },
+      "honest": {
+        "jobs": 325,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "bloomberg-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 329,
+        "error": null
+      },
+      "honest": {
+        "jobs": 329,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "factorial-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 136,
+        "error": null
+      },
+      "honest": {
+        "jobs": 136,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "asg-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "qutwo-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 14,
+        "error": null
+      },
+      "honest": {
+        "jobs": 14,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "deepsense-ai-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lxt-bamboohr",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 59,
+        "error": null
+      },
+      "honest": {
+        "jobs": 59,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "witty-machines-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "persistent-systems-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "PaginationFetchError: pagination fetch failed for https://apipersistent.zwayam.com/jobs/search?companyId=MTQ5Nzc%3D&domain=careers.persistent."
+      },
+      "honest": {
+        "jobs": null,
+        "error": "PaginationFetchError: pagination fetch failed for https://apipersistent.zwayam.com/jobs/search?companyId=MTQ5Nzc%3D&domain=careers.persistent."
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "artisan-partners-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 19,
+        "error": null
+      },
+      "honest": {
+        "jobs": 19,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "texas-instruments-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 838,
+        "error": null
+      },
+      "honest": {
+        "jobs": 838,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "mediatek-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "epic-brokers-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 98,
+        "error": null
+      },
+      "honest": {
+        "jobs": 98,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "public-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "volkswagen-group-cariad-india",
+      "monitor_type": "nextdata",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "funnelfox-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "appliedlabs-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 3,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lynx-analytics-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 7,
+        "error": null
+      },
+      "honest": {
+        "jobs": 7,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "swiss-re-careers-corp",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 279,
+        "error": null
+      },
+      "honest": {
+        "jobs": 279,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "axios-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 37,
+        "error": null
+      },
+      "honest": {
+        "jobs": 37,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "groww-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 9,
+        "error": null
+      },
+      "honest": {
+        "jobs": 9,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "telstra-health-livehire",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://www.livehire.com/careers/telstra-health/jobs"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://www.livehire.com/careers/telstra-health/jobs"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "fiserv-careers-workday",
+      "monitor_type": "workday",
+      "kind": "api",
+      "chrome": {
+        "jobs": 311,
+        "error": null
+      },
+      "honest": {
+        "jobs": 311,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "point72-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 221,
+        "error": null
+      },
+      "honest": {
+        "jobs": 221,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "hackerrank-careers-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 28,
+        "error": null
+      },
+      "honest": {
+        "jobs": 28,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "dphi-space-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 8,
+        "error": null
+      },
+      "honest": {
+        "jobs": 8,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "presence-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 3,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lockheed-martin-main",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://www.lockheedmartinjobs.com/search-jobs"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://www.lockheedmartinjobs.com/search-jobs"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "tsmc-main",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://careers.tsmc.com/en_US/careers"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://careers.tsmc.com/en_US/careers"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "servers-com-careers-apply",
+      "monitor_type": "breezy",
+      "kind": "api",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "typewise-main",
+      "monitor_type": "ycombinator",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "wix-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 51,
+        "error": null
+      },
+      "honest": {
+        "jobs": 51,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "honda-brazil",
+      "monitor_type": "nextdata",
+      "kind": "site",
+      "chrome": {
+        "jobs": 29,
+        "error": null
+      },
+      "honest": {
+        "jobs": 29,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "allianz-suisse-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1742,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1742,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ford-talentbrew",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 897,
+        "error": null
+      },
+      "honest": {
+        "jobs": 897,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "salt-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 43,
+        "error": null
+      },
+      "honest": {
+        "jobs": 43,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "liftoff-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 21,
+        "error": null
+      },
+      "honest": {
+        "jobs": 21,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ping-an-insurance-yqb",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 68,
+        "error": null
+      },
+      "honest": {
+        "jobs": 68,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "wesort-ai-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "avidxchange-inc-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 25,
+        "error": null
+      },
+      "honest": {
+        "jobs": 25,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "barclays-careers-contractors",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2323,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2323,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "xiaomi-careers-cn",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 243,
+        "error": null
+      },
+      "honest": {
+        "jobs": 243,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "wynd-labs-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": null,
+        "error": "BoardGoneError: Greenhouse board token 'wyndlabs' returned 404"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "BoardGoneError: Greenhouse board token 'wyndlabs' returned 404"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "perfectserve-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "cleo-india-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 7,
+        "error": null
+      },
+      "honest": {
+        "jobs": 7,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "icici-bank-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "near-space-labs-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "oliv-ai-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "comarch-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "TimeoutError: timed out after 60s"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "TimeoutError: timed out after 60s"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "china-life-insurance-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2890,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2890,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "eqt-group-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 15,
+        "error": null
+      },
+      "honest": {
+        "jobs": 15,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "duatic-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "exadel-inc-website-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 44,
+        "error": null
+      },
+      "honest": {
+        "jobs": 44,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "sonatus-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 21,
+        "error": null
+      },
+      "honest": {
+        "jobs": 21,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "weride-careers",
+      "monitor_type": "lever",
+      "kind": "api",
+      "chrome": {
+        "jobs": 16,
+        "error": null
+      },
+      "honest": {
+        "jobs": 16,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "roboa-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "spotify-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 76,
+        "error": null
+      },
+      "honest": {
+        "jobs": 76,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "plexus-co-main",
+      "monitor_type": "lever",
+      "kind": "api",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "swiggy-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 79,
+        "error": null
+      },
+      "honest": {
+        "jobs": 79,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "softbank-career",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 263,
+        "error": null
+      },
+      "honest": {
+        "jobs": 263,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "netflix-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 452,
+        "error": null
+      },
+      "honest": {
+        "jobs": 453,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "google-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 3414,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3414,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "kapa-ai-careers",
+      "monitor_type": "ycombinator",
+      "kind": "site",
+      "chrome": {
+        "jobs": 9,
+        "error": null
+      },
+      "honest": {
+        "jobs": 9,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "zed-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "chainlink-labs-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 22,
+        "error": null
+      },
+      "honest": {
+        "jobs": 22,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "citadel-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 63,
+        "error": null
+      },
+      "honest": {
+        "jobs": 63,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "github-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "quiver-ai-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "baseten-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 109,
+        "error": null
+      },
+      "honest": {
+        "jobs": 109,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ost-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 9,
+        "error": null
+      },
+      "honest": {
+        "jobs": 9,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "everway-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 5,
+        "error": null
+      },
+      "honest": {
+        "jobs": 5,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "unsloth-ai-careers",
+      "monitor_type": "ycombinator",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "age-solutions-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 67,
+        "error": null
+      },
+      "honest": {
+        "jobs": 67,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "knowlix-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": null,
+        "error": "BoardGoneError: Ashby board token 'knowlix' returned 404"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "BoardGoneError: Ashby board token 'knowlix' returned 404"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "u-s-bank-careers",
+      "monitor_type": "nextdata",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1279,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1279,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "topkey-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "postscript-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 5,
+        "error": null
+      },
+      "honest": {
+        "jobs": 5,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ant-group-careers-ats",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 19,
+        "error": null
+      },
+      "honest": {
+        "jobs": 19,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "bloom-diy-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 3,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "galaxy-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 42,
+        "error": null
+      },
+      "honest": {
+        "jobs": 42,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "china-telecom-careers-campus",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 3194,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3194,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "apple-careers",
+      "monitor_type": "nextdata",
+      "kind": "site",
+      "chrome": {
+        "jobs": 4874,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4874,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "overwolf-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 12,
+        "error": null
+      },
+      "honest": {
+        "jobs": 12,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "alpian-ats",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "continental-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 100,
+        "error": null
+      },
+      "honest": {
+        "jobs": 100,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "idiap-main",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "gitlab-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 221,
+        "error": null
+      },
+      "honest": {
+        "jobs": 221,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "maruti-suzuki-careers-hansalpur",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 52,
+        "error": null
+      },
+      "honest": {
+        "jobs": 52,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "garmin-careers-global",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 429,
+        "error": null
+      },
+      "honest": {
+        "jobs": 429,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "fhgr-careers",
+      "monitor_type": "umantis",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "pagerduty-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 51,
+        "error": null
+      },
+      "honest": {
+        "jobs": 51,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "agility-robotics-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 78,
+        "error": null
+      },
+      "honest": {
+        "jobs": 78,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "diligent-robotics-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "playkot-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "rithum-linkedin-board-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 11,
+        "error": null
+      },
+      "honest": {
+        "jobs": 11,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "engflow-careers",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "btg-pactual-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 283,
+        "error": null
+      },
+      "honest": {
+        "jobs": 283,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "globant-main",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "nexthop-ai-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 42,
+        "error": null
+      },
+      "honest": {
+        "jobs": 42,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "apex-space-careers",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 134,
+        "error": null
+      },
+      "honest": {
+        "jobs": 134,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "propel-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "viggle-careers",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "bda-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 42,
+        "error": null
+      },
+      "honest": {
+        "jobs": 42,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "deepjudge-careers",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 24,
+        "error": null
+      },
+      "honest": {
+        "jobs": 24,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "pivot-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "windranger-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 7,
+        "error": null
+      },
+      "honest": {
+        "jobs": 7,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "believe-careers",
+      "monitor_type": "smartrecruiters",
+      "kind": "api",
+      "chrome": {
+        "jobs": 32,
+        "error": null
+      },
+      "honest": {
+        "jobs": 32,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "posthog-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 10,
+        "error": null
+      },
+      "honest": {
+        "jobs": 10,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "block-labs-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ebanx-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 42,
+        "error": null
+      },
+      "honest": {
+        "jobs": 42,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "tnt-ventures-gmbh-join",
+      "monitor_type": "join",
+      "kind": "api",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "hive-financial-systems-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 3,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "amp-ai-powered-sortation-for-waste-and-recycling-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 9,
+        "error": null
+      },
+      "honest": {
+        "jobs": 9,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "algorized-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 19,
+        "error": null
+      },
+      "honest": {
+        "jobs": 19,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "smic-campus",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 259,
+        "error": null
+      },
+      "honest": {
+        "jobs": 259,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "aiphoria-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 5,
+        "error": null
+      },
+      "honest": {
+        "jobs": 5,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "just-eat-takeaway-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 107,
+        "error": null
+      },
+      "honest": {
+        "jobs": 107,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "durable-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "i2cat-talentclue",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 7,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "honest_blocked"
+    },
+    {
+      "board_slug": "rillet-careers",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 40,
+        "error": null
+      },
+      "honest": {
+        "jobs": 40,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "general-dynamics-gdels",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://www.gdels.com/en/jobs"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://www.gdels.com/en/jobs"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "northrop-grumman-veterans",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "SitemapParseError: Sitemap index at https://northropgrumman-veterans.jobs/sitemap.xml has no usable children"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "SitemapParseError: Sitemap index at https://northropgrumman-veterans.jobs/sitemap.xml has no usable children"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "zettabyte-space-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 9,
+        "error": null
+      },
+      "honest": {
+        "jobs": 9,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "stellantis-uk-retail",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 209,
+        "error": null
+      },
+      "honest": {
+        "jobs": 209,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lightpanda-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "black-ore-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "toyota-careers-us-phenom",
+      "monitor_type": "nextdata",
+      "kind": "site",
+      "chrome": {
+        "jobs": 121,
+        "error": null
+      },
+      "honest": {
+        "jobs": 121,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "graphax-jobs",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "guild-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "sakana-ai-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "sdsc-careers",
+      "monitor_type": "inline",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "hatch-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 5,
+        "error": null
+      },
+      "honest": {
+        "jobs": 5,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "tata-consultancy-services-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 99,
+        "error": null
+      },
+      "honest": {
+        "jobs": 99,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "supergaming-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 2,
+        "error": null
+      },
+      "honest": {
+        "jobs": 2,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "risktec-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "fora-financial-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "paytm-lever",
+      "monitor_type": "lever",
+      "kind": "api",
+      "chrome": {
+        "jobs": 180,
+        "error": null
+      },
+      "honest": {
+        "jobs": 180,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ergon-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 17,
+        "error": null
+      },
+      "honest": {
+        "jobs": 17,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "cross-river-careers-il",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 13,
+        "error": null
+      },
+      "honest": {
+        "jobs": 13,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "blastpoint-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "dentsu-careers-hrmos-jp-inc",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 28,
+        "error": null
+      },
+      "honest": {
+        "jobs": 28,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "xion-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 8,
+        "error": null
+      },
+      "honest": {
+        "jobs": 8,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "folio-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 8,
+        "error": null
+      },
+      "honest": {
+        "jobs": 8,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "seamless-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": null,
+        "error": "BoardGoneError: Greenhouse board token 'seamlessai' returned 404"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "BoardGoneError: Greenhouse board token 'seamlessai' returned 404"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "primeintellect-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 33,
+        "error": null
+      },
+      "honest": {
+        "jobs": 33,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "mirai-tech-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 3,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lazard-careers-professionals",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "oracle-careers",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ng-cash-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "PaginationFetchError: pagination fetch failed for https://revolutpeople.com/api/ngcash/external/v3/postings?page=2 after 1 attempts (status=40"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "PaginationFetchError: pagination fetch failed for https://revolutpeople.com/api/ngcash/external/v3/postings?page=2 after 1 attempts (status=40"
+      },
+      "classification": "both_failed"
+    },
+    {
+      "board_slug": "built-in-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 3,
+        "error": null
+      },
+      "honest": {
+        "jobs": 3,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "bank-of-china-careers-us",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": 94,
+        "error": null
+      },
+      "honest": {
+        "jobs": 94,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "c3-ai-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 92,
+        "error": null
+      },
+      "honest": {
+        "jobs": 92,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "koalafi-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 17,
+        "error": null
+      },
+      "honest": {
+        "jobs": 17,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "cleo-us-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 4,
+        "error": null
+      },
+      "honest": {
+        "jobs": 4,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "uber-careers-careem",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 18,
+        "error": null
+      },
+      "honest": {
+        "jobs": 18,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "nhl-careers",
+      "monitor_type": "dom",
+      "kind": "site",
+      "chrome": {
+        "jobs": 0,
+        "error": null
+      },
+      "honest": {
+        "jobs": 0,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "defense-unicorns-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 50,
+        "error": null
+      },
+      "honest": {
+        "jobs": 50,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "endor-labs-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 32,
+        "error": null
+      },
+      "honest": {
+        "jobs": 32,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "consumer-edge-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 1,
+        "error": null
+      },
+      "honest": {
+        "jobs": 1,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "lightning-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 14,
+        "error": null
+      },
+      "honest": {
+        "jobs": 14,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "atlassian-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 334,
+        "error": null
+      },
+      "honest": {
+        "jobs": 334,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "sprig-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 6,
+        "error": null
+      },
+      "honest": {
+        "jobs": 6,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "parabola-io-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 8,
+        "error": null
+      },
+      "honest": {
+        "jobs": 8,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "sensirion-careers",
+      "monitor_type": "api_sniffer",
+      "kind": "site",
+      "chrome": {
+        "jobs": 20,
+        "error": null
+      },
+      "honest": {
+        "jobs": 20,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "backbase-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 46,
+        "error": null
+      },
+      "honest": {
+        "jobs": 46,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "datadog-greenhouse",
+      "monitor_type": "greenhouse",
+      "kind": "api",
+      "chrome": {
+        "jobs": 435,
+        "error": null
+      },
+      "honest": {
+        "jobs": 435,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "outtake-ashby",
+      "monitor_type": "ashby",
+      "kind": "api",
+      "chrome": {
+        "jobs": 19,
+        "error": null
+      },
+      "honest": {
+        "jobs": 19,
+        "error": null
+      },
+      "classification": "same"
+    },
+    {
+      "board_slug": "ibm-dejobs",
+      "monitor_type": "sitemap",
+      "kind": "site",
+      "chrome": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://ibm.dejobs.org/jobs/"
+      },
+      "honest": {
+        "jobs": null,
+        "error": "SitemapDiscoveryError: No sitemap found for https://ibm.dejobs.org/jobs/"
+      },
+      "classification": "both_failed"
+    }
+  ]
+}
