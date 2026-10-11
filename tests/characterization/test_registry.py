@@ -13,19 +13,19 @@ from src.core import monitors
 EXPECTED_MONITORS = frozenset(
     {
         "accenture", "almacareer", "amazon", "api_sniffer", "ashby", "bite", "breezy", "deel",
-        "dom", "dvinci", "eightfold", "gem", "greenhouse", "hireology", "inline", "jobylon",
-        "join", "lever", "mokahr", "nextdata", "notion", "oracle_hcm", "personio", "phenom",
+        "dom", "dvinci", "eightfold", "gem", "greenhouse", "greythr", "hireology", "inline", "jobylon",
+        "join", "keka", "lever", "mokahr", "nextdata", "notion", "oracle_hcm", "personio", "phenom",
         "pinpoint", "recruitee", "recruiter_co_kr", "rippling", "rss", "sitemap",
         "smartrecruiters", "softgarden", "traffit", "umantis", "workable", "workday",
-        "ycombinator",
+        "ycombinator", "zoho_recruit",
     }
 )
 
 EXPECTED_RICH = frozenset(
     {
         "accenture", "almacareer", "amazon", "ashby", "deel", "dvinci", "gem", "greenhouse",
-        "hireology", "inline", "jobylon", "lever", "mokahr", "oracle_hcm", "pinpoint",
-        "recruitee", "recruiter_co_kr", "rss", "traffit",
+        "greythr", "hireology", "inline", "jobylon", "keka", "lever", "mokahr", "oracle_hcm", "pinpoint",
+        "recruitee", "recruiter_co_kr", "rss", "traffit", "zoho_recruit",
     }
 )
 

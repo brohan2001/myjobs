@@ -591,10 +591,12 @@ from src.core.monitors import (  # noqa: E402
     eightfold,  # noqa: F401
     gem,  # noqa: F401
     greenhouse,  # noqa: F401
+    greythr,  # noqa: F401
     hireology,  # noqa: F401
     inline,  # noqa: F401
     jobylon,  # noqa: F401
     join,  # noqa: F401
+    keka,  # noqa: F401
     lever,  # noqa: F401
     mokahr,  # noqa: F401
     nextdata,  # noqa: F401
@@ -615,4 +617,5 @@ from src.core.monitors import (  # noqa: E402
     workable,  # noqa: F401
     workday,  # noqa: F401
     ycombinator,  # noqa: F401
+    zoho_recruit,  # noqa: F401
 )
