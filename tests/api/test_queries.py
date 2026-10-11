@@ -22,7 +22,7 @@ NOW = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
 
 def test_default_query():
     sql, args = build_jobs_query(JobFilters())
-    assert "WHERE jp.is_active\n" in sql
+    assert "WHERE jp.is_active AND jp.titles[1] IS NOT NULL\n" in sql
     assert "ORDER BY jp.first_seen_at DESC, jp.id DESC" in sql
     assert sql.rstrip().endswith("LIMIT $1")
     assert args == [51]

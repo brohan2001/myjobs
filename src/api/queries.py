@@ -107,7 +107,8 @@ _JOB_COLUMNS = """
 
 
 def build_jobs_query(f: JobFilters) -> tuple[str, list]:
-    where = ["jp.is_active"]
+    # URL-only boards insert a posting before its detail page is scraped; hide it until it has a title.
+    where = ["jp.is_active", "jp.titles[1] IS NOT NULL"]
     args: list = []
 
     def arg(value) -> str:
