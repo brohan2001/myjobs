@@ -122,11 +122,15 @@ def _parse_location(posting: dict) -> list[str] | None:
                 loc_str = ", ".join(parts) if parts else loc.get("name")
             else:
                 loc_str = str(loc).strip() if str(loc).strip() else None
-            if loc_str and loc_str not in locations:
+            # The public API returns internal location ids ("4") with no public lookup; drop them.
+            if loc_str and not loc_str.isdigit() and loc_str not in locations:
                 locations.append(loc_str)
+        if posting.get("is_remote") and "Remote" not in locations:
+            locations.append("Remote")
         return locations or None
 
-    return [str(raw_locs)]
+    raw = str(raw_locs).strip()
+    return None if raw.isdigit() else [raw]
 
 
 def _parse_job(posting: dict, tenant: str) -> DiscoveredJob | None:
