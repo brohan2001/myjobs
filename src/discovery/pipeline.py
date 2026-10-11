@@ -279,7 +279,10 @@ async def run(
     per_company_timeout: float = 150.0,
     min_jobs: int = 1,
     rediscover: bool = False,
+    on_outcome=None,
 ) -> list[Outcome]:
+    """Evaluate candidates concurrently. ``on_outcome(outcome)`` is called as each one finishes,
+    so callers can persist progress (a stuck batch must not lose finished work)."""
     from src.shared.http import create_http_client
 
     domains, _slugs, board_urls = existing_index(companies, boards)
@@ -314,6 +317,8 @@ async def run(
                     o.status, o.reason = "duplicate", "board already in registry"
                 log.info("discovery.outcome", extra={"company": c.name, "status": o.status, "reason": o.reason,
                                                       "monitor_type": o.monitor_type, "jobs": o.jobs_found})
+                if on_outcome is not None:
+                    on_outcome(o)
                 return o
 
         outcomes.extend(await asyncio.gather(*[_one(c) for c in todo]))
