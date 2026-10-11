@@ -22,6 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.discovery.pipeline import (  # noqa: E402
+    Candidate,
+    Outcome,
     existing_index,
     load_candidates,
     outcome_dict,
@@ -49,6 +51,19 @@ def _write(path: Path, fields: list[str], rows: list[dict]) -> None:
         w.writerows(rows)
 
 
+def _outcomes_from_accepted(path: Path) -> list[Outcome]:
+    out = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            c = Candidate(name=r["name"], website=r["website"], careers_url=r.get("careers_url", ""),
+                          hq_city=r.get("hq_city", ""), category=r.get("category", ""), source=r.get("source", ""),
+                          country=r.get("country", "IN") or "IN", slug=r.get("slug", ""))
+            cfg = json.loads(r["monitor_config"]) if r.get("monitor_config") else {}
+            out.append(Outcome(c, "accepted", "verified", board_url=r["board_url"], monitor_type=r["monitor_type"],
+                               monitor_config=cfg, jobs_found=int(r.get("jobs_found") or 0)))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("candidates", type=Path)
@@ -59,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", type=Path, default=DATA / "candidates")
     ap.add_argument("--rediscover", action="store_true",
                     help="candidates are existing companies (CSV has a slug column) whose board went away")
+    ap.add_argument("--apply-accepted", action="store_true",
+                    help="treat the input as a previous run's accepted.csv and only apply it (no network)")
     args = ap.parse_args(argv)
 
     company_fields, companies = _read(DATA / "companies.csv")
@@ -67,13 +84,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         candidates = candidates[: args.limit]
 
-    outcomes = asyncio.run(run(candidates, companies, boards, concurrency=args.concurrency, min_jobs=args.min_jobs,
-                               rediscover=args.rediscover))
+    if args.apply_accepted:
+        outcomes = _outcomes_from_accepted(args.candidates)
+        args.apply = True
+    else:
+        outcomes = asyncio.run(run(candidates, companies, boards, concurrency=args.concurrency, min_jobs=args.min_jobs,
+                                   rediscover=args.rediscover))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     review = [outcome_dict(o) for o in outcomes if o.status != "accepted"]
     if review:
         _write(args.out_dir / "review_queue.csv", list(review[0].keys()), review)
+    accepted = [outcome_dict(o) for o in outcomes if o.status == "accepted"]
+    if accepted:
+        _write(args.out_dir / "accepted.csv", list(accepted[0].keys()), accepted)
     summary = Counter(o.status for o in outcomes)
     by_ats = Counter(o.monitor_type for o in outcomes if o.status == "accepted")
     report = {
