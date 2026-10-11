@@ -92,3 +92,9 @@ Docker Desktop quit four times during the session through its own GUI quit path 
 is unknown and nothing in the repo triggers it. Postgres data survives in the `pgdata` volume; Redis queues are rebuilt by
 `myjobs worker` (which syncs on start). agy briefs now forbid touching Docker. For deployment, run Postgres and Redis as system
 services, not Docker Desktop.
+
+## D21: Company-type taxonomy is a closed list (Default, 2026-10-12)
+`company_type` is one of startup, product, mnc, gcc, services, nonprofit, government (`src/company_type.py`). Unicorn and funded
+startups fold into `startup`, `mnc_gcc` into `gcc`. Discovery normalizes candidate categories and drops anything else (industry
+labels like "fintech" are not company types). A test keeps `data/companies.csv` inside the list. The API filter is
+`company_type=startup,gcc` (any of).

@@ -293,3 +293,16 @@ def test_coverage_endpoint_shape(monkeypatch):
         body = client.get("/api/v1/coverage").json()
     assert body["by_ats"][0]["last_success_at"] == "2026-10-11T00:00:00+00:00"
     assert body["india_by_city"][0]["city"] == "Bengaluru"
+
+
+def test_jobs_company_type_filter(client, pool):
+    assert client.get("/api/v1/jobs?company_type=startup,%20gcc").status_code == 200
+    _, sql, args = pool.calls[0]
+    assert ["startup", "gcc"] in args
+    assert client.get("/api/v1/jobs?company_type=moon").status_code == 400
+
+
+def test_job_includes_company_type(client, pool):
+    pool.fetch_rows = [make_job_row(0)]
+    body = client.get("/api/v1/jobs").json()
+    assert body["jobs"][0]["company"]["type"] == "product"

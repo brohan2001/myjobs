@@ -9,7 +9,7 @@ from .conftest import BLR_ID, SF_ID, make_job_row
 def test_basic_shape(index):
     out = serialize_job(make_job_row(0), index)
     assert out["id"] == "00000000-0000-0000-0000-000000000001"
-    assert out["company"] == {"slug": "acme", "name": "Acme", "website": "https://acme.test", "logo": None}
+    assert out["company"] == {"slug": "acme", "name": "Acme", "website": "https://acme.test", "logo": None, "type": "product"}
     assert out["locations"] == [{"id": BLR_ID, "name": "Bengaluru, India", "country": "IN", "type": "onsite"}]
     assert out["locations_raw"] == ["Bengaluru"]
     assert out["first_seen_at"] == "2026-01-01T12:00:00+00:00"

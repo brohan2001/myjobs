@@ -79,6 +79,7 @@ def serialize_job(row, index: LocationIndex) -> dict:
             "name": row["company_name"],
             "website": row["company_website"],
             "logo": row["company_logo"],
+            "type": row.get("company_type"),
         },
         "locations": locations,
         "locations_raw": list(row["locations_raw"] or []),
@@ -191,6 +192,7 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
         seniority: str | None = Query(None, max_length=50),
         occupation: str | None = Query(None, max_length=80),
         max_years: int | None = Query(None, ge=0, le=40, description="Minimum experience required is at most this many years"),
+        company_type: str | None = Query(None, max_length=80, description="Comma-separated: " + ", ".join(queries.COMPANY_TYPES)),
         cursor: str | None = Query(None, max_length=200),
         limit: int = Query(50, ge=1, le=queries.MAX_LIMIT),
     ):
@@ -213,6 +215,7 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
                 seniority=seniority,
                 occupation=occupation,
                 max_years=max_years,
+                company_types=tuple(t.strip() for t in company_type.split(",") if t.strip()) if company_type else None,
                 cursor=queries.decode_cursor(cursor),
                 limit=limit,
             )

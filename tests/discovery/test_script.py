@@ -40,7 +40,7 @@ def candidates_csv(tmp_path: Path) -> Path:
     csv_file = tmp_path / "candidates.csv"
     csv_file.write_text(
         "name,website,careers_url,hq_city,category,source,country\n"
-        "Acme Corp,https://acme.com,https://jobs.lever.co/acme,Bengaluru,fintech,yc,IN\n"
+        "Acme Corp,https://acme.com,https://jobs.lever.co/acme,Bengaluru,unicorn,yc,IN\n"
         "Beta Labs,https://beta.com,https://beta.com/sitemap.xml,Delhi,saas,vc,IN\n"
         "Blocked Portal,https://naukri.com/jobs,,,,portal,IN\n"
     )
@@ -56,7 +56,7 @@ class TestDiscoverCompaniesScript:
     ) -> None:
         monkeypatch.setattr(script_mod, "DATA", registry_dir)
 
-        c1 = Candidate(name="Acme Corp", website="https://acme.com", careers_url="https://jobs.lever.co/acme", hq_city="Bengaluru", category="fintech", source="yc", country="IN")
+        c1 = Candidate(name="Acme Corp", website="https://acme.com", careers_url="https://jobs.lever.co/acme", hq_city="Bengaluru", category="unicorn", source="yc", country="IN")
         c2 = Candidate(name="Beta Labs", website="https://beta.com", careers_url="https://beta.com/sitemap.xml", hq_city="Delhi", category="saas", source="vc", country="IN")
         c3 = Candidate(name="Blocked Portal", website="https://naukri.com/jobs", category="portal", country="IN")
 
@@ -121,14 +121,14 @@ class TestDiscoverCompaniesScript:
         candidates_file = tmp_path / "colliding_candidates.csv"
         candidates_file.write_text(
             "name,website,careers_url,hq_city,category,source,country\n"
-            "Acme Corp,https://acme1.com,,Bengaluru,fintech,,IN\n"
-            "Anthropic,https://anthropic.io,,San Francisco,ai,,US\n"  # Collides with existing 'anthropic' in registry -> 'anthropic-2'
-            "Acme Corp,https://acme2.com,,Mumbai,fintech,,IN\n"  # Collides with earlier candidate in batch -> 'acme-corp-2'
+            "Acme Corp,https://acme1.com,,Bengaluru,unicorn,,IN\n"
+            "Anthropic,https://anthropic.io,,San Francisco,product,,US\n"  # Collides with existing 'anthropic' in registry -> 'anthropic-2'
+            "Acme Corp,https://acme2.com,,Mumbai,unicorn,,IN\n"  # Collides with earlier candidate in batch -> 'acme-corp-2'
         )
 
-        c1 = Candidate(name="Acme Corp", website="https://acme1.com", hq_city="Bengaluru", category="fintech", country="IN")
-        c2 = Candidate(name="Anthropic", website="https://anthropic.io", hq_city="San Francisco", category="ai", country="US")
-        c3 = Candidate(name="Acme Corp", website="https://acme2.com", hq_city="Mumbai", category="fintech", country="IN")
+        c1 = Candidate(name="Acme Corp", website="https://acme1.com", hq_city="Bengaluru", category="unicorn", country="IN")
+        c2 = Candidate(name="Anthropic", website="https://anthropic.io", hq_city="San Francisco", category="product", country="US")
+        c3 = Candidate(name="Acme Corp", website="https://acme2.com", hq_city="Mumbai", category="unicorn", country="IN")
 
         canned_outcomes = [
             Outcome(c1, "accepted", "verified", board_url="https://jobs.lever.co/acme", monitor_type="lever", jobs_found=3),
@@ -161,19 +161,19 @@ class TestDiscoverCompaniesScript:
         assert rows[1]["name"] == "Acme Corp"
         assert rows[1]["country"] == "IN"
         assert rows[1]["hq_city"] == "Bengaluru"
-        assert rows[1]["company_type"] == "fintech"
+        assert rows[1]["company_type"] == "startup"
 
         assert rows[2]["slug"] == "anthropic-2"  # Collision with existing registry slug resolved
         assert rows[2]["name"] == "Anthropic"
         assert rows[2]["country"] == "US"
         assert rows[2]["hq_city"] == "San Francisco"
-        assert rows[2]["company_type"] == "ai"
+        assert rows[2]["company_type"] == "product"
 
         assert rows[3]["slug"] == "acme-corp-2"  # Collision within batch resolved
         assert rows[3]["name"] == "Acme Corp"
         assert rows[3]["country"] == "IN"
         assert rows[3]["hq_city"] == "Mumbai"
-        assert rows[3]["company_type"] == "fintech"
+        assert rows[3]["company_type"] == "startup"
 
         # Verify boards.csv
         with open(registry_dir / "boards.csv", newline="", encoding="utf-8") as f:

@@ -232,7 +232,7 @@ class TestPureHelpers:
             website="https://acme.com",
             careers_url="https://acme.com/jobs",
             hq_city="Bengaluru",
-            category="fintech",
+            category="unicorn",
             source="yc",
             country="IN",
         )
@@ -256,7 +256,7 @@ class TestPureHelpers:
             "enabled": "true",
             "country": "IN",
             "hq_city": "Bengaluru",
-            "company_type": "fintech",
+            "company_type": "startup",
         }
         assert board == {
             "company_slug": "acme-corp",

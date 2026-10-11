@@ -52,6 +52,7 @@ def make_job_row(n: int = 0, **over) -> dict:
         "company_name": "Acme",
         "company_website": "https://acme.test",
         "company_logo": None,
+        "company_type": "product",
         "ats": "greenhouse",
     }
     row.update(over)
