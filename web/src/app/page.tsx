@@ -19,6 +19,7 @@ export default async function FeedPage({ searchParams }: PageProps) {
   const rawSince = typeof params.since === "string" ? params.since : "24h";
   const rawQ = typeof params.q === "string" ? params.q : undefined;
   const rawCursor = typeof params.cursor === "string" ? params.cursor : undefined;
+  const rawCompany = typeof params.company === "string" ? params.company : undefined;
 
   // Determine effective country and location
   // Default region is India (country=IN) unless specified or location specified
@@ -42,6 +43,7 @@ export default async function FeedPage({ searchParams }: PageProps) {
         country: effectiveCountry,
         location: effectiveLocation,
         work_mode: rawWorkMode,
+        company: rawCompany,
         since: rawSince,
         q: rawQ,
         cursor: rawCursor,

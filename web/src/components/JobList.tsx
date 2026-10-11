@@ -4,9 +4,21 @@ import { useEffect, useState } from "react";
 import { timeBucket } from "@/lib/format";
 import { Job } from "@/lib/types";
 import { JobRow } from "./JobRow";
+import { MoreRow } from "./MoreRow";
+
+export type VisibleFeedItem =
+  | { kind: "job"; job: Job }
+  | {
+      kind: "more";
+      company: { slug: string; name: string };
+      count: number;
+      hidden: Job[];
+      runKey: string;
+    };
 
 interface JobListProps {
   jobs: Job[];
+  visibleItems: VisibleFeedItem[];
   currency: string;
   placeFilter?: string;
   isLoading: boolean;
@@ -24,10 +36,13 @@ interface JobListProps {
   focusedIndex: number;
   setFocusedIndex: (i: number) => void;
   onOpenJob: (job: Job) => void;
+  onExpandRun: (runKey: string) => void;
+  buildCompanyHref: (slug: string) => string;
 }
 
 export function JobList({
   jobs,
+  visibleItems,
   currency,
   placeFilter,
   isLoading,
@@ -45,6 +60,8 @@ export function JobList({
   focusedIndex,
   setFocusedIndex,
   onOpenJob,
+  onExpandRun,
+  buildCompanyHref,
 }: JobListProps) {
   const [lastVisitDate, setLastVisitDate] = useState<Date | null>(null);
 
@@ -144,13 +161,14 @@ export function JobList({
     );
   }
 
-  // Group jobs by timeBucket and insert divider
+  // Group visible items by timeBucket and insert divider
   let lastBucket: string | null = null;
   const elements: React.ReactNode[] = [];
   let dividerInserted = false;
 
-  jobs.forEach((job, index) => {
-    const bucket = timeBucket(job.first_seen_at);
+  visibleItems.forEach((item, index) => {
+    const jobForBucket = item.kind === "job" ? item.job : item.hidden[0];
+    const bucket = timeBucket(jobForBucket.first_seen_at);
 
     // Group header
     if (bucket !== lastBucket) {
@@ -165,9 +183,10 @@ export function JobList({
     // Divider: new since your last visit
     if (
       !dividerInserted &&
+      lastVisitDate &&
       newJobsCount > 0 &&
       newJobsCount < jobs.length &&
-      index === newJobsCount
+      new Date(jobForBucket.first_seen_at) <= lastVisitDate
     ) {
       elements.push(
         <li key="new-visit-divider" className="div" role="separator">
@@ -177,18 +196,33 @@ export function JobList({
       dividerInserted = true;
     }
 
-    elements.push(
-      <JobRow
-        key={job.id}
-        job={job}
-        index={index}
-        currency={currency}
-        placeFilter={placeFilter}
-        isFocused={focusedIndex === index}
-        onFocus={() => setFocusedIndex(index)}
-        onOpen={() => onOpenJob(job)}
-      />
-    );
+    if (item.kind === "job") {
+      elements.push(
+        <JobRow
+          key={item.job.id}
+          job={item.job}
+          index={index}
+          currency={currency}
+          placeFilter={placeFilter}
+          isFocused={focusedIndex === index}
+          onFocus={() => setFocusedIndex(index)}
+          onOpen={() => onOpenJob(item.job)}
+        />
+      );
+    } else {
+      elements.push(
+        <MoreRow
+          key={`more-${item.runKey}`}
+          company={item.company}
+          count={item.count}
+          index={index}
+          isFocused={focusedIndex === index}
+          onFocus={() => setFocusedIndex(index)}
+          onExpand={() => onExpandRun(item.runKey)}
+          companyHref={buildCompanyHref(item.company.slug)}
+        />
+      );
+    }
   });
 
   return (
