@@ -268,3 +268,28 @@ def test_cors_allowed_origin(monkeypatch, make_client, pool):
 
 def test_cors_unset_after_patch_restored(client):
     assert settings.api_cors_origins == ""
+
+
+def test_coverage_endpoint_shape(monkeypatch):
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from src.api import app as app_mod
+    from src.api import queries
+
+    async def fake_coverage(pool):
+        return {
+            "by_ats": [{"ats": "greenhouse", "boards": 10, "healthy": 9, "failing": 1, "gone": 2,
+                        "last_success_at": datetime(2026, 10, 11, tzinfo=timezone.utc)}],
+            "by_country": [{"country": "IN", "companies": 5, "companies_hiring": 4}],
+            "india_by_city": [{"city": "Bengaluru", "companies": 3}],
+        }
+
+    monkeypatch.setattr(queries, "fetch_coverage", fake_coverage)
+    application = app_mod.create_app(use_lifespan=False)
+    application.state.pool = object()
+    with TestClient(application) as client:
+        body = client.get("/api/v1/coverage").json()
+    assert body["by_ats"][0]["last_success_at"] == "2026-10-11T00:00:00+00:00"
+    assert body["india_by_city"][0]["city"] == "Bengaluru"
