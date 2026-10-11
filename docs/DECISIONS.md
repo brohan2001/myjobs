@@ -62,3 +62,17 @@ the substring country matching that turned "Indiana" into India.
 Upstream switched from an identifying UA to a Chrome UA after WAF blocks on several big employer career sites, including Infosys
 (`src/shared/http.py:41`). Switching back blind could silently cost India-relevant coverage. Plan: A/B a sample of ~200 boards with
 an honest UA in Phase 2B, then decide with data. robots.txt permission checks (2B.1) are independent of this and still planned.
+
+## D15: Feed design direction C, "Field notes" (Default, 2026-10-11; user may override)
+Picked while the user was away and had asked for autonomous progress. Reasons: the strongest phone layout of the three (the first
+job sits above the fold at 375 px), the most legible face (Atkinson Hyperlegible) for a mobile, India-first audience, and
+sentence-style filters that are distinctive without being gimmicky. A (Ledger) is the fallback; the frontend keeps tokens in one
+theme file so a switch is cheap.
+
+## D16: Frontend stack: Next.js (App Router) + TypeScript in web/, FastAPI stays the API (Default, 2026-10-11)
+The user is comfortable with Next.js. The feed list is server-rendered for fast first paint on slow connections, and filters are URL
+query params, so links are shareable. The Python worker and API are unchanged.
+
+## D17: Delegation split (User, 2026-10-11)
+About 50% of the work goes to agy (Gemini 3.8 Flash first, then Sonnet 4.6, then Opus 4.6), run with --dangerously-skip-permissions.
+Delegated work is verified by contract tests, scope checks (`git diff --stat`) and structured reports, not by line-by-line reading.
