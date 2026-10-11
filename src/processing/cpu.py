@@ -407,6 +407,7 @@ def _process_jobs_cpu(
             t_ids,
             occ_id,
             sen_id,
+            _coerce_locations(j.locations),
         )
 
         r2_staging_args = dict(

@@ -333,14 +333,14 @@ INSERT INTO job_posting
      location_ids, location_types,
      salary_min, salary_max, salary_currency, salary_period, salary_eur,
      experience_min, experience_max, technology_ids,
-     occupation_id, seniority_id)
+     occupation_id, seniority_id, locations_raw)
 VALUES ($1, $2, $3, $4,
         now(), now(),
         true, $5, $6,
         $7, $8,
         $9, $10, $11, $12, $13,
         $14, $15, $16,
-        $17, $18)
+        $17, $18, $19)
 ON CONFLICT (source_url) DO NOTHING
 RETURNING id
 """
@@ -354,14 +354,14 @@ INSERT INTO job_posting
      location_ids, location_types,
      salary_min, salary_max, salary_currency, salary_period, salary_eur,
      experience_min, experience_max, technology_ids,
-     occupation_id, seniority_id)
+     occupation_id, seniority_id, locations_raw)
 VALUES ($1, $2, $3, $4,
         now(), now(), now(),
         true, $5, $6,
         $7, $8,
         $9, $10, $11, $12, $13,
         $14, $15, $16,
-        $17, $18)
+        $17, $18, $19)
 ON CONFLICT (source_url) DO NOTHING
 RETURNING id
 """
@@ -376,7 +376,8 @@ CREATE TEMP TABLE _rich_updates (
     salary_currency text, salary_period text, salary_eur integer,
     experience_min integer, experience_max integer,
     technology_ids integer[],
-    occupation_id integer, seniority_id integer
+    occupation_id integer, seniority_id integer,
+    locations_raw text[]
 ) ON COMMIT DROP
 """
 
@@ -391,7 +392,8 @@ SET employment_type = u.employment_type,
     experience_min = u.experience_min, experience_max = u.experience_max,
     technology_ids = COALESCE(u.technology_ids, jp.technology_ids),
     occupation_id = COALESCE(u.occupation_id, jp.occupation_id),
-    seniority_id = COALESCE(u.seniority_id, jp.seniority_id)
+    seniority_id = COALESCE(u.seniority_id, jp.seniority_id),
+    locations_raw = COALESCE(u.locations_raw, jp.locations_raw)
 FROM _rich_updates u
 WHERE jp.id = u.id
 """

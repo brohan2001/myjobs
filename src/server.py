@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -13,9 +14,19 @@ from src.scoring_config import BASE_DIR, SCORE_WEIGHTS
 from src.db import create_local_pool, close_all_pools
 from src.ranker import matched_skills
 
+
+def _json_default(obj):
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    return str(obj)
+
+
+def _json_response(data) -> JSONResponse:
+    return JSONResponse(content=json.loads(json.dumps(data, default=_json_default)))
+
 _TEMPLATE_PATH = BASE_DIR / "templates" / "live.html.j2"
 
-_SHORTLISTED_JOBS = """
+_ALL_JOBS = """
 SELECT
     jp.id::text,
     jp.titles[1]           AS title,
@@ -24,10 +35,13 @@ SELECT
     jp.salary_max,
     jp.salary_currency,
     jp.location_types,
-    jp.first_seen_at::date AS posted_date,
+    jp.locations_raw,
+    jp.first_seen_at,
+    jp.first_seen_at::date::text AS posted_date,
     jp.visa_signal,
     jp.early_career,
     jp.role_category,
+    jp.employment_type,
     jp.skill_score,
     jp.role_score,
     jp.visa_score,
@@ -43,10 +57,29 @@ SELECT
 FROM job_posting jp
 JOIN company c ON c.id = jp.company_id
 LEFT JOIN descriptions d ON d.posting_id = jp.id AND d.locale = 'en'
-WHERE jp.status = 'shortlisted'
-  AND jp.is_active = true
-  AND jp.first_seen_at >= now() - ($1 || ' days')::interval
-ORDER BY jp.total_score DESC
+WHERE jp.is_active = true
+  AND jp.status NOT IN ('applied', 'skipped')
+  AND ($3::text = 'all' OR jp.occupation_id = (SELECT id FROM occupation WHERE slug = $3)
+       OR jp.occupation_id IN (SELECT id FROM occupation WHERE parent_id = (SELECT id FROM occupation WHERE slug = $3)))
+  AND ($4::text = 'all' OR $4 = ANY(jp.location_types))
+  AND ($5 = 0 OR jp.salary_min >= $5)
+  AND ($6::text = 'all' OR jp.seniority_id = (SELECT id FROM seniority WHERE slug = $6))
+  AND ($7::text = 'all' OR jp.employment_type = $7)
+ORDER BY jp.first_seen_at DESC
+LIMIT $1 OFFSET $2
+"""
+
+_TOTAL_JOBS = """
+SELECT COUNT(*)
+FROM job_posting jp
+WHERE jp.is_active = true
+  AND jp.status NOT IN ('applied', 'skipped')
+  AND ($1::text = 'all' OR jp.occupation_id = (SELECT id FROM occupation WHERE slug = $1)
+       OR jp.occupation_id IN (SELECT id FROM occupation WHERE parent_id = (SELECT id FROM occupation WHERE slug = $1)))
+  AND ($2::text = 'all' OR $2 = ANY(jp.location_types))
+  AND ($3 = 0 OR jp.salary_min >= $3)
+  AND ($4::text = 'all' OR jp.seniority_id = (SELECT id FROM seniority WHERE slug = $4))
+  AND ($5::text = 'all' OR jp.employment_type = $5)
 """
 
 _JOBS_BY_COMPANY = """
@@ -58,10 +91,13 @@ SELECT
     jp.salary_max,
     jp.salary_currency,
     jp.location_types,
-    jp.first_seen_at::date AS posted_date,
+    jp.locations_raw,
+    jp.first_seen_at,
+    jp.first_seen_at::date::text AS posted_date,
     jp.visa_signal,
     jp.early_career,
     jp.role_category,
+    jp.employment_type,
     jp.skill_score,
     jp.role_score,
     jp.visa_score,
@@ -87,8 +123,8 @@ _COMPANIES_WITH_JOBS = """
 SELECT c.id::text, c.name, c.tier, c.slug, COUNT(jp.id) AS job_count
 FROM company c
 JOIN job_posting jp ON jp.company_id = c.id
-WHERE jp.status = 'shortlisted'
-  AND jp.is_active = true
+WHERE jp.is_active = true
+  AND jp.status NOT IN ('applied', 'skipped')
 GROUP BY c.id, c.name, c.tier, c.slug
 ORDER BY c.tier ASC, job_count DESC
 """
@@ -136,14 +172,36 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="myjobs live", lifespan=lifespan)
 
 
-def _is_us(location: str) -> bool:
-    if not location:
-        return True
-    loc_l = location.lower()
-    non_us = {"india", "canada", "united kingdom", "ireland", "germany", "australia",
-               "singapore", "poland", "netherlands", "france", "spain", "brazil"}
-    for s in non_us:
-        if s in loc_l:
+_NON_US_TERMS = frozenset([
+    "egypt", "cairo", "nigeria", "lagos", "abuja", "india", "bangalore", "bengaluru",
+    "mumbai", "delhi", "hyderabad", "pune", "chennai", "kolkata", "gurugram", "noida",
+    "pakistan", "karachi", "lahore", "bangladesh", "dhaka", "australia", "sydney",
+    "melbourne", "brisbane", "perth", "new zealand", "auckland", "wellington",
+    "uk", "united kingdom", "london", "manchester", "birmingham", "edinburgh",
+    "germany", "berlin", "munich", "hamburg", "frankfurt", "france", "paris",
+    "canada", "toronto", "vancouver", "montreal", "ottawa", "singapore",
+    "poland", "warsaw", "krakow", "netherlands", "amsterdam", "spain", "madrid",
+    "barcelona", "italy", "milan", "rome", "ireland", "dublin", "south africa",
+    "johannesburg", "cape town", "kenya", "nairobi", "israel", "tel aviv",
+    "uae", "dubai", "abu dhabi", "japan", "tokyo", "osaka", "china", "beijing",
+    "shanghai", "shenzhen", "south korea", "seoul", "brazil", "sao paulo",
+    "mexico", "argentina", "buenos aires", "philippines", "manila", "indonesia",
+    "jakarta", "vietnam", "ho chi minh", "thailand", "bangkok", "malaysia",
+    "kuala lumpur", "sweden", "stockholm", "switzerland", "zurich", "geneva",
+    "norway", "oslo", "denmark", "copenhagen", "finland", "helsinki",
+    "czech republic", "prague", "romania", "bucharest", "ukraine", "kyiv",
+    "russia", "moscow", "turkey", "istanbul", "saudi arabia", "riyadh",
+    "hong kong", "taiwan", "taipei", "emea", "apac",
+])
+
+
+def _is_us_strict(locations_raw: list | None) -> bool:
+    """True = include in US filter. False = exclude (confirmed non-US location)."""
+    if not locations_raw:
+        return True  # unknown → include conservatively
+    loc_text = " ".join(str(s) for s in locations_raw).lower()
+    for term in _NON_US_TERMS:
+        if term in loc_text:
             return False
     return True
 
@@ -155,34 +213,39 @@ async def root():
 
 @app.get("/api/jobs")
 async def get_jobs(
-    days: int = 14,
-    us_only: bool = False,
-    new_grad_only: bool = False,
+    offset: int = 0,
+    limit: int = 50,
+    role: str = "all",
+    work_mode: str = "all",
+    salary_min: int = 0,
+    location: str = "all",
+    level: str = "all",
+    employment_type: str = "all",
     company_id: str | None = None,
 ):
     async with _pool.acquire() as conn:
         if company_id is not None:
             rows = await conn.fetch(_JOBS_BY_COMPANY, company_id)
+            total = len(rows)
         else:
-            rows = await conn.fetch(_SHORTLISTED_JOBS, str(days))
+            rows = await conn.fetch(_ALL_JOBS, limit, offset, role, work_mode, salary_min, level, employment_type)
+            total = await conn.fetchval(_TOTAL_JOBS, role, work_mode, salary_min, level, employment_type)
 
     result = []
     for row in rows:
         job = _enrich_job(dict(row))
-        if us_only and not _is_us(job.get("location", "")):
-            continue
-        if new_grad_only and not (job.get("early_career") or job.get("exp_years_max") is None):
+        if location == "us" and not _is_us_strict(job.get("locations_raw")):
             continue
         result.append(job)
 
-    return JSONResponse(result, default=str)
+    return _json_response({"jobs": result, "total": total})
 
 
 @app.get("/api/companies")
 async def get_companies():
     async with _pool.acquire() as conn:
         rows = await conn.fetch(_COMPANIES_WITH_JOBS)
-    return JSONResponse([dict(r) for r in rows], default=str)
+    return _json_response([dict(r) for r in rows])
 
 
 @app.post("/api/refresh")
@@ -190,10 +253,10 @@ async def trigger_refresh():
     global _pipeline_task
     async with _pipeline_lock:
         if _pipeline_task is not None and not _pipeline_task.done():
-            return JSONResponse({"status": "already_running"})
+            return _json_response({"status": "already_running"})
         from src.cli import _run_pipeline_once
         _pipeline_task = asyncio.create_task(_run_pipeline_once())
-    return JSONResponse({"status": "started"})
+    return _json_response({"status": "started"})
 
 
 @app.get("/api/status")
@@ -209,9 +272,9 @@ async def get_status():
     async with _pool.acquire() as conn:
         last_run = await conn.fetchrow(_LAST_RUN)
 
-    return JSONResponse({
+    return _json_response({
         "status": "running" if running else "idle",
         "task_error": task_error,
         "last_run": dict(last_run) if last_run else None,
         "weights": SCORE_WEIGHTS,
-    }, default=str)
+    })

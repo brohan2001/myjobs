@@ -6,173 +6,290 @@
 <title>myjobs live</title>
 <style>
   :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
-    --text: #e2e8f0; --muted: #64748b; --accent: #6366f1;
-    --green: #22c55e; --yellow: #eab308; --red: #ef4444;
-    --blue: #3b82f6; --purple: #a855f7; --orange: #f97316;
+    --bg: #0f1117; --surface: #181b26; --surface2: #1e2130; --border: #252836;
+    --text: #e2e8f0; --muted: #64748b; --muted2: #4a5568; --accent: #6366f1;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444; --blue: #3b82f6;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.6; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
   a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
 
-  /* Header */
-  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 18px 28px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
-  .header-brand { font-size: 20px; font-weight: 800; color: var(--text); white-space: nowrap; }
-  .header-brand .live-dot { display: inline-block; width: 9px; height: 9px; background: var(--green); border-radius: 50%; margin-left: 6px; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-  .header-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  /* ── Header ── */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  .header-brand { font-size: 17px; font-weight: 800; color: var(--text); white-space: nowrap; display: flex; align-items: center; gap: 7px; }
+  .live-dot { width: 7px; height: 7px; background: var(--green); border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .header-meta { font-size: 12px; color: var(--muted); }
   .header-spacer { flex: 1; }
-  .sort-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-  .sort-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all .15s; }
-  .sort-btn:hover { border-color: var(--muted); color: var(--text); }
-  .sort-btn.active { border-color: var(--accent); color: var(--accent); background: #6366f111; }
-  .filter-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
-  .refresh-btn { background: var(--accent); color: #fff; border: none; padding: 8px 18px; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
-  .refresh-btn:disabled { opacity: .55; cursor: default; }
-  .spinner { width: 13px; height: 13px; border: 2px solid #ffffff55; border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+  .stats-line { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .stats-line strong { color: var(--text); }
+  .refresh-btn { background: var(--accent); color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .refresh-btn:disabled { opacity: .5; cursor: default; }
+  .spinner { width: 11px; height: 11px; border: 2px solid #ffffff44; border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Stats bar */
-  .stats-bar { background: #0f111799; border-bottom: 1px solid var(--border); padding: 10px 28px; display: flex; gap: 28px; flex-wrap: wrap; }
-  .stat { display: flex; flex-direction: column; }
-  .stat-val { font-size: 18px; font-weight: 700; color: var(--accent); }
-  .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  /* ── Filter bar ── */
+  .filter-bar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 8px 24px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0; position: relative; z-index: 50; }
+  .filter-bar-label { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; margin-right: 4px; }
+  .filter-chip-wrap { position: relative; }
+  .filter-chip { display: flex; align-items: center; gap: 5px; padding: 4px 11px; border-radius: 99px; border: 1px dashed var(--border); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; transition: all .12s; white-space: nowrap; user-select: none; }
+  .filter-chip:hover { border-color: var(--muted2); color: var(--text); }
+  .filter-chip.active { border-color: var(--accent); color: var(--accent); background: #6366f10d; border-style: solid; }
+  .filter-chip.open { border-color: var(--accent); color: var(--accent); border-style: solid; }
+  .filter-chip.disabled { opacity: .35; cursor: not-allowed; }
+  .chip-chevron { font-size: 9px; margin-left: 1px; transition: transform .12s; }
+  .filter-chip.open .chip-chevron { transform: rotate(180deg); }
+  .filter-dropdown { position: absolute; top: calc(100% + 5px); left: 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 9px; min-width: 170px; box-shadow: 0 8px 24px #00000077; z-index: 200; display: none; overflow: hidden; }
+  .filter-dropdown.open { display: block; }
+  .dropdown-item { display: flex; align-items: center; gap: 8px; padding: 8px 13px; font-size: 12px; color: var(--text); cursor: pointer; transition: background .1s; }
+  .dropdown-item:hover { background: #6366f10f; }
+  .dropdown-item.selected { color: var(--accent); font-weight: 600; }
+  .check-dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 9px; flex-shrink: 0; }
+  .dropdown-item.selected .check-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  /* Countdown */
-  .countdown { font-size: 11px; color: var(--muted); padding: 8px 28px; background: var(--bg); border-bottom: 1px solid var(--border); }
+  /* ── Countdown ── */
+  .countdown { font-size: 10px; color: var(--muted2); padding: 4px 24px; background: var(--bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 
-  /* Layout: sidebar + main */
-  .layout { display: flex; gap: 0; min-height: calc(100vh - 140px); }
+  /* ── Main area ── */
+  .main-wrap { display: flex; flex: 1; overflow: hidden; }
 
-  /* Sidebar */
-  .sidebar { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 12px 8px; overflow-y: auto; max-height: calc(100vh - 140px); position: sticky; top: 0; }
-  .sidebar-all { font-size: 13px; font-weight: 600; padding: 6px 10px; border-radius: 6px; cursor: pointer; color: var(--text); margin-bottom: 8px; }
-  .sidebar-all:hover, .sidebar-all.active { background: #6366f122; color: var(--accent); }
-  .sidebar-section { margin-bottom: 4px; }
-  .sidebar-header { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; padding: 8px 10px 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-  .sidebar-header:hover { color: var(--text); }
-  .sidebar-body { overflow: hidden; }
-  .sidebar-company { font-size: 12px; padding: 4px 10px; border-radius: 5px; cursor: pointer; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; justify-content: space-between; align-items: center; }
-  .sidebar-company:hover { background: var(--surface); color: var(--text); }
-  .sidebar-company.active { background: #6366f122; color: var(--accent); }
-  .job-count-badge { font-size: 10px; opacity: .6; flex-shrink: 0; margin-left: 4px; }
+  /* ── Job list ── */
+  .job-list-wrap { flex: 1; overflow-y: auto; min-width: 0; }
+  .job-list-wrap::-webkit-scrollbar { width: 4px; }
+  .job-list-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-  /* Main content */
-  .main-content { flex: 1; min-width: 0; padding: 20px 20px; }
+  /* Date divider */
+  .date-divider { display: flex; align-items: center; gap: 12px; padding: 16px 24px 6px; }
+  .date-divider-line { flex: 1; height: 1px; background: var(--border); }
+  .date-divider-label { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
 
-  /* NEW badge */
-  .new-badge { position: absolute; top: -8px; left: 14px; background: var(--green); color: #fff; font-size: 10px; font-weight: 800; padding: 1px 8px; border-radius: 99px; letter-spacing: .05em; box-shadow: 0 0 10px #22c55e55; animation: fadeNew 1s ease; }
-  @keyframes fadeNew { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+  /* Job row */
+  .job-row { display: flex; align-items: center; gap: 10px; padding: 9px 24px; cursor: pointer; border-bottom: 1px solid transparent; transition: background .1s; user-select: none; }
+  .job-row:hover { background: var(--surface); }
+  .job-row.active { background: var(--surface2); }
+  .row-radio { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--muted2); flex-shrink: 0; transition: border-color .1s; }
+  .job-row:hover .row-radio, .job-row.active .row-radio { border-color: var(--accent); }
+  .job-row.active .row-radio { background: var(--accent); border-color: var(--accent); }
+  .row-logo { width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: #fff; }
+  .row-company { font-size: 12px; color: var(--muted); white-space: nowrap; flex-shrink: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .row-title { flex: 1; font-size: 13px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .row-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+  .row-bookmark { color: var(--muted2); font-size: 12px; cursor: pointer; opacity: 0; transition: opacity .1s; }
+  .job-row:hover .row-bookmark { opacity: 1; }
+  .row-time { font-size: 11px; color: var(--muted); min-width: 28px; text-align: right; }
+  .row-time.fresh { color: var(--green); }
+  .row-time.recent { color: var(--yellow); }
 
-  /* Job card */
-  .job-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 14px; position: relative; transition: border-color .15s; }
-  .job-card:hover { border-color: var(--accent); }
-  .job-card.is-new { border-color: #22c55e55; }
-  .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-  .card-rank { font-size: 12px; color: var(--muted); font-weight: 600; min-width: 28px; }
-  .card-title-group { flex: 1; }
-  .card-title { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
-  .card-company { font-size: 13px; color: var(--muted); }
-  .score-circle { background: var(--accent); color: #fff; border-radius: 50%; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; flex-shrink: 0; }
-  .score-circle.high { background: var(--green); }
-  .score-circle.mid  { background: var(--yellow); color: #000; }
-  .score-circle.low  { background: var(--red); }
+  /* Load More */
+  .load-more-wrap { padding: 20px 24px 32px; text-align: center; }
+  .load-more-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 8px 24px; border-radius: 7px; font-size: 12px; cursor: pointer; transition: all .12s; }
+  .load-more-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .load-more-btn:disabled { opacity: .4; cursor: default; }
 
-  /* Badges */
-  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; text-transform: uppercase; letter-spacing: .04em; }
-  .visa-yes     { background: #16a34a22; color: var(--green); border: 1px solid #16a34a55; }
-  .visa-unknown { background: #ca8a0422; color: var(--yellow); border: 1px solid #ca8a0455; }
-  .visa-no      { background: #dc262622; color: var(--red); border: 1px solid #dc262655; }
-  .role-backend  { background: #6366f122; color: #818cf8; border: 1px solid #6366f155; }
-  .role-cloud    { background: #3b82f622; color: #60a5fa; border: 1px solid #3b82f655; }
-  .role-fullstack{ background: #8b5cf622; color: #a78bfa; border: 1px solid #8b5cf655; }
-  .role-frontend { background: #ec489922; color: #f472b6; border: 1px solid #ec489955; }
-  .role-mobile   { background: #f9731622; color: #fb923c; border: 1px solid #f9731655; }
-  .role-network  { background: #0891b222; color: #22d3ee; border: 1px solid #0891b255; }
-  .role-ds       { background: #84cc1622; color: #a3e635; border: 1px solid #84cc1655; }
-  .role-ml       { background: #f59e0b22; color: #fbbf24; border: 1px solid #f59e0b55; }
-  .role-other    { background: #6b728022; color: #9ca3af; border: 1px solid #6b728055; }
-  .badge-remote  { background: #06b6d422; color: #22d3ee; border: 1px solid #06b6d455; }
-  .badge-src     { background: #37415122; color: #9ca3af; border: 1px solid #37415155; }
-  .badge-tier1   { background: #f9731622; color: #fb923c; border: 1px solid #f9731655; }
-  .badge-exp-high { background: #dc262622; color: #f87171; border: 1px solid #dc262655; }
-  .badge-exp-ok   { background: #16a34a22; color: #86efac; border: 1px solid #16a34a55; }
+  /* Empty */
+  .empty { padding: 60px 24px; text-align: center; color: var(--muted); }
+  .empty h3 { font-size: 15px; margin-bottom: 6px; color: var(--text); }
 
-  /* Meta */
-  .meta { font-size: 12px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-  .posted-time { font-size: 13px; font-weight: 600; }
-  .posted-fresh  { color: var(--green); }
-  .posted-recent { color: var(--yellow); }
-  .posted-old    { color: var(--muted); }
+  /* ── Detail panel ── */
+  .detail-panel { width: 0; flex-shrink: 0; overflow: hidden; border-left: 1px solid transparent; transition: width .2s ease, border-color .2s ease; display: flex; flex-direction: column; }
+  .detail-panel.open { width: 440px; border-color: var(--border); }
+  .panel-inner { width: 440px; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .panel-header-title { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+  .panel-close { background: transparent; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: color .1s; }
+  .panel-close:hover { color: var(--text); }
+  .panel-body { flex: 1; overflow-y: auto; padding: 18px; }
+  .panel-body::-webkit-scrollbar { width: 4px; }
+  .panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-  /* Skills */
-  .skills-row { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
-  .skill-chip { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
-  .skill-yes { background: #16a34a22; color: #86efac; border: 1px solid #16a34a44; }
-  .skill-no  { background: #37415122; color: #6b7280; border: 1px solid #37415144; }
+  /* Panel content */
+  .panel-co-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .panel-logo { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; color: #fff; flex-shrink: 0; }
+  .panel-co-name { font-size: 14px; font-weight: 600; color: var(--text); }
+  .panel-co-meta { font-size: 11px; color: var(--muted); }
+  .panel-spacer { flex: 1; }
+  .view-btn { background: var(--text); color: var(--bg); border: none; padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .view-btn:hover { background: #fff; }
+  .panel-title { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.3; margin-bottom: 12px; }
+  .panel-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .pbadge { font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 6px; }
+  .pbadge-salary { background: #1a2a1a; color: var(--green); border: 1px solid #22c55e33; }
+  .pbadge-visa-yes  { background: #16a34a18; color: var(--green); border: 1px solid #16a34a44; }
+  .pbadge-visa-no   { background: #dc262618; color: var(--red); border: 1px solid #dc262644; }
+  .pbadge-visa-unk  { background: #eab30818; color: var(--yellow); border: 1px solid #eab30844; }
+  .pbadge-role { background: #6366f118; color: #a5b4fc; border: 1px solid #6366f144; }
+  .pbadge-score { background: #37415133; color: var(--muted); border: 1px solid #37415155; }
+  .panel-section { margin-bottom: 16px; }
+  .panel-section-label { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 8px; }
+  .panel-location { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; }
+  .details-toggle { display: flex; align-items: center; justify-content: space-between; background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 9px 13px; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 12px; transition: color .1s; }
+  .details-toggle:hover { color: var(--text); }
+  .details-chevron { font-size: 10px; transition: transform .15s; }
+  .details-chevron.open { transform: rotate(180deg); }
+  .panel-desc { font-size: 13px; color: var(--text); line-height: 1.7; }
+  .panel-desc h1,.panel-desc h2,.panel-desc h3 { font-size: 14px; font-weight: 700; margin: 12px 0 6px; color: var(--text); }
+  .panel-desc ul,.panel-desc ol { padding-left: 18px; margin: 6px 0; }
+  .panel-desc li { margin-bottom: 3px; }
+  .panel-desc p { margin-bottom: 8px; }
 
-  /* Score breakdown */
-  .score-breakdown { display: flex; gap: 8px; flex-wrap: wrap; }
-  .score-item { display: flex; flex-direction: column; align-items: center; background: #0f111722; border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; min-width: 64px; }
-  .score-item .pts { font-size: 15px; font-weight: 700; color: var(--accent); }
-  .score-item .max { font-size: 10px; color: var(--muted); }
-  .score-item .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
-
-  /* Apply button */
-  .card-footer { display: flex; justify-content: flex-end; margin-top: 12px; }
-  .apply-btn { background: var(--accent); color: #fff; padding: 7px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }
-  .apply-btn:hover { background: #4f46e5; text-decoration: none; }
-
-  /* Empty state */
-  .empty { text-align: center; padding: 64px; color: var(--muted); }
-  .empty h2 { font-size: 18px; margin-bottom: 8px; }
+  /* Score strip */
+  .score-strip { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .score-item { display: flex; flex-direction: column; align-items: center; background: #0f111733; border: 1px solid var(--border); border-radius: 5px; padding: 5px 10px; min-width: 58px; }
+  .score-item .pts { font-size: 14px; font-weight: 700; color: var(--accent); }
+  .score-item .max { font-size: 9px; color: var(--muted2); }
+  .score-item .lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 1px; }
 
   /* Toast */
-  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; font-size: 13px; box-shadow: 0 4px 20px #00000055; transition: opacity .3s; z-index: 100; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 10px 16px; font-size: 12px; box-shadow: 0 4px 20px #00000055; z-index: 999; transition: opacity .3s; }
   .toast.hidden { opacity: 0; pointer-events: none; }
 
   @media (max-width: 700px) {
-    .sidebar { display: none; }
-    .card-top { flex-direction: column; }
-    .header { flex-direction: column; align-items: flex-start; }
+    .detail-panel.open { width: 100%; position: fixed; top: 0; right: 0; bottom: 0; z-index: 300; background: var(--bg); }
+    .row-company { display: none; }
   }
 </style>
 </head>
 <body>
 
+<!-- Header -->
 <div class="header">
-  <div class="header-brand">myjobs<span class="live-dot"></span></div>
+  <div class="header-brand">myjobs <div class="live-dot"></div></div>
   <div class="header-meta" id="lastRefreshed">Loading…</div>
   <div class="header-spacer"></div>
-  <div class="sort-group" id="sortGroup">
-    <button class="sort-btn active" onclick="setSort('score')">Score</button>
-    <button class="sort-btn" onclick="setSort('posted')">Newest</button>
-    <button class="sort-btn" onclick="setSort('company')">Company</button>
-    <div class="filter-sep"></div>
-    <button class="sort-btn" id="usOnlyBtn" onclick="toggleFilter('usOnly')">🇺🇸 US Only</button>
-    <button class="sort-btn" id="newGradBtn" onclick="toggleFilter('newGrad')">🎓 New Grad</button>
-  </div>
+  <span class="stats-line" id="statsLine">—</span>
   <button class="refresh-btn" id="refreshBtn" onclick="triggerRefresh()">
     <span id="refreshIcon"></span>Refresh Now
   </button>
 </div>
 
-<div class="stats-bar" id="statsBar">
-  <div class="stat"><span class="stat-val" id="statTotal">—</span><span class="stat-lbl">Shortlisted</span></div>
-  <div class="stat"><span class="stat-val" id="statNew" style="color:var(--green)">—</span><span class="stat-lbl">New This View</span></div>
-  <div class="stat"><span class="stat-val" id="statFresh" style="color:var(--yellow)">—</span><span class="stat-lbl">Posted &lt;24h</span></div>
+<!-- Filter bar -->
+<div class="filter-bar" id="filterBar">
+  <span class="filter-bar-label">⚙ Filters</span>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-location" onclick="toggleDropdown('location')">
+      <span>◎</span><span class="chip-label" id="label-location">Location</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-location">
+      <div class="dropdown-item selected" onclick="applyFilter('location','all','Location',this)"><span class="check-dot">✓</span>All Locations</div>
+      <div class="dropdown-item" onclick="applyFilter('location','us','US &amp; Remote',this)"><span class="check-dot"></span>US &amp; Remote</div>
+    </div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-role" onclick="toggleDropdown('role')">
+      <span>⊞</span><span class="chip-label" id="label-role">Role</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-role">
+      <div class="dropdown-item selected" onclick="applyFilter('role','all','Role',this)"><span class="check-dot">✓</span>All Roles</div>
+      <div class="dropdown-item" onclick="applyFilter('role','software-engineer','Software Eng',this)"><span class="check-dot"></span>Software Eng</div>
+      <div class="dropdown-item" onclick="applyFilter('role','backend-developer','Backend',this)"><span class="check-dot"></span>Backend</div>
+      <div class="dropdown-item" onclick="applyFilter('role','frontend-developer','Frontend',this)"><span class="check-dot"></span>Frontend</div>
+      <div class="dropdown-item" onclick="applyFilter('role','fullstack-developer','Fullstack',this)"><span class="check-dot"></span>Fullstack</div>
+      <div class="dropdown-item" onclick="applyFilter('role','ml-engineer','ML Engineer',this)"><span class="check-dot"></span>ML Engineer</div>
+      <div class="dropdown-item" onclick="applyFilter('role','ai-engineer','AI Engineer',this)"><span class="check-dot"></span>AI Engineer</div>
+      <div class="dropdown-item" onclick="applyFilter('role','data-scientist','Data Scientist',this)"><span class="check-dot"></span>Data Scientist</div>
+      <div class="dropdown-item" onclick="applyFilter('role','data-engineer','Data Engineer',this)"><span class="check-dot"></span>Data Engineer</div>
+      <div class="dropdown-item" onclick="applyFilter('role','devops-engineer','DevOps',this)"><span class="check-dot"></span>DevOps</div>
+      <div class="dropdown-item" onclick="applyFilter('role','mobile-developer','Mobile',this)"><span class="check-dot"></span>Mobile</div>
+    </div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-level" onclick="toggleDropdown('level')">
+      <span>▦</span><span class="chip-label" id="label-level">Level</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-level">
+      <div class="dropdown-item selected" onclick="applyFilter('level','all','Level',this)"><span class="check-dot">✓</span>All Levels</div>
+      <div class="dropdown-item" onclick="applyFilter('level','intern','Intern',this)"><span class="check-dot"></span>Intern</div>
+      <div class="dropdown-item" onclick="applyFilter('level','entry','Entry Level',this)"><span class="check-dot"></span>Entry Level</div>
+      <div class="dropdown-item" onclick="applyFilter('level','mid','Mid Level',this)"><span class="check-dot"></span>Mid Level</div>
+      <div class="dropdown-item" onclick="applyFilter('level','senior','Senior',this)"><span class="check-dot"></span>Senior</div>
+      <div class="dropdown-item" onclick="applyFilter('level','lead','Lead',this)"><span class="check-dot"></span>Lead</div>
+      <div class="dropdown-item" onclick="applyFilter('level','staff','Staff',this)"><span class="check-dot"></span>Staff</div>
+      <div class="dropdown-item" onclick="applyFilter('level','principal','Principal',this)"><span class="check-dot"></span>Principal</div>
+      <div class="dropdown-item" onclick="applyFilter('level','director','Director',this)"><span class="check-dot"></span>Director</div>
+      <div class="dropdown-item" onclick="applyFilter('level','executive','Executive',this)"><span class="check-dot"></span>Executive</div>
+    </div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip disabled" title="Coming soon"><span>&lt;/&gt;</span><span>Technology</span><span class="chip-chevron">▾</span></div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-employment_type" onclick="toggleDropdown('employment_type')">
+      <span>📋</span><span class="chip-label" id="label-employment_type">Type</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-employment_type">
+      <div class="dropdown-item selected" onclick="applyFilter('employment_type','all','Type',this)"><span class="check-dot">✓</span>Any Type</div>
+      <div class="dropdown-item" onclick="applyFilter('employment_type','full_time','Full-time',this)"><span class="check-dot"></span>Full-time</div>
+      <div class="dropdown-item" onclick="applyFilter('employment_type','part_time','Part-time',this)"><span class="check-dot"></span>Part-time</div>
+      <div class="dropdown-item" onclick="applyFilter('employment_type','contract','Contract',this)"><span class="check-dot"></span>Contract</div>
+      <div class="dropdown-item" onclick="applyFilter('employment_type','internship','Internship',this)"><span class="check-dot"></span>Internship</div>
+      <div class="dropdown-item" onclick="applyFilter('employment_type','temporary','Temporary',this)"><span class="check-dot"></span>Temporary</div>
+    </div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-work_mode" onclick="toggleDropdown('work_mode')">
+      <span>⌂</span><span class="chip-label" id="label-work_mode">Work Mode</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-work_mode">
+      <div class="dropdown-item selected" onclick="applyFilter('work_mode','all','Work Mode',this)"><span class="check-dot">✓</span>Any Mode</div>
+      <div class="dropdown-item" onclick="applyFilter('work_mode','remote','Remote',this)"><span class="check-dot"></span>Remote</div>
+      <div class="dropdown-item" onclick="applyFilter('work_mode','hybrid','Hybrid',this)"><span class="check-dot"></span>Hybrid</div>
+      <div class="dropdown-item" onclick="applyFilter('work_mode','onsite','On-site',this)"><span class="check-dot"></span>On-site</div>
+    </div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-salary_min" onclick="toggleDropdown('salary_min')">
+      <span>$</span><span class="chip-label" id="label-salary_min">Salary</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-salary_min">
+      <div class="dropdown-item selected" onclick="applyFilter('salary_min',0,'Salary',this)"><span class="check-dot">✓</span>Any Salary</div>
+      <div class="dropdown-item" onclick="applyFilter('salary_min',50000,'$50k+',this)"><span class="check-dot"></span>$50k+</div>
+      <div class="dropdown-item" onclick="applyFilter('salary_min',100000,'$100k+',this)"><span class="check-dot"></span>$100k+</div>
+      <div class="dropdown-item" onclick="applyFilter('salary_min',150000,'$150k+',this)"><span class="check-dot"></span>$150k+</div>
+      <div class="dropdown-item" onclick="applyFilter('salary_min',200000,'$200k+',this)"><span class="check-dot"></span>$200k+</div>
+    </div>
+  </div>
+
+  <div class="filter-chip-wrap">
+    <div class="filter-chip" id="chip-experience" onclick="toggleDropdown('experience')">
+      <span>⏱</span><span class="chip-label" id="label-experience">Experience</span><span class="chip-chevron">▾</span>
+    </div>
+    <div class="filter-dropdown" id="dropdown-experience">
+      <div class="dropdown-item selected" onclick="applyExperience('all','Experience',this)"><span class="check-dot">✓</span>Any Experience</div>
+      <div class="dropdown-item" onclick="applyExperience('entry','Entry Level',this)"><span class="check-dot"></span>Entry Level (≤2 yr)</div>
+      <div class="dropdown-item" onclick="applyExperience('senior','Senior+',this)"><span class="check-dot"></span>Senior+ (5+ yr)</div>
+    </div>
+  </div>
 </div>
 
+<!-- Countdown -->
 <div class="countdown" id="countdown"></div>
 
-<div class="layout">
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-all active" id="sidebarAll" onclick="selectCompany(null)">All Companies</div>
+<!-- Main -->
+<div class="main-wrap">
+  <div class="job-list-wrap" id="jobListWrap">
+    <div id="jobList">
+      <div class="empty"><h3>Loading jobs…</h3><p>Fetching from database…</p></div>
+    </div>
+    <div class="load-more-wrap" id="loadMoreWrap" style="display:none">
+      <button class="load-more-btn" id="loadMoreBtn" onclick="loadMore()">Load More</button>
+    </div>
   </div>
-  <div class="main-content" id="jobsContainer">
-    <div class="empty"><h2>Loading jobs…</h2><p>Fetching from database…</p></div>
+
+  <div class="detail-panel" id="detailPanel">
+    <div class="panel-inner" id="panelInner">
+      <div class="panel-header">
+        <span class="panel-header-title">Job Details</span>
+        <button class="panel-close" onclick="closePanel()">✕</button>
+      </div>
+      <div class="panel-body" id="panelBody"></div>
+    </div>
   </div>
 </div>
 
@@ -181,142 +298,21 @@
 <script>
 const WEIGHTS = { skill: 35, role: 25, visa: 20, recency: 10, company: 10 };
 const AUTO_REFRESH_MS = 10 * 60 * 1000;
-let allJobs = [];
-let sortKey = 'score';
+const PAGE_LIMIT = 100;
+
+let displayedJobs = [];
+let currentOffset = 0;
+let currentTotal = 0;
+let activeJob = null;
+let activeDropdown = null;
 let nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
 let countdownTimer = null;
 let pollTimer = null;
-let usOnly = false;
-let newGrad = false;
-let activeCompanyId = null;
+let pollingStatus = false;
 
-// ── Relative time ──────────────────────────────────────────────────────────────
+const filters = { location: 'all', role: 'all', level: 'all', work_mode: 'all', salary_min: 0, employment_type: 'all' };
 
-function relTime(iso) {
-  if (!iso) return null;
-  const diff = Date.now() - new Date(iso);
-  const h = diff / 3.6e6;
-  if (h < 0.02) return { text: 'just now', cls: 'posted-fresh' };
-  if (h < 1)   return { text: Math.round(h * 60) + 'm ago', cls: 'posted-fresh' };
-  if (h < 6)   return { text: Math.round(h) + 'h ago', cls: 'posted-fresh' };
-  if (h < 24)  return { text: Math.round(h) + 'h ago', cls: 'posted-recent' };
-  if (h < 48)  return { text: 'yesterday', cls: 'posted-recent' };
-  const d = Math.round(h / 24);
-  return { text: d + 'd ago', cls: d < 7 ? 'posted-recent' : 'posted-old' };
-}
-
-// ── NEW job tracking ───────────────────────────────────────────────────────────
-
-function getSeenIds() {
-  try { return new Set(JSON.parse(localStorage.getItem('myjobs_seen') || '[]')); }
-  catch { return new Set(); }
-}
-
-function markSeen(ids) {
-  const seen = getSeenIds();
-  ids.forEach(id => seen.add(id));
-  try { localStorage.setItem('myjobs_seen', JSON.stringify([...seen])); } catch {}
-}
-
-// ── Sorting ────────────────────────────────────────────────────────────────────
-
-function setSort(key) {
-  sortKey = key;
-  const allSortBtns = Array.from(document.querySelectorAll('#sortGroup .sort-btn'));
-  const keyBtns = allSortBtns.slice(0, 3); // Score, Newest, Company
-  keyBtns.forEach(b => b.classList.remove('active'));
-  const labelMap = { score: 'score', posted: 'newest', company: 'company' };
-  keyBtns.forEach(b => {
-    if (b.textContent.trim().toLowerCase() === labelMap[key]) b.classList.add('active');
-  });
-  renderJobs(allJobs);
-}
-
-function sortedJobs(jobs) {
-  const copy = [...jobs];
-  if (sortKey === 'posted') {
-    copy.sort((a, b) => {
-      const ta = a.posted_at || a.scraped_at || '';
-      const tb = b.posted_at || b.scraped_at || '';
-      return tb.localeCompare(ta);
-    });
-  } else if (sortKey === 'company') {
-    copy.sort((a, b) => (a.company_name || '').localeCompare(b.company_name || ''));
-  } else {
-    copy.sort((a, b) => (b.total_score || 0) - (a.total_score || 0));
-  }
-  return copy;
-}
-
-// ── Filter toggles ─────────────────────────────────────────────────────────────
-
-function toggleFilter(name) {
-  if (name === 'usOnly') {
-    usOnly = !usOnly;
-    document.getElementById('usOnlyBtn').classList.toggle('active', usOnly);
-  } else if (name === 'newGrad') {
-    newGrad = !newGrad;
-    document.getElementById('newGradBtn').classList.toggle('active', newGrad);
-  }
-  fetchJobs();
-}
-
-// ── Company sidebar ────────────────────────────────────────────────────────────
-
-function selectCompany(companyId) {
-  activeCompanyId = companyId;
-  document.querySelectorAll('.sidebar-company').forEach(el => el.classList.remove('active'));
-  document.getElementById('sidebarAll').classList.toggle('active', companyId === null);
-  if (companyId !== null) {
-    const el = document.getElementById('co-' + companyId);
-    if (el) el.classList.add('active');
-  }
-  fetchJobs();
-}
-
-async function loadSidebar() {
-  try {
-    const resp = await fetch('/api/companies');
-    if (!resp.ok) return;
-    const companies = await resp.json();
-    const byIndustry = {};
-    companies.forEach(c => {
-      const ind = c.industry || 'other';
-      if (!byIndustry[ind]) byIndustry[ind] = [];
-      byIndustry[ind].push(c);
-    });
-    const sidebar = document.getElementById('sidebar');
-    let html = `<div class="sidebar-all${activeCompanyId === null ? ' active' : ''}" id="sidebarAll" onclick="selectCompany(null)">All Companies</div>`;
-    const industryOrder = ['tech', 'fintech', 'enterprise', 'other'];
-    const sorted = [...industryOrder.filter(i => byIndustry[i]), ...Object.keys(byIndustry).filter(i => !industryOrder.includes(i))];
-    sorted.forEach(industry => {
-      const cos = byIndustry[industry] || [];
-      html += `<div class="sidebar-section">
-        <div class="sidebar-header">${industry.toUpperCase()} <span style="font-size:10px;color:var(--muted)">${cos.length}</span></div>
-        <div class="sidebar-body">`;
-      cos.forEach(c => {
-        const isActive = activeCompanyId === c.id;
-        html += `<div class="sidebar-company${isActive ? ' active' : ''}" id="co-${c.id}" onclick="selectCompany(${c.id})" title="${esc(c.name)}">
-          <span>${esc(c.name)}</span>
-          <span class="job-count-badge">${c.job_count}</span>
-        </div>`;
-      });
-      html += `</div></div>`;
-    });
-    sidebar.innerHTML = html;
-  } catch(e) {}
-}
-
-// ── Visa / role helpers ────────────────────────────────────────────────────────
-
-function visaLabel(s) { return s === 1 ? 'CONFIRMED' : s === -1 ? 'NO SPONSOR' : 'UNCONFIRMED'; }
-function visaClass(s) { return s === 1 ? 'visa-yes' : s === -1 ? 'visa-no' : 'visa-unknown'; }
-function roleClass(r) {
-  const m = { backend:'role-backend',cloud:'role-cloud',fullstack:'role-fullstack',frontend:'role-frontend',
-              mobile:'role-mobile',network:'role-network',ds:'role-ds',ml:'role-ml' };
-  return m[r] || 'role-other';
-}
-function scoreClass(s) { return s >= 70 ? 'high' : s >= 45 ? 'mid' : 'low'; }
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function esc(s) {
   const d = document.createElement('div');
@@ -324,141 +320,327 @@ function esc(s) {
   return d.innerHTML;
 }
 
-function fmtH1b(n) {
-  if (!n || n < 100) return '';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return n.toString();
+function relTime(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso);
+  const m = ms / 60000;
+  if (m < 1)  return { text: 'now',    cls: 'fresh' };
+  if (m < 60) return { text: Math.round(m) + 'm', cls: 'fresh' };
+  const h = m / 60;
+  if (h < 24) return { text: Math.round(h) + 'h', cls: h < 6 ? 'fresh' : 'recent' };
+  const d = h / 24;
+  if (d < 2)  return { text: 'yesterday', cls: 'recent' };
+  return { text: Math.round(d) + 'd', cls: '' };
 }
 
-// ── Render ─────────────────────────────────────────────────────────────────────
+function dateLabel(iso) {
+  if (!iso) return 'OLDER';
+  const d = new Date(iso);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const jobDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((today - jobDay) / 86400000);
+  if (diff === 0) return 'TODAY';
+  if (diff === 1) return 'YESTERDAY';
+  return jobDay.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
 
-function renderJobs(jobs) {
-  const seenIds = getSeenIds();
-  const sorted = sortedJobs(jobs);
-  const newIds = jobs.filter(j => !seenIds.has(String(j.id))).map(j => j.id);
+// Deterministic logo color from company name
+function logoColor(name) {
+  let h = 0;
+  for (let i = 0; i < (name || '').length; i++) h = (name.charCodeAt(i) + ((h << 5) - h)) | 0;
+  const palette = ['#6366f1','#0ea5e9','#22c55e','#f59e0b','#ef4444','#a855f7','#ec4899','#14b8a6','#f97316','#84cc16'];
+  return palette[Math.abs(h) % palette.length];
+}
 
-  document.getElementById('statTotal').textContent = jobs.length;
-  document.getElementById('statNew').textContent = newIds.length;
-  const fresh = jobs.filter(j => {
-    const ts = j.posted_at || j.scraped_at;
-    if (!ts) return false;
-    return (Date.now() - new Date(ts)) < 86400000;
-  }).length;
-  document.getElementById('statFresh').textContent = fresh;
+function fmtSalary(min, max, cur) {
+  if (!min && !max) return null;
+  const fmt = n => n >= 1000 ? Math.round(n / 1000) + 'k' : n;
+  const c = (cur || 'USD').toUpperCase();
+  if (min && max) return `$${fmt(min)}–${fmt(max)} ${c}`;
+  if (min) return `$${fmt(min)}+ ${c}`;
+  return `$${fmt(max)} ${c}`;
+}
 
-  if (!sorted.length) {
-    document.getElementById('jobsContainer').innerHTML =
-      '<div class="empty"><h2>No jobs match these filters</h2><p>Try removing a filter or clicking <strong>Refresh Now</strong>.</p></div>';
+// ── Filter chip logic ──────────────────────────────────────────────────────────
+
+function toggleDropdown(name) {
+  if (activeDropdown === name) { closeDropdown(); return; }
+  closeDropdown();
+  activeDropdown = name;
+  document.getElementById('dropdown-' + name)?.classList.add('open');
+  document.getElementById('chip-' + name)?.classList.add('open');
+}
+
+function closeDropdown() {
+  if (!activeDropdown) return;
+  document.getElementById('dropdown-' + activeDropdown)?.classList.remove('open');
+  document.getElementById('chip-' + activeDropdown)?.classList.remove('open');
+  activeDropdown = null;
+}
+
+document.addEventListener('click', e => {
+  if (activeDropdown && !e.target.closest('.filter-chip-wrap')) closeDropdown();
+});
+
+function _syncDropdown(name, value, label, el) {
+  el.closest('.filter-dropdown').querySelectorAll('.dropdown-item').forEach(it => {
+    it.classList.remove('selected');
+    it.querySelector('.check-dot').textContent = '';
+  });
+  el.classList.add('selected');
+  el.querySelector('.check-dot').textContent = '✓';
+  const chip = document.getElementById('chip-' + name);
+  const lbl = document.getElementById('label-' + name);
+  const isDefault = value === 'all' || value === 0;
+  if (chip) chip.classList.toggle('active', !isDefault);
+  if (lbl) lbl.textContent = label;
+}
+
+function applyFilter(name, value, label, el) {
+  filters[name] = value;
+  closeDropdown();
+  _syncDropdown(name, value, label, el);
+  currentOffset = 0;
+  fetchJobs(false);
+}
+
+function applyExperience(value, label, el) {
+  filters.level = value;
+  closeDropdown();
+  _syncDropdown('experience', value, label, el);
+  const chip = document.getElementById('chip-level');
+  const lbl = document.getElementById('label-level');
+  if (chip) chip.classList.toggle('active', value !== 'all');
+  if (lbl) lbl.textContent = value === 'all' ? 'Level' : label;
+  currentOffset = 0;
+  fetchJobs(false);
+}
+
+// ── Render list ────────────────────────────────────────────────────────────────
+
+function renderJobs(jobs, append) {
+  const list = document.getElementById('jobList');
+
+  if (!append) {
+    displayedJobs = [];
+    list.innerHTML = '';
+  }
+
+  if (!append && jobs.length === 0) {
+    list.innerHTML = '<div class="empty"><h3>No jobs match these filters</h3><p>Try adjusting filters or click Refresh Now.</p></div>';
+    updateStats();
+    updateLoadMore();
     return;
   }
 
-  const html = sorted.map((job, idx) => {
-    const isNew = !seenIds.has(String(job.id));
-    const sc = job.score_pct || 0;
-    const rt = relTime(job.posted_at || job.scraped_at);
+  // Group new jobs by date label
+  const groups = [];
+  let curLabel = null;
+  jobs.forEach(job => {
+    const lbl = dateLabel(job.first_seen_at || job.posted_date);
+    if (lbl !== curLabel) {
+      // Check if last rendered group had the same label (for append)
+      const lastRendered = list.querySelector('.date-divider-label:last-of-type');
+      if (!append || (lastRendered && lastRendered.textContent !== lbl) || !lastRendered) {
+        groups.push({ label: lbl, jobs: [job] });
+        curLabel = lbl;
+      } else {
+        groups[groups.length - 1]?.jobs.push(job);
+        curLabel = lbl;
+      }
+    } else {
+      if (groups.length === 0) groups.push({ label: lbl, jobs: [] });
+      groups[groups.length - 1].jobs.push(job);
+    }
+  });
 
-    const skillChips = (job.matched_skills || []).slice(0, 8)
-      .map(s => `<span class="skill-chip skill-yes">✓ ${esc(s)}</span>`).join('');
-    const missingChips = (job.missing_skills || []).slice(0, 3)
-      .map(s => `<span class="skill-chip skill-no">✗ ${esc(s)}</span>`).join('');
+  groups.forEach(g => {
+    const divDiv = document.createElement('div');
+    divDiv.className = 'date-divider';
+    divDiv.innerHTML = `<div class="date-divider-line"></div><span class="date-divider-label">${g.label}</span><div class="date-divider-line"></div>`;
+    list.appendChild(divDiv);
 
-    const expBadge = job.exp_years_max != null
-      ? (job.exp_years_max > 3
-          ? `<span class="badge badge-exp-high">${job.exp_years_max}+ YRS EXP</span>`
-          : `<span class="badge badge-exp-ok">≤${job.exp_years_max} YRS EXP</span>`)
-      : '';
+    g.jobs.forEach(job => {
+      const rt = relTime(job.first_seen_at || job.posted_date);
+      const color = logoColor(job.company_name);
+      const initial = (job.company_name || '?').trim().charAt(0).toUpperCase();
 
-    const h1bStr = fmtH1b(job.h1b_petitions_recent);
+      const row = document.createElement('div');
+      row.className = 'job-row';
+      row.dataset.id = job.id;
+      row.innerHTML = `
+        <div class="row-radio"></div>
+        <div class="row-logo" style="background:${color}">${initial}</div>
+        <span class="row-company">${esc(job.company_name)}</span>
+        <span class="row-title">${esc(job.title)}</span>
+        <div class="row-right">
+          <span class="row-bookmark">🔖</span>
+          <span class="row-time ${rt ? rt.cls : ''}">${rt ? rt.text : (job.posted_date || '')}</span>
+        </div>`;
+      row.addEventListener('click', () => openPanel(job, row));
+      list.appendChild(row);
+    });
+  });
 
-    return `
-    <div class="job-card${isNew ? ' is-new' : ''}" data-id="${job.id}">
-      ${isNew ? '<span class="new-badge">NEW</span>' : ''}
-      <div class="card-top">
-        <span class="card-rank">#${idx + 1}</span>
-        <div class="card-title-group">
-          <div class="card-title">${esc(job.title)}</div>
-          <div class="card-company">${esc(job.company_name || '')}${job.domain ? ' · ' + esc(job.domain) : ''}</div>
-        </div>
-        <div class="score-circle ${scoreClass(sc)}">${sc}</div>
-      </div>
+  displayedJobs.push(...jobs);
+  updateStats();
+  updateLoadMore();
+}
 
-      <div class="badges">
-        <span class="badge ${visaClass(job.visa_signal)}">${visaLabel(job.visa_signal)}</span>
-        ${job.role_category ? `<span class="badge ${roleClass(job.role_category)}">${job.role_category.toUpperCase()}</span>` : ''}
-        ${job.remote ? '<span class="badge badge-remote">REMOTE</span>' : ''}
-        ${job.tier === 1 ? '<span class="badge badge-tier1">TIER 1</span>' : ''}
-        ${expBadge}
-        <span class="badge badge-src">${(job.ats_type || '').toUpperCase()}</span>
-      </div>
+function updateStats() {
+  document.getElementById('statsLine').innerHTML =
+    `<strong>${displayedJobs.length.toLocaleString()}</strong> showing · <strong>${currentTotal.toLocaleString()}</strong> active`;
+}
 
-      <div class="meta">
-        ${job.location ? `<span>📍 ${esc(job.location)}</span>` : ''}
-        ${rt ? `<span class="posted-time ${rt.cls}">🕐 ${rt.text}</span>` : job.posted_date ? `<span>📅 ${job.posted_date}</span>` : ''}
-        ${job.industry ? `<span>🏢 ${esc(job.industry)}</span>` : ''}
-        ${h1bStr ? `<span title="USCIS H-1B petitions (2022-2024)" style="color:#a78bfa">🛂 ${h1bStr} H-1B</span>` : ''}
-      </div>
-
-      ${skillChips || missingChips ? `<div class="skills-row">${skillChips}${missingChips}</div>` : ''}
-
-      <div class="score-breakdown">
-        <div class="score-item"><span class="pts">${job.skill_pts ?? 0}</span><span class="max">/${WEIGHTS.skill}</span><span class="lbl">Skill</span></div>
-        <div class="score-item"><span class="pts">${job.role_pts ?? 0}</span><span class="max">/${WEIGHTS.role}</span><span class="lbl">Role</span></div>
-        <div class="score-item"><span class="pts">${job.visa_pts ?? 0}</span><span class="max">/${WEIGHTS.visa}</span><span class="lbl">Visa</span></div>
-        <div class="score-item"><span class="pts">${job.recency_pts ?? 0}</span><span class="max">/${WEIGHTS.recency}</span><span class="lbl">Recency</span></div>
-        <div class="score-item"><span class="pts">${job.company_pts ?? 0}</span><span class="max">/${WEIGHTS.company}</span><span class="lbl">Company</span></div>
-      </div>
-
-      <div class="card-footer">
-        <a class="apply-btn" href="${esc(job.url)}" target="_blank" rel="noopener">Apply ↗</a>
-      </div>
-    </div>`;
-  }).join('');
-
-  document.getElementById('jobsContainer').innerHTML = html;
-
-  if (newIds.length) {
-    setTimeout(() => {
-      markSeen(newIds);
-      document.querySelectorAll('.job-card.is-new').forEach(c => c.classList.remove('is-new'));
-      document.querySelectorAll('.new-badge').forEach(b => b.remove());
-    }, 8000);
+function updateLoadMore() {
+  const wrap = document.getElementById('loadMoreWrap');
+  const btn = document.getElementById('loadMoreBtn');
+  const remaining = currentTotal - displayedJobs.length;
+  if (remaining > 0) {
+    wrap.style.display = 'block';
+    btn.textContent = `Load ${Math.min(remaining, PAGE_LIMIT).toLocaleString()} more`;
+    btn.disabled = false;
+  } else if (displayedJobs.length > 0) {
+    wrap.style.display = 'block';
+    btn.textContent = 'All jobs loaded';
+    btn.disabled = true;
+  } else {
+    wrap.style.display = 'none';
   }
 }
 
-// ── Fetch jobs from API ────────────────────────────────────────────────────────
+// ── Detail panel ───────────────────────────────────────────────────────────────
 
-async function fetchJobs() {
+function openPanel(job, row) {
+  // Deactivate previous row
+  document.querySelectorAll('.job-row.active').forEach(r => r.classList.remove('active'));
+  if (row) row.classList.add('active');
+  activeJob = job;
+
+  const panel = document.getElementById('detailPanel');
+  panel.classList.add('open');
+
+  const color = logoColor(job.company_name);
+  const initial = (job.company_name || '?').trim().charAt(0).toUpperCase();
+  const rt = relTime(job.first_seen_at || job.posted_date);
+  const salary = fmtSalary(job.salary_min, job.salary_max, job.salary_currency);
+  const visaLabel = job.visa_signal === 1 ? 'VISA ✓' : job.visa_signal === -1 ? 'NO SPONSOR' : 'VISA ?';
+  const visaCls = job.visa_signal === 1 ? 'pbadge-visa-yes' : job.visa_signal === -1 ? 'pbadge-visa-no' : 'pbadge-visa-unk';
+  const sc = job.score_pct || 0;
+
+  const locationStr = (() => {
+    const lt = job.location_types || [];
+    return lt.length ? lt.join(', ') : (job.location || null);
+  })();
+
+  const descHtml = job.description
+    ? `<div class="panel-desc">${esc(job.description).replace(/\n/g, '<br>')}</div>`
+    : '<div class="panel-desc" style="color:var(--muted)">No description available.</div>';
+
+  document.getElementById('panelBody').innerHTML = `
+    <div class="panel-co-row">
+      <div class="panel-logo" style="background:${color}">${initial}</div>
+      <div>
+        <div class="panel-co-name">${esc(job.company_name)}</div>
+        <div class="panel-co-meta">${rt ? rt.text + ' ago' : ''}</div>
+      </div>
+      <div class="panel-spacer"></div>
+      <a class="view-btn" href="${esc(job.url)}" target="_blank" rel="noopener">View posting ↗</a>
+    </div>
+
+    <div class="panel-title">${esc(job.title)}</div>
+
+    <div class="panel-badges">
+      ${salary ? `<span class="pbadge pbadge-salary">$ ${esc(salary)}</span>` : ''}
+      <span class="pbadge ${visaCls}">${visaLabel}</span>
+      ${job.role_category ? `<span class="pbadge pbadge-role">${esc(job.role_category.toUpperCase())}</span>` : ''}
+      ${sc > 0 ? `<span class="pbadge pbadge-score">Score: ${sc}</span>` : ''}
+    </div>
+
+    ${locationStr ? `
+    <div class="panel-section">
+      <div class="panel-section-label">Locations</div>
+      <div class="panel-location">◎ ${esc(locationStr)}</div>
+    </div>` : ''}
+
+    <div class="details-toggle" onclick="toggleDetails(this)">
+      <span>▾ Details</span>
+      <span class="details-chevron open">▴</span>
+    </div>
+    <div id="panelDetails">
+      ${descHtml}
+    </div>
+
+    ${sc > 0 ? `
+    <div class="score-strip">
+      <div class="score-item"><span class="pts">${job.skill_pts ?? 0}</span><span class="max">/${WEIGHTS.skill}</span><span class="lbl">Skill</span></div>
+      <div class="score-item"><span class="pts">${job.role_pts ?? 0}</span><span class="max">/${WEIGHTS.role}</span><span class="lbl">Role</span></div>
+      <div class="score-item"><span class="pts">${job.visa_pts ?? 0}</span><span class="max">/${WEIGHTS.visa}</span><span class="lbl">Visa</span></div>
+      <div class="score-item"><span class="pts">${job.recency_pts ?? 0}</span><span class="max">/${WEIGHTS.recency}</span><span class="lbl">Recency</span></div>
+      <div class="score-item"><span class="pts">${job.company_pts ?? 0}</span><span class="max">/${WEIGHTS.company}</span><span class="lbl">Company</span></div>
+    </div>` : ''}
+  `;
+}
+
+function closePanel() {
+  document.getElementById('detailPanel').classList.remove('open');
+  document.querySelectorAll('.job-row.active').forEach(r => r.classList.remove('active'));
+  activeJob = null;
+}
+
+function toggleDetails(el) {
+  const details = document.getElementById('panelDetails');
+  const chevron = el.querySelector('.details-chevron');
+  const isOpen = chevron.classList.contains('open');
+  chevron.classList.toggle('open', !isOpen);
+  details.style.display = isOpen ? 'none' : 'block';
+  el.querySelector('span:first-child').textContent = isOpen ? '▸ Details' : '▾ Details';
+}
+
+// ── Fetch ──────────────────────────────────────────────────────────────────────
+
+async function fetchJobs(append) {
   try {
-    const params = new URLSearchParams();
-    if (usOnly) params.set('us_only', 'true');
-    if (newGrad) params.set('new_grad_only', 'true');
-    if (activeCompanyId !== null) params.set('company_id', activeCompanyId);
-    const url = '/api/jobs' + (params.toString() ? '?' + params.toString() : '');
-    const resp = await fetch(url);
+    const p = new URLSearchParams({
+      offset: currentOffset,
+      limit: PAGE_LIMIT,
+      role: filters.role,
+      work_mode: filters.work_mode,
+      salary_min: filters.salary_min,
+      location: filters.location,
+      level: filters.level,
+      employment_type: filters.employment_type,
+    });
+    const resp = await fetch('/api/jobs?' + p);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    allJobs = await resp.json();
-    renderJobs(allJobs);
+    const data = await resp.json();
+    currentTotal = data.total;
+    renderJobs(data.jobs, append);
     document.getElementById('lastRefreshed').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
-    document.getElementById('lastRefreshed').textContent = 'Fetch error — ' + e.message;
+    document.getElementById('lastRefreshed').textContent = 'Error: ' + e.message;
   }
 }
 
-// ── Trigger pipeline refresh ───────────────────────────────────────────────────
+async function loadMore() {
+  currentOffset += PAGE_LIMIT;
+  const btn = document.getElementById('loadMoreBtn');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  await fetchJobs(true);
+}
 
-let pollingStatus = false;
+// ── Refresh ────────────────────────────────────────────────────────────────────
 
 async function triggerRefresh() {
   const btn = document.getElementById('refreshBtn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Scraping…';
-
   try {
     const r = await fetch('/api/refresh', { method: 'POST' });
     const d = await r.json();
-    if (d.status === 'already_running') {
-      showToast('Scrape already in progress…');
-    }
+    if (d.status === 'already_running') showToast('Scrape already in progress…');
     pollStatus();
   } catch (e) {
     btn.disabled = false;
@@ -471,7 +653,6 @@ async function pollStatus() {
   if (pollingStatus) return;
   pollingStatus = true;
   const btn = document.getElementById('refreshBtn');
-
   while (true) {
     await sleep(3000);
     try {
@@ -482,48 +663,41 @@ async function pollStatus() {
         btn.innerHTML = 'Refresh Now';
         pollingStatus = false;
         nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-        await fetchJobs();
-        await loadSidebar();
-        const newCount = document.getElementById('statNew').textContent;
-        showToast(newCount + ' new job' + (newCount === '1' ? '' : 's') + ' found');
+        currentOffset = 0;
+        await fetchJobs(false);
+        showToast('Jobs refreshed');
         return;
       }
       if (d.task_error) {
         btn.disabled = false;
         btn.innerHTML = 'Refresh Now';
         pollingStatus = false;
-        showToast('Scrape error: ' + d.task_error);
+        showToast('Error: ' + d.task_error);
         return;
       }
     } catch {}
   }
 }
 
-// ── Countdown & auto-poll ──────────────────────────────────────────────────────
-
-function updateCountdown() {
-  const remaining = Math.max(0, nextRefreshAt - Date.now());
-  const m = Math.floor(remaining / 60000);
-  const s = Math.floor((remaining % 60000) / 1000);
-  document.getElementById('countdown').textContent =
-    remaining > 0
-      ? `Auto-refresh in ${m}:${String(s).padStart(2, '0')}`
-      : 'Refreshing…';
-}
+// ── Countdown ─────────────────────────────────────────────────────────────────
 
 function startAutoRefresh() {
   clearInterval(countdownTimer);
-  countdownTimer = setInterval(updateCountdown, 1000);
+  countdownTimer = setInterval(() => {
+    const rem = Math.max(0, nextRefreshAt - Date.now());
+    const m = Math.floor(rem / 60000), s = Math.floor((rem % 60000) / 1000);
+    document.getElementById('countdown').textContent =
+      rem > 0 ? `Auto-refresh in ${m}:${String(s).padStart(2,'0')}` : 'Refreshing…';
+  }, 1000);
   clearTimeout(pollTimer);
-  function scheduleNext() {
-    const delay = nextRefreshAt - Date.now();
+  (function sched() {
     pollTimer = setTimeout(async () => {
       nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-      await fetchJobs();
-      scheduleNext();
-    }, Math.max(delay, 1000));
-  }
-  scheduleNext();
+      currentOffset = 0;
+      await fetchJobs(false);
+      sched();
+    }, Math.max(nextRefreshAt - Date.now(), 1000));
+  })();
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────────
@@ -540,10 +714,9 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ── Init ───────────────────────────────────────────────────────────────────────
 
 (async () => {
-  await Promise.all([fetchJobs(), loadSidebar()]);
+  await fetchJobs(false);
   startAutoRefresh();
 })();
 </script>
-
 </body>
 </html>
