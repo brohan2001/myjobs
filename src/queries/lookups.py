@@ -114,7 +114,9 @@ async def _resolve_locations(
     loc_ids = []
     loc_types = []
     for r in results:
-        if r.location_id is not None:
+        # Keep location-less "Remote"/"Hybrid" entries as NULL ids so the work
+        # mode survives (the feed's remote filter reads location_types).
+        if r.location_id is not None or r.location_type in ("remote", "hybrid"):
             loc_ids.append(r.location_id)
             loc_types.append(r.location_type)
 
