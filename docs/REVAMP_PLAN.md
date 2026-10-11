@@ -12,6 +12,18 @@ Every phase runs on its own `revamp/<phase>` branch and ends with green tests an
 
 ---
 
+## Status (2026-10-11, end of autonomous session)
+| Phase | State | Notes |
+|---|---|---|
+| 0: Audit, privacy, plan | Done | Approved. PII purged from history |
+| 1: Public latest-jobs feed (revised, D10) | Done | Continuous worker, GeoNames, public API, coverage endpoint, robots.txt, Workday and WIP fixes |
+| 2A: Remove US assumptions, India model | Mostly done | Visa/H1B deleted, GeoNames with Indian aliases and ASCII names, INR/LPA salary. Open: notice period, experience bands, company-type taxonomy in the API |
+| 2B: Scraping and India expansion | In progress | Discovery pipeline with a review queue; 400 Indian candidates being verified; 16+ lost boards recovered. Open: Indian ATS adapters (needs research), A/B test of the User-Agent (D14) |
+| 3: UI | Built (direction C, D15) | Next.js feed, detail and coverage pages. The user may still swap the direction |
+| 4: Infra proposal | Draft done | docs/INFRA_PROPOSAL.md. Awaiting the user's approval before anything is deployed |
+| 5: JSeek integration | Design draft done | docs/JSEEK_INTEGRATION.md |
+| Later: profiles, per-user scoring, tailoring | Not started | Deferred by D10 |
+
 ## Phase 0: Audit, privacy, baseline (this phase)
 Delivered: `AUDIT.md`, `SCRAPING_REPORT.md`, `REPO_MAP.md`, `DECISIONS.md`, this plan, the PII history purge, the MIT notice, a pre-commit PII/secret guard, the baseline snapshot tool,
 and characterization tests. **Still open:** a *live* baseline run, which needs Docker (see Phase 1 task 1.0).
