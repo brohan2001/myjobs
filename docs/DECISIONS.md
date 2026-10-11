@@ -36,3 +36,29 @@ Patterns stay private so the guard itself doesn't leak the data. Not enforced in
 ## D9: Phase 0 WIP committed as a snapshot, not fixed (Default, 2026-10-11)
 The uncommitted server/UI work and migration 0008 were committed unchanged on `revamp/phase-0-audit`, so the baseline matches the code
 that produced it. Its bugs are listed in AUDIT §4 and §8.
+
+## D10: Pivot to a public latest-jobs feed first (User, 2026-10-11)
+The user asked to drop the daily reports, shortlist and AI resume tooling and to focus on serving the latest jobs to everyone,
+jseek.co-style. Deleted: ranker/scoring, HTML report, Claude generator, visa/H1B data and columns (migration 0009), the `crawler`
+entry point. Per-user profiles, scoring and resume tailoring move to a later phase and will live in their own tables, not on
+`job_posting`. Supersedes most of REVAMP_PLAN Phase 1 and the visa part of Phase 2A.
+
+## D11: Continuous worker instead of daily runs (Default, 2026-10-11)
+`myjobs worker` runs the pipeline until SIGTERM. Boards reschedule themselves (`check_interval_minutes`, default 60) and
+URL-only postings are re-scraped on `scrape_interval_hours`. `myjobs crawl` keeps a one-pass mode for dev/cron. Freshness is
+exposed as `/api/v1/stats.last_updated`.
+
+## D12: Public API is read-only with no auth; abuse is bounded by design (Default, 2026-10-11)
+Nothing served is user data. Controls: per-IP fixed-window rate limit (Redis, falling back to in-process), capped `limit`, keyset
+cursors (no deep OFFSET scans), the 30 s DB statement timeout, all filters as bind parameters, third-party description HTML
+sanitized with nh3, CSP and security headers, CORS closed unless `API_CORS_ORIGINS` is set. `/api/refresh` was removed.
+
+## D13: GeoNames for locations (Default, 2026-10-11)
+`scripts/load_geonames.py` loads countryInfo, admin1 and cities15000 (CC-BY 4.0, attributed) plus Indian alias fixes and macro regions
+(EU, EMEA, APAC, LATAM…). Country filtering uses `location_ids && descendants(country)` with an in-memory index in the API. This replaces
+the substring country matching that turned "Indiana" into India.
+
+## D14: Default User-Agent unchanged for now (Default, 2026-10-11; revises D6)
+Upstream switched from an identifying UA to a Chrome UA after WAF blocks on several big employer career sites, including Infosys
+(`src/shared/http.py:41`). Switching back blind could silently cost India-relevant coverage. Plan: A/B a sample of ~200 boards with
+an honest UA in Phase 2B, then decide with data. robots.txt permission checks (2B.1) are independent of this and still planned.

@@ -1,16 +1,16 @@
 # Repo map
 
 Short reference so later phases don't need to re-read the repo. Keep it current when modules move.
-Last verified: 2026-10-11 (Phase 0).
+Last verified: 2026-10-11 (Phase 1 feed).
 
 ## Entry points
 | Command | Code | What it does |
 |---|---|---|
-| `myjobs run` | `src/cli.py:111` | CSV sync → crawl queues drained (HTTP workers only) → `run_scoring` → HTML report → `daily_runs` row |
-| `myjobs serve` | `src/cli.py:377` → `src/server.py` | FastAPI on 127.0.0.1:8080, reads Postgres |
-| `myjobs generate` | `src/ai/generator.py` | Claude resume bullets + cover letter for top jobs |
-| `myjobs show/apply/history/stats/company/update-h1b/verify-api` | `src/cli.py` | Small CLI utilities |
-| `crawler run / run-browser / sync / prune-scrape-queues` | `src/cli.py:641-690` | Queue workers and sync. `crawler board` is broken |
+| `myjobs worker` | `src/cli.py` `_run_worker` | Sync, then run the HTTP (+ browser) pipelines until SIGTERM |
+| `myjobs crawl` | `src/cli.py` `_drain_once` | Drain ready queues once |
+| `myjobs serve` | `src/api/app.py` | Public FastAPI feed on 127.0.0.1:8080 |
+| `myjobs stats / sync / company …` | `src/cli.py` | Utilities |
+| `scripts/load_geonames.py`, `scripts/populate_taxonomy.py` | | One-time reference data loads |
 | `python -m src.workspace` (`ws`) | `src/workspace/` | Agent-driven board config workspace from jobseek (discovery, probing). Not installed as a script |
 
 Infra: `docker-compose.yml` provides Postgres 16 and Redis 7. Migrations: `alembic upgrade head` (`src/migrations/`).
@@ -35,24 +35,24 @@ Infra: `docker-compose.yml` provides Postgres 16 and Redis 7. Migrations: `alemb
 | `src/shared/ssrf.py` | SSRF guard (resolved-IP check per hop) | jobseek |
 | `src/shared/browser.py`, `api_sniff.py` | Playwright and XHR sniffing | jobseek |
 | `src/shared/tdm.py` | W3C TDM-reservation opt-out | jobseek |
-| `src/ranker.py`, `src/scoring_config.py` | 5-factor score and shortlist (US/visa-biased) | myjobs |
-| `src/server.py`, `templates/live.html.j2` | Live web UI and JSON API | myjobs |
-| `src/renderer.py`, `templates/daily_report.html.j2` | Static daily HTML report | myjobs |
-| `src/ai/generator.py` | Claude generation; profile from `PROFILE_PATH` | myjobs |
+| `src/api/app.py` | FastAPI app: routes, serialization, nh3 sanitizing, rate-limit middleware, security headers | myjobs |
+| `src/api/queries.py` | Feed SQL (pure `build_jobs_query`, keyset cursors) | myjobs |
+| `src/api/locations.py` | In-memory GeoNames index (country/macro → descendant ids, labels, search) | myjobs |
+| `src/api/ratelimit.py` | Per-IP fixed-window limiter (Redis or local) | myjobs |
+| `src/api/static/` | Interim feed page (replaced in Phase 3) | myjobs |
 | `src/metrics.py` | Prometheus stubs | myjobs |
 | `src/logger.py` | `get_logger(__name__)` | myjobs |
 
 ## Data
-- `data/companies.csv`: `slug,name,website,industry,tier,enabled,h1b_petitions_recent` (2,882 rows)
+- `data/companies.csv`: `slug,name,website,industry,tier,enabled` (2,882 rows)
 - `data/boards.csv`: `company_slug,board_slug,board_url,monitor_type,monitor_config,scraper_type,scraper_config` (3,169 rows)
 - `data/{occupations,occupation_domains,seniority,technologies}.csv`: taxonomy (migration 0007)
-- `data/{role_keywords,visa_keywords,h1b_sponsors}.json`: scoring inputs (visa and H1B files are due for deletion in Phase 2A)
 - `private/` (gitignored): real profile, resumes, PII patterns, target company notes
 
 ## Tests
-- `tests/test_ranker.py`, `tests/test_renderer.py`: pure functions (85 tests)
-- `tests/characterization/`: no-network characterization tests for monitors and scrapers (Phase 0)
-- `tests/fixtures/`: legacy fixtures (partly re-used by characterization)
+- `tests/characterization/`: no-network characterization tests for monitors, scrapers, retry, registry, baseline script
+- `tests/api/`: public API tests against a fake pool
+- `tests/test_load_geonames.py`: GeoNames parsing + resolver integration
 
 ## Docs
 `docs/AUDIT.md`, `docs/SCRAPING_REPORT.md`, `docs/REVAMP_PLAN.md`, `docs/DECISIONS.md`, `docs/baseline/`, `delegation/`.
