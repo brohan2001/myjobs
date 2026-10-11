@@ -401,14 +401,16 @@ async def run_ab_test(
         host = extract_host(board.get("board_url", ""), board.get("monitor_type", ""))
         async with host_locks[host]:
             async with sem:
-                log.info("ua_ab.board_start", board_slug=board.get("board_slug"), host=host)
+                log.info("ua_ab.board_start", extra={"board_slug": board.get("board_slug"), "host": host})
                 res = await run_board(board, chrome_client, honest_client, timeout=timeout)
                 log.info(
                     "ua_ab.board_done",
-                    board_slug=board.get("board_slug"),
-                    classification=res["classification"],
-                    chrome_jobs=res["chrome"]["jobs"],
-                    honest_jobs=res["honest"]["jobs"],
+                    extra={
+                        "board_slug": board.get("board_slug"),
+                        "classification": res["classification"],
+                        "chrome_jobs": res["chrome"]["jobs"],
+                        "honest_jobs": res["honest"]["jobs"],
+                    },
                 )
                 return res
 
@@ -425,16 +427,16 @@ async def run_ab_test(
 async def async_main(args: argparse.Namespace) -> None:
     boards_file = Path(args.boards)
     if not boards_file.is_file():
-        log.error("boards_file_not_found", path=str(boards_file))
+        log.error("boards_file_not_found", extra={"path": str(boards_file)})
         sys.exit(1)
 
     with open(boards_file, mode="r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
 
-    log.info("ua_ab.loaded_boards", total_rows=len(rows))
+    log.info("ua_ab.loaded_boards", extra={"total_rows": len(rows)})
     sampled = sample_boards(rows, n=args.sample, seed=args.seed)
-    log.info("ua_ab.sampled_boards", sampled_count=len(sampled))
+    log.info("ua_ab.sampled_boards", extra={"sampled_count": len(sampled)})
 
     records = await run_ab_test(sampled, concurrency=args.concurrency)
     summary = build_summary(records)
@@ -456,11 +458,11 @@ async def async_main(args: argparse.Namespace) -> None:
     }
 
     json_path.write_text(json.dumps(data_payload, indent=2), encoding="utf-8")
-    log.info("ua_ab.saved_json", path=str(json_path))
+    log.info("ua_ab.saved_json", extra={"path": str(json_path)})
 
     md_content = generate_markdown_report(records, summary, date_str)
     md_path.write_text(md_content, encoding="utf-8")
-    log.info("ua_ab.saved_md", path=str(md_path))
+    log.info("ua_ab.saved_md", extra={"path": str(md_path)})
 
     # Print summary table at the end
     print_summary_table(summary)
