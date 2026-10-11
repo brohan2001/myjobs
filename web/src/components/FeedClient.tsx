@@ -291,6 +291,7 @@ export function FeedClient({
           <JobList
             jobs={jobs}
             currency={currency}
+            placeFilter={initialPlace}
             isLoading={isLoading}
             isError={isError}
             companiesHiring={initialStats?.companies_hiring}

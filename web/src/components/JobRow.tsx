@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ATS_NAMES, WORK_MODE_NAMES } from "@/lib/constants";
 import { formatSalary, relativeTime } from "@/lib/format";
+import { orderLocations } from "@/lib/locations";
 import { RATES } from "@/lib/rates";
 import { Job } from "@/lib/types";
 
@@ -10,6 +11,7 @@ interface JobRowProps {
   job: Job;
   index: number;
   currency: string;
+  placeFilter?: string;
   isFocused?: boolean;
   onFocus?: () => void;
   onOpen?: () => void;
@@ -19,6 +21,7 @@ export function JobRow({
   job,
   index,
   currency,
+  placeFilter,
   isFocused = false,
   onFocus,
   onOpen,
@@ -33,8 +36,9 @@ export function JobRow({
 
   // Formatted location
   let locationText = "Remote";
-  if (job.locations && job.locations.length > 0) {
-    const valid = job.locations.filter((l) => l.name);
+  const orderedLocations = orderLocations(job.locations, placeFilter);
+  if (orderedLocations && orderedLocations.length > 0) {
+    const valid = orderedLocations.filter((l) => l.name);
     if (valid.length > 0) {
       const first = valid[0].name ?? "";
       locationText = valid.length > 1 ? `${first} +${valid.length - 1}` : first;
