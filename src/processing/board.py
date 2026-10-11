@@ -85,6 +85,8 @@ from src.queries.scrape import (
 from src.redis_queue import enqueue_scrape as _enqueue_scrape
 from src.shared.html_normalize import normalize_description_html
 from src.shared.langdetect import detect_all_languages, detect_language
+from src.shared.robots import RobotsDisallowedError
+from src.shared.robots import ensure_allowed as ensure_robots_allowed
 from src.shared.tdm import TDMReservedError
 
 log = structlog.get_logger()
@@ -718,6 +720,9 @@ async def _process_one_board_streaming(
         # gone-detection (#3216). The MAX_JOBS cap means the unseen tail
         # would otherwise be tombstoned by _MARK_GONE_BY_TIMESTAMP.
         any_truncated = False
+
+        # Honour the site's robots.txt for monitors that read company sites (not ATS APIs).
+        await ensure_robots_allowed(effective_http, board_url, crawler_type)
 
         async for result in _batch.monitor_one_stream(
             board_url, crawler_type, metadata, effective_http, pw=pw
@@ -1376,6 +1381,15 @@ async def _process_one_board_streaming(
         # the cleanup the failure path does.
         loc_resolver.drain_location_misses()
         # Return success-shaped: the run was not a failure.
+        return True, elapsed
+
+    except RobotsDisallowedError as exc:
+        # Site asks generic crawlers to stay out: clean skip, like the TDM opt-out
+        # (no failure strike, no tombstoning). Counted so coverage loss is visible.
+        elapsed = monotonic() - t0
+        board_log.info("batch.monitor.robots_disallowed", url=exc.url, duration_s=round(elapsed, 2))
+        tasks_total.labels(kind="monitor", status="robots_disallowed").inc()
+        loc_resolver.drain_location_misses()
         return True, elapsed
 
     except BoardGoneError as exc:

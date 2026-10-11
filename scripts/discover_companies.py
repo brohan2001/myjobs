@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-jobs", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0, help="only process the first N candidates")
     ap.add_argument("--out-dir", type=Path, default=DATA / "candidates")
+    ap.add_argument("--rediscover", action="store_true",
+                    help="candidates are existing companies (CSV has a slug column) whose board went away")
     args = ap.parse_args(argv)
 
     company_fields, companies = _read(DATA / "companies.csv")
@@ -64,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         candidates = candidates[: args.limit]
 
-    outcomes = asyncio.run(run(candidates, companies, boards, concurrency=args.concurrency, min_jobs=args.min_jobs))
+    outcomes = asyncio.run(run(candidates, companies, boards, concurrency=args.concurrency, min_jobs=args.min_jobs,
+                               rediscover=args.rediscover))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     review = [outcome_dict(o) for o in outcomes if o.status != "accepted"]
@@ -91,6 +94,12 @@ def main(argv: list[str] | None = None) -> int:
         added = 0
         for o in outcomes:
             if o.status != "accepted":
+                continue
+            if o.candidate.slug and o.candidate.slug in slugs:
+                # Re-discovery: keep the company, add its new board.
+                _company, board = registry_rows(o, o.candidate.slug)
+                boards.append(board)
+                added += 1
                 continue
             slug = unique_slug(o.candidate.name, slugs)
             slugs.add(slug)

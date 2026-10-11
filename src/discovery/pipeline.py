@@ -37,14 +37,7 @@ BLOCKED_HOSTS = (
 )
 ROBOTS_AGENT = "*"
 
-# Monitors backed by an ATS's structured job API/feed: a non-empty result really is a job list.
-# Generic detectors (sitemap, dom, nextdata, inline, api_sniffer…) can count ordinary site pages as
-# jobs, so their hits go to human review instead of straight into production.
-TRUSTED_MONITORS = frozenset({
-    "greenhouse", "lever", "ashby", "smartrecruiters", "workable", "recruitee", "workday", "pinpoint",
-    "breezy", "personio", "rippling", "gem", "jobylon", "oracle_hcm", "eightfold", "join", "mokahr",
-    "hireology", "dvinci", "deel", "almacareer", "traffit", "softgarden", "bite",
-})
+from src.shared.robots import API_MONITORS as TRUSTED_MONITORS  # noqa: E402  (shared list)
 
 
 @dataclass
@@ -56,6 +49,7 @@ class Candidate:
     category: str = ""
     source: str = ""
     country: str = "IN"
+    slug: str = ""  # set when re-discovering a board for a company already in the registry
 
 
 @dataclass
@@ -118,6 +112,7 @@ def load_candidates(path: Path) -> list[Candidate]:
             category=(r.get("category") or "").strip(),
             source=(r.get("source") or "").strip(),
             country=(r.get("country") or "IN").strip() or "IN",
+            slug=(r.get("slug") or "").strip(),
         ))
     return out
 
@@ -251,6 +246,7 @@ async def run(
     concurrency: int = 8,
     per_company_timeout: float = 90.0,
     min_jobs: int = 1,
+    rediscover: bool = False,
 ) -> list[Outcome]:
     from src.shared.http import create_http_client
 
@@ -262,7 +258,7 @@ async def run(
         d = domain_of(c.website)
         if is_blocked_host(c.website):
             outcomes.append(Outcome(c, "rejected", "job portal, not an employer site"))
-        elif d in domains or d in seen_domains:
+        elif (d in domains and not rediscover) or d in seen_domains:
             outcomes.append(Outcome(c, "duplicate", "already in registry"))
         else:
             seen_domains.add(d)
