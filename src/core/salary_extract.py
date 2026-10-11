@@ -1898,7 +1898,12 @@ def extract_salary(html: str) -> list[SalaryRange]:
     for code in _EU_CURRENCIES:
         eu_extra.extend(_extract_eu_currency(text, code))
 
-    all_results = dollar_ranges + dollar_singles + prefix_singles + eur + gbp + chf + eu_extra
+    # INR (LPA / lakh / crore / ₹ / Rs). Local import: salary_inr imports SalaryRange from here.
+    from src.core.salary_inr import extract_inr
+
+    inr = extract_inr(text)
+
+    all_results = dollar_ranges + dollar_singles + prefix_singles + eur + gbp + chf + eu_extra + inr
 
     # Deduplicate: if we have both a range and a single that overlaps, prefer the range
     if len(all_results) > 1:
