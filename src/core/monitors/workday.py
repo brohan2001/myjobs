@@ -442,15 +442,22 @@ async def _list_all_sites(
 
     site_paths: list[tuple[str, str]] = []
     any_site_truncated = False
+    errors: list[BaseException] = []
     for i, result in enumerate(results):
         if isinstance(result, BaseException):
             log.warning("workday.site_list_error", site=sites[i], error=str(result))
+            errors.append(result)
         else:
             pairs, was_truncated = result
             site_paths.extend(pairs)
             if was_truncated:
                 any_site_truncated = True
-    truncated = any_site_truncated or len(site_paths) > MAX_JOBS
+    if errors and len(errors) == len(sites):
+        # Every site failed: surface it as a board failure instead of "0 jobs".
+        raise errors[0]
+    # A failed site's postings are missing from this cycle, so mark it partial
+    # to keep the pipeline from delisting them as gone.
+    truncated = any_site_truncated or bool(errors) or len(site_paths) > MAX_JOBS
     return site_paths[:MAX_JOBS], truncated
 
 
@@ -470,6 +477,7 @@ async def _list_all_sites_stream(
     """
     sem = asyncio.Semaphore(_LIST_CONCURRENCY)
     total_count = 0
+    errors: list[Exception] = []
 
     for site in sites:
         async with sem:
@@ -483,6 +491,14 @@ async def _list_all_sites_stream(
                         return
             except Exception as exc:
                 log.warning("workday.site_list_error", site=site, error=str(exc))
+                errors.append(exc)
+
+    if errors and len(errors) == len(sites):
+        # Every site failed: surface it as a board failure instead of "0 jobs".
+        raise errors[0]
+    if errors:
+        # Partial cycle: keep the pipeline from delisting the failed sites' postings.
+        yield [_TRUNCATED_SENTINEL]
 
 
 # ── Main discover entry point ────────────────────────────────────────

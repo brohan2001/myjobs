@@ -124,11 +124,10 @@ async def test_workday_400_fails_fast(make_client, sleeps):
     assert calls == [1] and ei.value.last_status == 400
 
 
-async def test_workday_multi_site_swallows_pagination_failures(make_client, sleeps):
-    """SURPRISING current behavior: with ``all_sites`` (the default) a persistent
-    503 on a site's list endpoint is caught by ``_list_all_sites`` (gather with
-    ``return_exceptions=True``) and logged, so ``discover`` returns an EMPTY set
-    instead of raising. Single-site mode raises (see test above).
+async def test_workday_multi_site_all_sites_failing_raises(make_client, sleeps):
+    """Changed deliberately (was: returned an empty set). When every site's list
+    endpoint fails, ``discover`` raises so the board takes a failure strike
+    instead of reporting a clean "0 jobs" run.
     """
     robots = (
         "User-agent: *\n"
@@ -142,7 +141,33 @@ async def test_workday_multi_site_swallows_pagination_failures(make_client, slee
 
     board = {"board_url": "https://acme.wd5.myworkdayjobs.com/Careers"}
     async with make_client(handler) as client:
-        assert await workday.discover(board, client) == set()
+        with pytest.raises(PaginationFetchError):
+            await workday.discover(board, client)
+
+
+async def test_workday_multi_site_partial_failure_is_marked_truncated(make_client, sleeps):
+    """One site fails, one succeeds: the URLs come back flagged as partial so the
+    pipeline doesn't delist the failed site's postings as gone."""
+    from src.core.monitor import MonitorResult
+
+    robots = (
+        "Sitemap: https://acme.wd5.myworkdayjobs.com/SiteA/siteMap.xml\n"
+        "Sitemap: https://acme.wd5.myworkdayjobs.com/SiteB/siteMap.xml\n"
+    )
+
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(200, text=robots)
+        if "/SiteB/" in req.url.path:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"total": 1, "jobPostings": _wd_postings(0, 1)})
+
+    board = {"board_url": "https://acme.wd5.myworkdayjobs.com/SiteA"}
+    async with make_client(handler) as client:
+        result = await workday.discover(board, client)
+    assert isinstance(result, MonitorResult)
+    assert result.truncated is True
+    assert result.urls == {"https://acme.wd5.myworkdayjobs.com/SiteA/job/R0"}
 
 
 async def test_workday_multi_site_discovers_sites_from_robots(make_client):
