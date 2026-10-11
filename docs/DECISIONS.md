@@ -76,3 +76,19 @@ query params, so links are shareable. The Python worker and API are unchanged.
 ## D17: Delegation split (User, 2026-10-11)
 About 50% of the work goes to agy (Gemini 3.8 Flash first, then Sonnet 4.6, then Opus 4.6), run with --dangerously-skip-permissions.
 Delegated work is verified by contract tests, scope checks (`git diff --stat`) and structured reports, not by line-by-line reading.
+
+## D18: Discovery auto-accept rules (Default, 2026-10-11)
+A board enters the registry without human review only when (a) an ATS API monitor (`API_MONITORS`) parses at least one job,
+or (b) a generic sitemap/DOM/nextdata detector finds URLs and at least 2 of 3 sampled URLs carry schema.org JobPosting
+JSON-LD (scraped with `json-ld`). Everything else, including browser-only boards, goes to `data/candidates/*/review_queue.csv`.
+Job portals whose ToS forbid scraping (`BLOCKED_HOSTS`) are rejected outright.
+
+## D19: Indian ATS adapters: Keka, greytHR, Zoho Recruit (Default, 2026-10-11)
+Chosen from docs/research/INDIA_ATS.md, with all three public endpoints verified live (no auth). Darwinbox, Taleo and iCIMS have no public
+endpoint, so they fall back to the DOM, sitemap or JSON-LD monitors instead of private APIs.
+
+## D20: Docker Desktop stops observed (2026-10-11)
+Docker Desktop quit four times during the session through its own GUI quit path (`POST /app/quit` in the backend log). The cause
+is unknown and nothing in the repo triggers it. Postgres data survives in the `pgdata` volume; Redis queues are rebuilt by
+`myjobs worker` (which syncs on start). agy briefs now forbid touching Docker. For deployment, run Postgres and Redis as system
+services, not Docker Desktop.
