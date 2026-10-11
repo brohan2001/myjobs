@@ -25,6 +25,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 
+from src.company_type import normalize_company_type
 from src.logger import get_logger
 
 log = get_logger(__name__)
@@ -149,7 +150,7 @@ def registry_rows(outcome: Outcome, slug: str) -> tuple[dict, dict]:
     c = outcome.candidate
     company = {
         "slug": slug, "name": c.name, "website": c.website, "industry": "", "tier": "2", "enabled": "true",
-        "country": c.country, "hq_city": c.hq_city, "company_type": c.category,
+        "country": c.country, "hq_city": c.hq_city, "company_type": normalize_company_type(c.category),
     }
     board = {
         "company_slug": slug,

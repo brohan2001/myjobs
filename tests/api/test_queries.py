@@ -240,3 +240,18 @@ def test_non_job_title_pattern(title, is_job):
     from src.api.queries import NON_JOB_TITLE_RE
 
     assert (re.search(NON_JOB_TITLE_RE, title.lower()) is None) == is_job
+
+
+def test_company_type_filter_is_a_bound_array():
+    from src.api.queries import JobFilters, build_jobs_query
+
+    sql, args = build_jobs_query(JobFilters(company_types=("startup", "gcc")))
+    assert "c.extras->>'company_type' = ANY($1::text[])" in sql
+    assert args[0] == ["startup", "gcc"]
+
+
+def test_company_type_filter_rejects_unknown_values():
+    from src.api.queries import JobFilters, build_jobs_query
+
+    with pytest.raises(InvalidFilter):
+        build_jobs_query(JobFilters(company_types=("unicorn",)))

@@ -15,6 +15,8 @@ from uuid import UUID
 
 import asyncpg
 
+from src.company_type import COMPANY_TYPES
+
 WORK_MODES = ("remote", "hybrid", "onsite")
 # Postings that aren't jobs: talent pools, open/general applications, "join our community".
 NON_JOB_TITLE_RE = (
@@ -39,6 +41,7 @@ class JobFilters:
     seniority: str | None = None
     occupation: str | None = None
     max_years: int | None = None  # jobs whose minimum experience requirement is <= this (or unstated)
+    company_types: tuple[str, ...] | None = None
     cursor: tuple[datetime, UUID] | None = None
     limit: int = 50
 
@@ -110,7 +113,8 @@ _JOB_COLUMNS = """
     c.name              AS company_name,
     c.website           AS company_website,
     c.logo              AS company_logo,
-    jb.crawler_type     AS ats
+    jb.crawler_type     AS ats,
+    c.extras->>'company_type' AS company_type
 """
 
 
@@ -146,6 +150,11 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
         )
     if f.max_years is not None:
         where.append(f"(jp.experience_min IS NULL OR jp.experience_min <= {arg(int(f.max_years))})")
+    if f.company_types:
+        unknown = set(f.company_types) - set(COMPANY_TYPES)
+        if unknown:
+            raise InvalidFilter(f"company_type must be among {', '.join(COMPANY_TYPES)}")
+        where.append(f"c.extras->>'company_type' = ANY({arg(list(f.company_types))}::text[])")
     if f.cursor:
         ts, pid = f.cursor
         where.append(f"(jp.first_seen_at, jp.id) < ({arg(ts)}, {arg(pid)})")
