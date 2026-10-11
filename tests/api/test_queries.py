@@ -22,7 +22,7 @@ NOW = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
 
 def test_default_query():
     sql, args = build_jobs_query(JobFilters())
-    assert "WHERE jp.is_active AND jp.titles[1] IS NOT NULL\n" in sql
+    assert "WHERE jp.is_active AND jp.titles[1] IS NOT NULL AND lower(jp.titles[1]) !~" in sql
     assert "ORDER BY jp.first_seen_at DESC, jp.id DESC" in sql
     assert sql.rstrip().endswith("LIMIT $1")
     assert args == [51]
@@ -223,3 +223,20 @@ def test_max_years_filter_includes_unstated_experience():
     sql, args = build_jobs_query(JobFilters(max_years=2))
     assert "(jp.experience_min IS NULL OR jp.experience_min <= $1)" in sql
     assert args[0] == 2
+
+
+@pytest.mark.parametrize("title, is_job", [
+    ("Join our Talent Community!", False),
+    ("General Application - Bengaluru", False),
+    ("Don't see the right role? Apply here", False),
+    ("Expression of Interest: Engineering", False),
+    ("Senior Backend Engineer", True),
+    ("Community Manager", True),
+    ("Talent Acquisition Partner", True),
+])
+def test_non_job_title_pattern(title, is_job):
+    import re
+
+    from src.api.queries import NON_JOB_TITLE_RE
+
+    assert (re.search(NON_JOB_TITLE_RE, title.lower()) is None) == is_job

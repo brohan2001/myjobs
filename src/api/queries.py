@@ -16,6 +16,11 @@ from uuid import UUID
 import asyncpg
 
 WORK_MODES = ("remote", "hybrid", "onsite")
+# Postings that aren't jobs: talent pools, open/general applications, "join our community".
+NON_JOB_TITLE_RE = (
+    r"(talent (community|network|pool)|general application|open application|spontaneous application"
+    r"|expression of interest|future opportunit|join our (team|community|talent)|don.?t see .{0,20}(role|job))"
+)
 MAX_LIMIT = 100
 _SINCE_RE = re.compile(r"^(\d{1,3})([hd])$")
 
@@ -111,7 +116,7 @@ _JOB_COLUMNS = """
 
 def build_jobs_query(f: JobFilters) -> tuple[str, list]:
     # URL-only boards insert a posting before its detail page is scraped; hide it until it has a title.
-    where = ["jp.is_active", "jp.titles[1] IS NOT NULL"]
+    where = ["jp.is_active", "jp.titles[1] IS NOT NULL", f"lower(jp.titles[1]) !~ '{NON_JOB_TITLE_RE}'"]
     args: list = []
 
     def arg(value) -> str:
