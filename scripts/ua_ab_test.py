@@ -26,12 +26,11 @@ if str(ROOT) not in sys.path:
 from src.core.monitor import monitor_one
 from src.core.monitors import monitor_needs_browser
 from src.logger import get_logger
-from src.shared.http import DEFAULT_USER_AGENT, create_http_client
+from src.shared.http import CHROME_USER_AGENT, HONEST_USER_AGENT, create_http_client
 from src.shared.robots import API_MONITORS
 
 log = get_logger("ua_ab_test")
 
-HONEST_USER_AGENT = "myjobs-bot/0.1 (+https://github.com/brohan2001/myjobs)"
 DEFAULT_TIMEOUT_S = 60.0
 
 
@@ -390,8 +389,9 @@ async def run_ab_test(
     if chrome_client is None or honest_client is None:
         close_clients = True
         chrome_client = create_http_client()
-        chrome_client.headers["User-Agent"] = DEFAULT_USER_AGENT
+        chrome_client.headers["User-Agent"] = CHROME_USER_AGENT
         honest_client = create_http_client()
+        # The honest arm measures the shipped policy: allowlisted WAF hosts still get Chrome.
         honest_client.headers["User-Agent"] = HONEST_USER_AGENT
 
     sem = asyncio.Semaphore(concurrency)
