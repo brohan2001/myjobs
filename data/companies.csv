@@ -222,7 +222,7 @@ alpha,Alpha,https://tellent.com,1,2,true,NL,,product
 alphagrep-securities,AlphaGrep Securities,http://www.alpha-grep.com,2,2,true,IN,Mumbai,product
 alphalion,Alphalion,https://www.alphalion.com,1,2,true,US,,product
 alphasense,AlphaSense,https://www.alphasense.com,1,2,true,US,,product
-alphasense-india,AlphaSense India,https://www.alpha-sense.com,1,2,true,IN,Pune,product
+alphasense-india,AlphaSense India,https://www.alpha-sense.com,1,2,true,IN,Pune,gcc
 alpian,Alpian,https://www.alpian.com,2,2,true,CH,,startup
 alpine-investors,Alpine Investors,https://alpineinvestors.com,2,2,true,US,,services
 altana,Altana,https://www.altana.com,1,2,true,US,,startup
@@ -339,11 +339,11 @@ astro-mechanica,Astro Mechanica,https://www.astromecha.co,15,2,true,US,,startup
 astronomer,Astronomer,https://www.astronomer.com,1,2,true,US,,startup
 at-bay,At-Bay,https://www.at-bay.com,21,2,true,US,,startup
 atdp-company,ATDP Company,https://lesateliersdupreau.fr,10,2,true,FR,,services
-athletics-baseball-operations,Athletics - Baseball Operations,https://www.mlb.com/athletics,6,2,true,US,,
-athletics-business-operations,Athletics - Business Operations,https://www.mlb.com/athletics,6,2,true,US,,
+athletics-baseball-operations,Athletics - Baseball Operations,https://www.mlb.com/athletics,6,2,true,US,,product
+athletics-business-operations,Athletics - Business Operations,https://www.mlb.com/athletics,6,2,true,US,,product
 atlan,Atlan,https://www.atlan.com,1,2,true,SG,,startup
 atlas,Atlas,https://www.atlas.com,1,2,true,US,,startup
-atlassian,Atlassian,https://www.atlassian.com,1,2,true,AU,,mnc
+atlassian,Atlassian,https://www.atlassian.com,1,2,true,AU,,product
 atom-computing,Atom Computing,http://www.atom-computing.com,1,2,true,US,,startup
 atomic-cartoons,Atomic Cartoons,https://atomiccartoons.com,6,2,true,CA,,product
 atomicwork-inc,Atomicwork Inc,https://www.atomicwork.com,1,2,true,US,,startup
@@ -476,7 +476,7 @@ bluecrest-capital-management,BlueCrest Capital Management,https://www.bluecrestc
 bluedot,Bluedot,https://www.bluedot.io,1,2,true,US,,startup
 blueprint-technologies,Blueprint Technologies,https://www.bpcs.com,1,2,true,US,,services
 blueprint-test-prep-tutors-instructors,Blueprint Test Prep Tutors/Instructors,https://blueprintprep.com,10,2,true,US,,services
-bluevine-india,Bluevine - India,http://blvn.com,2,2,true,IN,Bengaluru,startup
+bluevine-india,Bluevine - India,http://blvn.com,2,2,true,IN,Bengaluru,gcc
 bluevine-us,Bluevine - US,https://www.bluevine.com,2,2,true,US,,startup
 blytheco,Blytheco,https://www.blytheco.com,1,2,true,US,,services
 boeing,Boeing,https://www.boeing.com,15,2,true,US,,mnc
@@ -522,7 +522,7 @@ broadway-ventures,Broadway Ventures,https://www.broadwayventures.com,1,2,true,US
 browser-use,Browser Use,https://browser-use.com,1,2,true,US,,startup
 browserbase,Browserbase,https://www.browserbase.com,1,2,true,US,,startup
 bswift,bswift,https://www.bswift.com,1,2,true,US,,product
-bswift-india,bswift India,https://www.bswift.com,1,2,true,IN,Bengaluru,product
+bswift-india,bswift India,https://www.bswift.com,1,2,true,IN,Bengaluru,gcc
 btg-pactual,BTG Pactual,https://www.carreiras.btgpactual.com,2,2,true,BR,,mnc
 btig,BTIG,https://www.btig.com,2,2,true,US,,mnc
 bubble,Bubble,https://www.bubble.com,1,2,true,US,,startup
@@ -639,7 +639,7 @@ clay,Clay,https://www.clay.com,1,2,true,US,,startup
 clear-corporate,CLEAR - Corporate,https://www.clear.com,1,2,true,US,,product
 clear-street,Clear Street,https://clearstreet.io,2,2,true,US,,startup
 clearscore-technology-limited,ClearScore Technology Limited,https://www.clearscore.com,2,2,true,GB,,startup
-cleo-india,Cleo (India),https://www.cleoindia.com,1,2,true,IN,Bengaluru,product
+cleo-india,Cleo (India),https://www.cleoindia.com,1,2,true,IN,Bengaluru,gcc
 cleo-us,Cleo (US),https://www.cleo.com,1,2,true,US,,product
 cleric,Cleric,https://www.cleric.io,1,2,true,US,,startup
 clerk,Clerk,https://www.clerk.com,1,2,true,US,,startup
@@ -667,7 +667,7 @@ code3,Code3,https://code3.com,6,2,true,US,,services
 coder,Coder,https://www.coder.com,1,2,true,US,,startup
 cofra-holding,COFRA Holding,https://www.cofraholding.com,2,2,true,CH,,mnc
 cognition,Cognition,https://cognition-labs.com,1,2,true,US,,startup
-cognizant,Cognizant,https://www.cognizant.com,1,2,true,US,,mnc
+cognizant,Cognizant,https://www.cognizant.com,1,2,true,US,,services
 cohort,Cohort,https://www.cohort.com,1,2,true,US,,startup
 coindcx,Coindcx,https://coindcx.com,2,2,true,IN,Mumbai,startup
 coinswitch,CoinSwitch,https://coinswitch.co,2,2,true,IN,Bengaluru,startup
@@ -812,7 +812,7 @@ dentsu,dentsu,https://www.dentsu.com,6,2,true,JP,,mnc
 descript,Descript,https://descript.com,6,2,true,US,,startup
 desmos,Desmos,http://desmos.com,10,2,true,US,,product
 destinus,Destinus,https://www.destinus.com,15,2,true,NL,,startup
-detroit-lions,Detroit Lions,https://www.detroitlions.com,6,2,true,US,,services
+detroit-lions,Detroit Lions,https://www.detroitlions.com,6,2,true,US,,product
 deutsche-bank,Deutsche Bank,https://www.db.com,2,2,true,DE,,mnc
 deutsches-feingoldhaus-gmbh,Deutsches Feingoldhaus GmbH,https://deutsches-feingoldhaus.de,2,2,true,DE,,services
 dev-technology,Dev Technology,https://www.devtechnology.com,1,2,true,US,,services
@@ -1002,7 +1002,7 @@ firetiger,Firetiger,https://www.firetiger.com,1,2,true,US,,startup
 fireworks-ai,Fireworks AI,https://fireworks.ai,1,2,true,US,,startup
 first-connect-insurance,First Connect Insurance,https://www.firstconnectinsurance.com,2,2,true,US,,startup
 first-momentum-ventures,First Momentum Ventures,https://firstmomentum.vc,2,2,true,DE,,startup
-fis-amount,FIS® Amount™,https://www.fisglobal.com/products/fis-amount,2,2,true,US,,startup
+fis-amount,FIS® Amount™,https://www.fisglobal.com/products/fis-amount,2,2,true,US,,product
 fiserv,Fiserv,https://www.fiserv.com,2,2,true,US,,mnc
 five-rings-llc-careers,Five Rings LLC - Careers,https://fiverings.com,2,2,true,US,,product
 five-rings-llc-events,Five Rings LLC - Events,https://fiverings.com,2,2,true,US,,product
@@ -1108,7 +1108,7 @@ glance,Glance,https://glance.com,1,2,true,IN,Bengaluru,startup
 glean,Glean,https://www.glean.com,1,2,true,US,,startup
 glia,Glia,https://glia.com,1,2,true,US,,startup
 glimpse,Glimpse,https://www.tryglimpse.com,2,2,true,US,,startup
-globant,Globant,https://www.globant.com,1,2,true,AR,,mnc
+globant,Globant,https://www.globant.com,1,2,true,AR,,services
 glossgenius,GlossGenius,https://www.gem.com,1,2,true,US,,startup
 gocardless,GoCardless,https://gocardless.com,2,2,true,GB,,startup
 gofundme,GoFundMe,https://www.gofundme.com,1,2,true,US,,product
@@ -1328,7 +1328,7 @@ intrinsic,Intrinsic,https://intrinsic.ai,20,2,true,US,,startup
 intro,Intro,https://intro.co,1,2,true,US,,startup
 inuru,Inuru,https://www.inuru.com,1,2,true,DE,,startup
 inversion,Inversion,https://www.inversionspace.com,15,2,true,US,,startup
-investors-community-bank,Investors Community Bank,https://www.investorscommunitybank.com,2,2,true,US,,mnc
+investors-community-bank,Investors Community Bank,https://www.investorscommunitybank.com,2,2,true,US,,product
 invgate,InvGate,https://www.invgate.com,1,2,true,AR,,product
 invisible-technologies,Invisible Technologies,https://www.invisible.co,1,2,true,US,,startup
 inworld-ai,Inworld AI,https://inworld.ai,1,2,true,US,,startup
@@ -1548,7 +1548,7 @@ lumos,Lumos,https://www.lumosfiber.com,7,2,true,US,,services
 lumos-identity,Lumos,https://www.lumos.com,1,2,true,US,,startup
 lunar,Lunar,https://www.lunar.app,2,2,true,DK,,startup
 luno,Luno,https://careers.luno.com,2,2,true,GB,,product
-luxoft,Luxoft,https://www.luxoft.com,1,2,true,CH,,mnc
+luxoft,Luxoft,https://www.luxoft.com,1,2,true,CH,,services
 luxor,Luxor,https://www.luxor.io,2,2,true,US,,startup
 lxt,LXT,https://www.lxt.ai,1,2,true,CA,,services
 lyceum,Lyceum,https://lyceum.technology,1,2,true,DE,,startup
@@ -1793,7 +1793,7 @@ nozomi-networks,Nozomi Networks,https://www.nozominetworks.com,21,2,true,US,,pro
 npr,NPR,https://nationalpublicradio.com,6,2,true,US,,nonprofit
 nscale,nscale,https://www.nscale.com,1,2,true,GB,,startup
 nt-concepts,NT Concepts,https://www.ntconcepts.com,1,2,true,US,,services
-ntt-data-europe-latam-branch-in-usa-inc,"NTT DATA, Europe & LATAM, Branch in USA, Inc.",https://us.nttdata.com,1,2,true,JP,,mnc
+ntt-data-europe-latam-branch-in-usa-inc,"NTT DATA, Europe & LATAM, Branch in USA, Inc.",https://us.nttdata.com,1,2,true,JP,,services
 nubank,Nubank,https://international.nubank.com.br,2,2,true,BR,,product
 numeral,Numeral,https://www.numeral.com,2,2,true,FR,,startup
 numerix,Numerix,https://www.numerix.com,2,2,true,US,,product
@@ -1922,7 +1922,7 @@ payoneer,Payoneer,https://www.payoneer.com,2,2,true,US,,product
 paypal,PayPal,https://www.paypal.com,2,2,true,US,,mnc
 paypay,PayPay,https://paypay.ne.jp,2,2,true,JP,,product
 paypay-card,PayPay Card,https://www.paypay-card.co.jp,2,2,true,JP,,product
-paypay-india,PayPay India,https://paypay.co.in,2,2,true,IN,Gurugram,product
+paypay-india,PayPay India,https://paypay.co.in,2,2,true,IN,Gurugram,gcc
 paystack,Paystack,https://paystack.com,2,2,true,NG,,startup
 paytm,Paytm,https://www.paytm.com,2,2,true,IN,Noida,product
 pdf-net,PDF.net,https://pdf.net,1,2,true,US,,startup
@@ -2027,7 +2027,7 @@ presence,Presence,https://www.presencelearning.com,10,2,true,US,,startup
 prevail,Prevail,https://prevail.ai,1,2,true,US,,startup
 prezzee,Prezzee,https://www.prezzee.com,1,2,true,AU,,startup
 pricefox,Pricefox,https://www.pricefox.gr,2,2,true,GR,,startup
-prime,Prime,https://www.prime.io,1,2,true,,,
+prime,Prime,https://www.prime.io,1,2,true,,,startup
 primeintellect,Primeintellect,https://www.primeintellect.ai,1,2,true,US,,startup
 primer,Primer,https://www.primer.com,10,2,true,US,,startup
 prior-labs,Prior Labs,https://priorlabs.ai,1,2,true,DE,,startup
@@ -2119,12 +2119,12 @@ renault-group,Renault Group,https://www.renaultgroup.com,16,2,true,FR,,mnc
 render,Render,https://www.render.com,1,2,true,US,,startup
 replit,Replit,https://www.replit.com,1,2,true,US,,startup
 replo,Replo,https://www.replo.com,1,2,true,US,,startup
-reply,Reply,https://www.reply.com,1,2,true,IT,,mnc
+reply,Reply,https://www.reply.com,1,2,true,IT,,services
 reprisk,RepRisk,https://www.reprisk.com,1,2,true,CH,,product
 resend,Resend,https://www.resend.com,1,2,true,US,,startup
 rev,Rev,https://www.rev.com,1,2,true,US,,product
 revenuecat,Revenuecat,https://www.revenuecat.com,1,2,true,US,,startup
-revolut,Revolut,https://www.revolut.com,2,2,true,GB,,startup
+revolut,Revolut,https://www.revolut.com,2,2,true,GB,,product
 rewards-network,Rewards Network,https://www.rewardsnetwork.com,6,2,true,US,,product
 rewind,Rewind,https://rewind.com,1,2,true,CA,,product
 rf-smart,RF-SMART,https://info.rfsmart.com,1,2,true,US,,product
@@ -2351,7 +2351,7 @@ space-kinetic,Space Kinetic,https://www.spacekinetic.com,15,2,true,US,,startup
 spacex,SpaceX,https://www.spacex.com,15,2,true,US,,mnc
 spacex-global,SpaceX_Global,https://www.spacex.com,15,2,true,US,,mnc
 spade,Spade,https://spade.com,2,2,true,US,,startup
-spark,Spark,https://www.spark.com,1,2,true,,,
+spark,Spark,https://www.spark.com,1,2,true,,,product
 sparkland,Sparkland,https://www.sparkland.io,2,2,true,AE,,startup
 sparksoft-corporation,Sparksoft Corporation,https://sparksoftcorp.com,1,2,true,US,,services
 sparrow,Sparrow,https://www.sparrow.com,1,2,true,US,,startup
@@ -2464,7 +2464,7 @@ swisscom,Swisscom,https://www.swisscom.ch,7,2,true,CH,,mnc
 swissdrones,SwissDrones,https://swissdrones.com,15,2,true,CH,,startup
 swissquote-bank,Swissquote Bank,https://www.swissquote.com,2,2,true,CH,,mnc
 swoboda,Swoboda,https://www.swoboda.com,16,2,true,DE,,mnc
-sword-group,Sword Group,https://www.sword-group.com,1,2,true,LU,,mnc
+sword-group,Sword Group,https://www.sword-group.com,1,2,true,LU,,services
 sylogist,Sylogist,https://www.sylogist.com,1,2,true,CA,,product
 symbolica-ai,Symbolica AI,https://www.symbolica.ai,1,2,true,US,,startup
 symetra,Symetra,https://www.symetra.com,2,2,true,US,,mnc
@@ -2503,7 +2503,7 @@ taxbit,Taxbit,https://www.taxbit.com,1,2,true,US,,startup
 teachable,Teachable,https://teachable.com,10,2,true,US,,product
 tealium,Tealium,https://tealium.com,1,2,true,US,,product
 tech-holding,Tech Holding,https://www.techholding.com,1,2,true,US,,services
-tech-mahindra,Tech Mahindra,https://www.techmahindra.com,1,2,true,IN,Pune,mnc
+tech-mahindra,Tech Mahindra,https://www.techmahindra.com,1,2,true,IN,Pune,services
 techland,Techland,https://techland.net,6,2,true,PL,,product
 technology,Technology,https://tellent.com,1,2,true,NL,,product
 techtorch,Techtorch,https://www.techtorch.io,1,2,true,US,,startup
@@ -2558,7 +2558,7 @@ thinkific,Thinkific,https://www.thinkific.com,1,2,true,CA,,product
 thinking-machines-lab,Thinking Machines Lab,https://thinkingmachines.ai,1,2,true,US,,startup
 thndr,Thndr,https://www.thndr.io,1,2,true,EG,,startup
 thought-machine,Thought Machine,https://www.thoughtmachine.net,1,2,true,GB,,startup
-thoughtworks-new,ThoughtWorks_new,https://www.abc.com,1,2,true,US,,mnc
+thoughtworks-new,ThoughtWorks_new,https://www.abc.com,1,2,true,US,,services
 threataware,Threataware,https://www.threataware.com,21,2,true,GB,,startup
 threatlocker,ThreatLocker,https://www.threatlocker.com,21,2,true,US,,startup
 thrivecart,ThriveCart,https://www.thrivecart.com,1,2,true,US,,startup
