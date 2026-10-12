@@ -38,18 +38,67 @@ def _make_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-# Default UA mimics a recent Chrome on Windows. The previous value
-# ``jobseek-crawler/0.1`` was a unique fingerprint that WAF vendors
-# trivially match — it produced the anti-bot /Error and /404/ redirects
-# documented in issue #2193 on apply.deloitte.com, digitalcareers.infosys,
-# careers.loreal.com, careers.tsmc.com, careers.bain.com, and
-# recruitingapp-1619.umantis.com. Individual monitors/scrapers that need a
+# Honest UA by default (DECISIONS D14, switched 2026-10-12). Upstream used a
+# Chrome UA because the old ``jobseek-crawler/0.1`` value was matched by WAF
+# vendors (issue #2193). An A/B on 200 boards showed the honest UA loses only
+# 0.5% of boards, so we identify ourselves and keep Chrome only for the known
+# WAF hosts in ``CHROME_UA_HOSTS``. Individual monitors/scrapers that need a
 # different UA still override via ``headers=`` on the request.
-DEFAULT_USER_AGENT = (
+HONEST_USER_AGENT = "myjobs-bot/0.1 (+https://github.com/brohan2001/myjobs)"
+
+CHROME_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
+
+DEFAULT_USER_AGENT = HONEST_USER_AGENT
+
+# Hosts whose WAF blocks non-browser UAs (issue #2193 plus the D14 A/B).
+# A leading dot matches the domain and every subdomain.
+CHROME_UA_HOSTS: frozenset[str] = frozenset(
+    {
+        "apply.deloitte.com",
+        "digitalcareers.infosys.com",
+        "careers.loreal.com",
+        "careers.tsmc.com",
+        "careers.bain.com",
+        ".umantis.com",
+        ".talentclue.com",
+    }
+)
+
+
+def wants_chrome_ua(host: str) -> bool:
+    """True if *host* is on the Chrome-UA allowlist."""
+    host = host.lower().rstrip(".")
+    for entry in CHROME_UA_HOSTS:
+        if entry.startswith("."):
+            if host == entry[1:] or host.endswith(entry):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+class ChromeUAForWAFHostsTransport(httpx.AsyncBaseTransport):
+    """Swap the honest default UA for Chrome on allowlisted hosts.
+
+    Runs per request and per redirect hop. Only the default honest UA is
+    replaced, so an explicit per-request ``User-Agent`` always wins.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.headers.get("User-Agent") == HONEST_USER_AGENT and wants_chrome_ua(request.url.host):
+            request.headers["User-Agent"] = CHROME_USER_AGENT
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
 
 # Default Accept matches a real Chrome HTML fetch. httpx's own default is
 # ``*/*``, which is a bot-fingerprint signal — ``www.uber.com`` returns
@@ -120,7 +169,7 @@ def _build_async_client(kwargs: dict[str, Any], **extra: Any) -> httpx.AsyncClie
         # verify/proxy kwargs so AsyncClient doesn't complain about
         # them being ignored when a transport is provided.
         kw.pop("verify", None)
-    kw["transport"] = SSRFGuardedTransport(inner)
+    kw["transport"] = SSRFGuardedTransport(ChromeUAForWAFHostsTransport(inner))
     return httpx.AsyncClient(**kw)
 
 
