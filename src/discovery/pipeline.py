@@ -304,10 +304,12 @@ async def run(
     sem = asyncio.Semaphore(concurrency)
     robots_cache: dict[str, str | None] = {}
 
-    # Each company probes many ATS endpoints in parallel; size the pool for it.
-    async with create_http_client(max_connections=max(50, concurrency * 12)) as client:
-        async def _one(c: Candidate) -> Outcome:
-            async with sem:
+    # One client per company: each probes many ATS endpoints in parallel, and connections abandoned by a
+    # timed-out or cancelled probe would otherwise pile up in a shared pool until every later company hit
+    # PoolTimeout (99 of 177 in the 2026-10-12 rediscovery run). Closing the client releases them.
+    async def _one(c: Candidate) -> Outcome:
+        async with sem:
+            async with create_http_client(max_connections=50) as client:
                 try:
                     o = await asyncio.wait_for(
                         evaluate(c, client, min_jobs=min_jobs, robots_cache=robots_cache),
@@ -317,15 +319,15 @@ async def run(
                     o = Outcome(c, "review", f"timed out after {per_company_timeout:.0f}s")
                 except Exception as exc:  # noqa: BLE001 - one bad site must not stop the batch
                     o = Outcome(c, "review", f"evaluation error: {type(exc).__name__}: {str(exc)[:120]}")
-                if o.status == "accepted" and o.board_url.rstrip("/") in board_urls:
-                    o.status, o.reason = "duplicate", "board already in registry"
-                log.info("discovery.outcome", extra={"company": c.name, "status": o.status, "reason": o.reason,
-                                                      "monitor_type": o.monitor_type, "jobs": o.jobs_found})
-                if on_outcome is not None:
-                    on_outcome(o)
-                return o
+            if o.status == "accepted" and o.board_url.rstrip("/") in board_urls:
+                o.status, o.reason = "duplicate", "board already in registry"
+            log.info("discovery.outcome", extra={"company": c.name, "status": o.status, "reason": o.reason,
+                                                  "monitor_type": o.monitor_type, "jobs": o.jobs_found})
+            if on_outcome is not None:
+                on_outcome(o)
+            return o
 
-        outcomes.extend(await asyncio.gather(*[_one(c) for c in todo]))
+    outcomes.extend(await asyncio.gather(*[_one(c) for c in todo]))
     return outcomes
 
 
