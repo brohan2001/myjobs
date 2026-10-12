@@ -1,7 +1,8 @@
 # Handoff: myjobs revamp (2026-10-12)
 
-Branch: `revamp/phase-1-feed` (pushed; `main` is untouched apart from the Phase 0 history purge).
-Read `CLAUDE.md`, `docs/REVAMP_PLAN.md` (status table), `docs/DECISIONS.md` (D1–D23) and `docs/REPO_MAP.md` first.
+Branch: `revamp/phase-1-feed`. **The 2026-10-12 afternoon commits are local only; run `git push` to publish them.** `main` is
+untouched apart from the Phase 0 history purge.
+Read `CLAUDE.md`, `docs/REVAMP_PLAN.md` (status table), `docs/DECISIONS.md` (D1–D24) and `docs/REPO_MAP.md` first.
 
 ## What exists now
 **Product:** a public, read-only feed of the latest jobs from ~3,200 company career boards, worldwide, with India as the
@@ -15,7 +16,8 @@ default lens. No user accounts yet (D10).
   INR display, company-run collapsing, detail and coverage pages.
 - **Discovery:** `scripts/discover_companies.py` (candidate → board → registry or review queue). Hardened on 2026-10-12:
   browser closes are time-bounded, a site's exception no longer aborts the batch, the watchdog exits for `--resume` if a
-  cancel hangs, and `kill -USR1 <pid>` dumps asyncio task stacks.
+  cancel hangs, `kill -USR1 <pid>` dumps asyncio task stacks, and each company gets its own HTTP client (a shared pool
+  leaked connections and made 99 of 177 companies fail with PoolTimeout).
 - **Triage:** `python scripts/triage_review.py <dir> [--open]` walks the review queue (accept / reject / retry with URL /
   skip), resumable via `<dir>/triage.jsonl`. Then `--apply-accepted` the result and feed `retry.csv` back to discovery.
 - **Health:** `myjobs health` exits 1 on alerts (D23). On 2026-10-12 it flagged 319 boards marked gone in 24h (the May→October
@@ -23,29 +25,56 @@ default lens. No user accounts yet (D10).
 - **User-Agent (D14, switched 2026-10-12):** honest `myjobs-bot/0.1` by default. Chrome only for `CHROME_UA_HOSTS` in
   `src/shared/http.py` and for Playwright.
 - **Hosting (D24):** must cost ₹0. Plan: one Oracle Always Free VM (`docs/INFRA_PROPOSAL.md` §6).
-- **Registry:** 2,914 companies; 77 Indian; 32 verified Indian boards added across discovery passes 1–2.
-- **Tests:** about 457 Python tests (no network) and 45 vitest tests.
+- **Registry:** 2,914 companies (77 Indian) and 2,845 active boards; 32 verified Indian boards added across discovery passes 1–2.
+  `company_type` audited by agy (22 fixes, `docs/research/company_type_audit.md`); it was conservative, so coarse tags remain.
+- **Tests:** 469 Python tests (no network) and 45 vitest tests, all green.
 
 ## Running locally
 `docker compose up -d` (Redis host port 6380 in `.env`), then `alembic upgrade head` (now at 0010), then `myjobs worker`.
 API: `myjobs serve --port 8090`. Web: `cd web && npm ci && API_ORIGIN=http://127.0.0.1:8090 npm run dev`.
 Logs and PIDs are in `~/.myjobs-run/`. Stop processes by PID only (`pkill -f "myjobs worker"` also matches agy prompts).
 
-## Open items (need the user)
-1. **Product test:** the user is testing with `docs/TEST_GUIDE.md` (keep / cut / change per feature, plus suspected bloat).
-   Cutting and shipping follow from that.
-2. **Review queue (deferred by the user):** 294 pass-2 rows (`data/candidates/india-pass2/`) plus pass 1's queue need a human pass with the triage tool.
-   Most are company-wide sitemaps that aren't job boards.
-3. **Phase 4 deploy:** approve §6 of `docs/INFRA_PROPOSAL.md` (₹0, Oracle Always Free). Needs an Oracle account. The deploy
-   scripts (compose services, Caddyfile, backup cron) aren't written yet.
-4. **Later phase** (accounts, profiles, per-user scoring, resume tailoring) stays deferred by D10 until the user says go.
-5. **GitHub cache:** the scrubbed fixture's old commits may still be reachable by SHA on GitHub until GitHub support purges
+## Session log, 2026-10-12 afternoon (commits ea81738..d195e93)
+1. Honest User-Agent with a Chrome allowlist (D14): `src/shared/http.py`, `tests/test_http_ua.py`.
+2. Free hosting plan (D24): `docs/INFRA_PROPOSAL.md` §6.
+3. `docs/TEST_GUIDE.md`: a keep / cut / change checklist covering 37 features, plus 6 suspected-bloat items.
+4. Discovery fix: one HTTP client per company (`src/discovery/pipeline.py`).
+5. Rediscovery pass 2: +19 boards (389 jobs) in `data/boards.csv`. Inputs and queues in `data/candidates/rediscover-2*`.
+6. company_type audit (agy, Flash): 22 changes merged.
+7. Worker restarted on the new code (PID in `~/.myjobs-run/worker.pid`). API on :8090 and web on :3000 are still running.
+
+## Next actions, in order
+1. **User tests the product** with `docs/TEST_GUIDE.md` and fills in the Verdict columns. Wait for that before cutting
+   anything.
+2. **Apply the verdicts:** delete the "cut" items, starting with the biggest suspected bloat. Most of `src/workspace/`
+   (about 17k lines) is fork leftovers; only `career_discover.py` and `_compat.py` are imported from outside it, so check
+   their transitive imports first. Keep the characterization tests green.
+3. **Ship:** open a PR from `revamp/phase-1-feed` to `main`. Then write the ₹0 deploy kit from INFRA_PROPOSAL §6:
+   - production compose services for the worker, API, `web` (`next start`) and Caddy;
+   - a Caddyfile (`/` to Next.js, `/api` to FastAPI);
+   - a nightly `pg_dump` to Oracle Object Storage;
+   - a Healthchecks.io ping on `myjobs health`.
+   The user then creates the Oracle account (a card for verification only; never upgrade to Pay-As-You-Go) and a DuckDNS
+   name.
+4. **Check before shipping:** `clari` was rediscovered onto Salesloft's Greenhouse board (`token: salesloft`). Confirm the
+   Clari–Salesloft merger, or remove that row from `data/boards.csv`.
+
+## Open items
+1. **Review queues (deferred by the user):**
+   - `data/candidates/india-pass2/` (294 rows) and pass 1's queue;
+   - `data/candidates/rediscover-2*/review_queue.csv` (262 rows: mostly sitemap and DOM hits, with 403s from WAFs).
+   Use `scripts/triage_review.py`.
+2. **Later phase** (accounts, profiles, per-user scoring, resume tailoring) stays deferred by D10 until the user says go.
+3. **GitHub cache:** the scrubbed fixture's old commits may still be reachable by SHA on GitHub until GitHub support purges
    them (backup branches `backup/phase-1-feed-pre-scrub*` are local only and still contain it).
-6. Data quality: some registry `company_type` tags are coarse (e.g. Revolut tagged `startup`).
+4. **Coarse `company_type` tags remain.** Sports teams were tagged `product` because nothing in the closed list fits them.
+5. `myjobs health` shows the "319 gone in 24h" alert until those boards are more than 24h past their gone time. It clears
+   on its own.
 
 ## Working agreement (from the user)
 - About 50% of the work goes to agy via `~/.myjobs-run/run_agy.sh <slug> <branch> <model> <brief>` (Gemini 3.8 Flash first).
   Briefs live in `delegation/`. Verify with tests, `git diff --stat` and PII scans; then cherry-pick onto the phase branch.
 - agy tends to log structlog-style (`log.info("x", k=v)`); `get_logger` is stdlib, so use `extra={...}`. Check this when merging.
-- This session: 3 agy runs (Flash): notice-period extractor, UA A/B script, triage tool.
+- agy runs so far (Flash): notice-period extractor, UA A/B script, triage tool, company_type audit (p2-10).
+- The user won't pay for hosting (D24). Free tiers only.
 - Hard rules: no personal data in tracked files; never fabricate resume content; `revamp/*` branches only; respect robots.txt and ToS.
