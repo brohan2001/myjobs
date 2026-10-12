@@ -1,0 +1,8 @@
+status,reason,board_url,monitor_type,monitor_config,jobs_found,scraper_type,name,website,careers_url,hq_city,category,source,country,slug
+accepted,verified,https://altscore.recruitee.com,recruitee,"{""slug"": ""altscore"", ""api_base"": ""https://altscore.recruitee.com"", ""jobs"": 9}",9,,AltScore,https://www.altscore.ai,,,,rediscover-gone-board,MX,altscore
+accepted,verified,https://applike-group.com/jobs/,ashby,"{""token"": ""applike-group"", ""jobs"": 9}",9,,Applike Group GmbH,http://applike-group.com,,,,rediscover-gone-board,DE,applike-group-gmbh
+accepted,verified,https://www.salesloft.com/platform/deal-management-software,greenhouse,"{""token"": ""salesloft"", ""jobs"": 26}",26,,Clari,http://www.clari.com,,,,rediscover-gone-board,US,clari
+accepted,verified,https://www.cyngn.com/company/careers,rippling,"{""slug"": ""cyngn"", ""jobs"": 15}",15,,Cyngn,https://www.cyngn.com,,,,rediscover-gone-board,US,cyngn
+accepted,verified,https://careers.frontiersin.org/,pinpoint,"{""slug"": ""frontiersin"", ""jobs"": 4}",4,,Frontiers Media,https://www.frontiersin.org,,,,rediscover-gone-board,CH,frontiers
+accepted,verified,https://gr8.tech/career/,ashby,"{""token"": ""GR8-TECH"", ""jobs"": 21}",21,,GR8 Tech,https://gr8.tech,,,,rediscover-gone-board,CY,gr8-tech
+accepted,verified,https://jobs.ashbyhq.com/hoyoverse,ashby,"{""token"": ""hoyoverse"", ""jobs"": 15}",15,,HoYoverse,https://www.hoyoverse.com,,,,rediscover-gone-board,SG,hoyoverse

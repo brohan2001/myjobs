@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-10-12T06:58:24.634296+00:00",
+  "candidates": 106,
+  "status": {
+    "review": 93,
+    "accepted": 12,
+    "rejected": 1
+  },
+  "accepted_by_ats": {
+    "ashby": 8,
+    "pinpoint": 2,
+    "greenhouse": 2
+  },
+  "accepted_jobs": 290,
+  "review_reasons": {
+    "discovery error": 19,
+    "no careers board detected": 21,
+    "monitor error": 3,
+    "only N jobs parsed": 10,
+    "generic monitor (sitemap) found N URLs; needs a human check": 26,
+    "generic monitor (dom) found N URLs; needs a human check": 10,
+    "timed out after Ns": 4
+  }
+}
