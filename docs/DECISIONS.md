@@ -121,3 +121,10 @@ the silent majority.
 `myjobs health` (`src/health.py`) checks feed staleness (>3h), worker lag (>5% of boards 2h overdue), mass board loss
 (>20 gone/day), and per-ATS failure (>25%) or emptiness (>30% with no jobs for 3 days, ATS types with ≥5 boards). It
 exits 1 on any alert, so cron/systemd can notify. No webhook until deployment picks a channel (Phase 4).
+
+## D24: Hosting costs ₹0 (User, 2026-10-12)
+The user won't pay for hosting. The plan is one Oracle Cloud Always Free A1 VM for everything: Postgres, Redis, worker, API, the
+Next.js web app and Caddy. A free DuckDNS hostname, Let's Encrypt, backups in Oracle Object Storage and the Healthchecks.io free
+tier complete the setup (`docs/INFRA_PROPOSAL.md` §6). Free managed Postgres tiers can't hold the 2.8 GB database, and running
+the web app on the same VM avoids the Cloudflare/OpenNext adapter (Vercel's free plan bars commercial use). Never upgrade the
+Oracle account to Pay-As-You-Go.
