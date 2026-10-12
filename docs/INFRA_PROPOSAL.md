@@ -1,7 +1,8 @@
 # Infrastructure Proposal: Production Deployment for a Solo Developer
 
-*Status: Proposal only. Target: Solo developer in India on a lean budget.*  
-*Pricing notice: All prices are estimates as of knowledge cutoff (mid-2024 to early 2026); verify before buying. FX rates: $1 ≈ ₹83–₹86, €1 ≈ ₹90–₹94. Local taxes (e.g., 18% Indian GST) may apply.*
+*Status: Proposal only. **Hard constraint (D24): hosting costs ₹0.** Section 6 is the plan. Sections 1–5 are the original
+survey and keep paid options for reference only.*
+*Pricing notice: free-tier limits are as of the drafter's knowledge cutoff; check them when signing up.*
 
 ---
 
@@ -168,65 +169,62 @@ A Python wrapper handles all model invocations:
 
 ---
 
-## 6. Recommended Stack & Deployment Plan
+## 6. Recommended Stack & Deployment Plan (₹0, D24)
 
-### 6.1 The Concrete Recommended Stack
+### 6.1 Why one free VM
+Measured on 2026-10-12: Postgres is **2.8 GB** (~400k active postings) and Redis about 90 MB. Free managed Postgres tiers
+(Neon 0.5 GB, Supabase 500 MB) are too small, and Upstash's free command quota is too low for the worker. The only free option
+that fits everything is a free VM.
 
-- **Compute & Persistence (Single VPS):** **Hetzner Cloud CPX21** (3 vCPU AMD, 4 GB RAM, 80 GB NVMe, €7.50/mo ~₹750/mo in Germany/Finland) or **Oracle Cloud Always Free Ampere A1 ARM** (4 OCPU, 24 GB RAM, ₹0/mo in Mumbai/Hyderabad).
-  - **Docker Compose Services on VPS:**
-    - Caddy web server (automatic HTTPS, Brotli, reverse proxy).
-    - FastAPI feed API (`myjobs serve`, port 8080).
-    - Python crawler daemon (`myjobs worker`, ~40 async workers).
-    - Postgres 16 (local NVMe, `pg_trgm`, 2–5 GB active data).
-    - Redis 7 (Alpine container, queues & token bucket rate limiting, <100 MB RAM).
-- **Frontend:** **Cloudflare Pages** (Next.js in `web/`, ₹0/mo, unlimited bandwidth, edge caching across 20+ Indian PoPs).
-- **Storage & Backups:** **Cloudflare R2** (encrypted resumes + encrypted DB dumps, 10 GB free tier: ₹0/mo).
-- **Observability:** **Healthchecks.io** (worker heartbeat: ₹0/mo) + **Better Stack** (API uptime: ₹0/mo).
-- **Auth (Phase 4):** **Auth.js (NextAuth v5)** with Postgres adapter (₹0/mo).
+### 6.2 The stack
+- **One Oracle Cloud Always Free Ampere A1 VM** (ARM, up to 4 OCPU / 24 GB RAM, up to 200 GB block storage), in the Mumbai or
+  Hyderabad region. Docker Compose runs:
+  - Postgres 16 and Redis 7, as in `docker-compose.yml` today.
+  - `myjobs worker` (with the browser; Playwright Chromium has linux-arm64 builds).
+  - `myjobs serve` (API).
+  - `web/` with `next start` (Node), so no Cloudflare or Vercel adapter is needed.
+  - Caddy in front, with automatic HTTPS: `/` goes to Next.js and `/api` to FastAPI.
+- **Hostname:** a free DuckDNS subdomain (e.g. `myjobs.duckdns.org`) pointed at the VM's public IP. Caddy gets the Let's Encrypt
+  certificate. A paid domain can come later without any other change.
+- **Backups:** a nightly `pg_dump | gzip` to Oracle Object Storage (Always Free includes 20 GB), keeping the last 7.
+- **Monitoring:** Healthchecks.io free tier, pinged by a cron job that runs `myjobs health`. It alerts by email when the ping
+  stops or the health check fails.
 
-### 6.2 Monthly Cost Estimate (₹ / month)
+| Component | Where | Cost |
+|---|---|---|
+| Postgres, Redis, worker, API, web, Caddy | Oracle A1 VM | ₹0 |
+| Hostname and TLS | DuckDNS + Let's Encrypt | ₹0 |
+| Backups | Oracle Object Storage | ₹0 |
+| Monitoring | Healthchecks.io free | ₹0 |
+| **Total** | | **₹0 / month** |
 
-*Note: All prices as of knowledge cutoff; verify before buying. Includes currency conversion ($1 ≈ ₹85, €1 ≈ ₹92) and 18% GST.*
+### 6.3 Caveats
+- **Sign-up needs a card** to verify identity. Always Free resources are not charged. Do **not** upgrade to Pay-As-You-Go:
+  that's where charges can start.
+- **"Out of capacity"** for A1 in Indian regions is common. Retry at a different time, or try the other Indian region.
+- **Idle reclamation:** Oracle may reclaim Always Free VMs that look idle for a week. A continuous crawler is not idle, but keep
+  the off-VM backups anyway.
+- **Single box:** if the VM dies, restore it from the latest dump (about 30 min of work). That's acceptable for a free public feed.
 
-| Component | Low-End (Free Tiers Maximized) | Expected / Practical Baseline | High-End (Buffer / Growth) |
-|---|---|---|---|
-| **Compute / VPS** | **₹0** (Oracle Cloud Always Free ARM) | **₹750** (Hetzner CPX21: 3 vCPU / 4 GB) | **₹1,150** (Hetzner CX32: 4 vCPU / 8 GB) |
-| **Postgres 16** | **₹0** (Self-hosted on VPS) | **₹0** (Self-hosted on VPS) | **₹0** (Self-hosted on VPS) |
-| **Redis 7** | **₹0** (Self-hosted on VPS) | **₹0** (Self-hosted on VPS) | **₹0** (Self-hosted on VPS) |
-| **Frontend** | **₹0** (Cloudflare Pages) | **₹0** (Cloudflare Pages) | **₹0** (Cloudflare Pages) |
-| **Object Storage (R2)** | **₹0** (<10 GB free tier) | **₹0** (<10 GB free tier) | **₹50** (Minor overage ~15 GB) |
-| **Observability & Alerts** | **₹0** (Healthchecks.io + Better Stack) | **₹0** (Free tiers) | **₹0** (Free tiers) |
-| **Domain Name** | **₹80** (~₹950/year prorated) | **₹80** (~₹950/year prorated) | **₹120** (.com / .fyi premium) |
-| **Total Monthly Cost** | **~₹80 / month** | **~₹830 / month** | **~₹1,320 / month** |
+### 6.4 Fallbacks (still ₹0)
+1. **Run it on your own machine** and expose it with a free Cloudflare Tunnel. A stable hostname needs a domain on Cloudflare;
+   without one, a Quick Tunnel's `trycloudflare.com` URL changes on every restart. Good for showing people, not for uptime.
+2. **Google Cloud e2-micro (always free, US regions only):** 1 GB RAM is too small for Postgres plus the browser worker. Only
+   viable with `--no-browser` and a trimmed dataset.
 
----
+### 6.5 First steps to deploy
+1. Create the Oracle account; launch an A1 VM (Ubuntu 24.04 arm64) with a 100 GB boot volume. Open ports 80 and 443 in the
+   security list **and** in the VM's iptables (Oracle images block them by default). SSH key login only.
+2. Install Docker; clone the repo to `/opt/myjobs`; create `.env` (`chmod 600`) with production passwords.
+3. Run `docker compose up -d`, `alembic upgrade head`, `scripts/load_geonames.py` and `scripts/populate_taxonomy.py`, then
+   `myjobs sync`.
+4. Add the worker, API, web and Caddy services, all with `restart: unless-stopped`; point DuckDNS at the VM.
+5. Set up the backup and Healthchecks cron jobs; open the site and check that `/api/v1/stats` shows a recent "last updated".
 
-### 6.3 First 5 Steps to Deploy
+Before step 1, the repo needs production compose services for the worker, API, web and Caddy, plus a Caddyfile and a backup
+script. Not written yet: Phase 4 stays proposal-only until the user approves this section.
 
-1. **Provision VPS & Harden Security:**
-   - Deploy a Hetzner Cloud CPX21 instance (Ubuntu 24.04 LTS) or an Oracle Cloud Always Free Ampere A1 VM (Mumbai/Hyderabad).
-   - Configure SSH key authentication, disable root password login, and enable UFW allowing only ports `22` (SSH), `80` (HTTP), and `443` (HTTPS).
-2. **Install Docker Engine & Configure Environment:**
-   - Install Docker Engine and the Docker Compose plugin.
-   - Clone the repository to `/opt/myjobs`.
-   - Copy `.env.example` to `/opt/myjobs/.env` (`chmod 600`), configuring production database credentials, secret keys, and Redis settings.
-3. **Initialize Database & Seed Reference Data:**
-   - Launch persistence containers: `docker compose up -d postgres redis`.
-   - Apply schema migrations: `docker compose run --rm crawler alembic upgrade head`.
-   - Seed GeoNames and taxonomy reference tables:
-     ```bash
-     docker compose run --rm crawler python scripts/load_geonames.py
-     docker compose run --rm crawler python scripts/populate_taxonomy.py
-     ```
-4. **Deploy Caddy & Start Backend Daemons:**
-   - Create `/etc/caddy/Caddyfile` mapping `api.myjobs.fyi` to reverse-proxy `127.0.0.1:8080` with automatic Let's Encrypt certificates.
-   - Start FastAPI (`myjobs serve`) and the crawler worker (`myjobs worker`) using Docker Compose with `restart: unless-stopped`.
-5. **Deploy Frontend & Verify Freshness:**
-   - Connect the repository's `web/` directory to Cloudflare Pages.
-   - Set environment variable `NEXT_PUBLIC_API_URL=https://api.myjobs.fyi`.
-   - Point DNS to Cloudflare, open the site, and verify that `/api/v1/stats` returns HTTP 200 with a working last-updated timestamp.
-
-## Reviewer notes (orchestrator)
+## Reviewer notes (orchestrator, on the original paid draft)
 - **RAM:** 4 GB (CPX21) is tight once Playwright boards run alongside Postgres and 40 workers. Either run the browser
   worker on a schedule (e.g. every 6 h) instead of continuously, or start on the 8 GB tier or the Oracle free ARM box
   (24 GB, ARM; Playwright Chromium does support linux-arm64).
