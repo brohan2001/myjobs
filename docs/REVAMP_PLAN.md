@@ -18,7 +18,7 @@ Every phase runs on its own `revamp/<phase>` branch and ends with green tests an
 | 0: Audit, privacy, plan | Done | Approved. PII purged from history (again on 2026-10-12 for a fixture on `revamp/phase-1-feed`) |
 | 1: Public latest-jobs feed (revised, D10) | Done | Continuous worker, GeoNames, public API, coverage endpoint, robots.txt, Workday and WIP fixes |
 | 2A: Remove US assumptions, India model | Done | Visa/H1B deleted, Indian aliases, INR/LPA salary, company-type taxonomy + filter (D21), experience filter, notice-period extraction + filter (D22) |
-| 2B: Scraping and India expansion | Done, apart from human triage | Keka/greytHR/Zoho adapters, discovery passes 1–2 (32 Indian boards added), review-queue triage tool (`scripts/triage_review.py`, 294 rows waiting), `myjobs health` alerts (D23), UA A/B run (D14: switch awaits the user) |
+| 2B: Scraping and India expansion | Done, apart from human triage | Keka/greytHR/Zoho adapters, discovery passes 1–2 (32 Indian boards added), review-queue triage tool (`scripts/triage_review.py`, 294 rows waiting), `myjobs health` alerts (D23), UA switched to honest + Chrome allowlist (D14), rediscovery pass 2 (+19 boards) |
 | 3: UI | Built (direction C, D15) | Feed with sentence filters (place, work mode, company type, experience, notice period), detail and coverage pages |
 | 4: Infra proposal | Revised for ₹0 (D24) | docs/INFRA_PROPOSAL.md §6: one Oracle Always Free VM. Deploy scripts await the user's go |
 | 5: JSeek integration | Design draft done | docs/JSEEK_INTEGRATION.md |
