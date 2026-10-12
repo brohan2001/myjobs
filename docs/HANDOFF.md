@@ -18,8 +18,11 @@ default lens. No user accounts yet (D10).
   cancel hangs, and `kill -USR1 <pid>` dumps asyncio task stacks.
 - **Triage:** `python scripts/triage_review.py <dir> [--open]` walks the review queue (accept / reject / retry with URL /
   skip), resumable via `<dir>/triage.jsonl`. Then `--apply-accepted` the result and feed `retry.csv` back to discovery.
-- **Health:** `myjobs health` exits 1 on alerts (D23). Currently it flags 315 boards marked gone in 24h. That's the May→October
-  ATS churn, partly recovered with `--rediscover`.
+- **Health:** `myjobs health` exits 1 on alerts (D23). On 2026-10-12 it flagged 319 boards marked gone in 24h (the May→October
+  ATS churn). Rediscovery pass 2 (`data/candidates/rediscover-2*`) re-found 19 boards; 262 rows wait in the review queues.
+- **User-Agent (D14, switched 2026-10-12):** honest `myjobs-bot/0.1` by default. Chrome only for `CHROME_UA_HOSTS` in
+  `src/shared/http.py` and for Playwright.
+- **Hosting (D24):** must cost ₹0. Plan: one Oracle Always Free VM (`docs/INFRA_PROPOSAL.md` §6).
 - **Registry:** 2,914 companies; 77 Indian; 32 verified Indian boards added across discovery passes 1–2.
 - **Tests:** about 457 Python tests (no network) and 45 vitest tests.
 
@@ -29,12 +32,12 @@ API: `myjobs serve --port 8090`. Web: `cd web && npm ci && API_ORIGIN=http://127
 Logs and PIDs are in `~/.myjobs-run/`. Stop processes by PID only (`pkill -f "myjobs worker"` also matches agy prompts).
 
 ## Open items (need the user)
-1. **User-Agent switch (D14):** the A/B test shows the honest UA costs 0.5% of boards. Recommendation: honest UA by default,
-   with a Chrome-UA allowlist for the known WAF hosts (Infosys, Deloitte, L'Oréal, Bain, umantis, talentclue).
-2. **Review queue:** 294 pass-2 rows (`data/candidates/india-pass2/`) plus pass 1's queue need a human pass with the triage tool.
+1. **Product test:** the user is testing with `docs/TEST_GUIDE.md` (keep / cut / change per feature, plus suspected bloat).
+   Cutting and shipping follow from that.
+2. **Review queue (deferred by the user):** 294 pass-2 rows (`data/candidates/india-pass2/`) plus pass 1's queue need a human pass with the triage tool.
    Most are company-wide sitemaps that aren't job boards.
-3. **Phase 4 deploy:** approve `docs/INFRA_PROPOSAL.md` (recommended: one Hetzner VPS for Postgres, Redis, worker and API, plus
-   Cloudflare Pages or Vercel for `web/`). Needs accounts and payment.
+3. **Phase 4 deploy:** approve §6 of `docs/INFRA_PROPOSAL.md` (₹0, Oracle Always Free). Needs an Oracle account. The deploy
+   scripts (compose services, Caddyfile, backup cron) aren't written yet.
 4. **Later phase** (accounts, profiles, per-user scoring, resume tailoring) stays deferred by D10 until the user says go.
 5. **GitHub cache:** the scrubbed fixture's old commits may still be reachable by SHA on GitHub until GitHub support purges
    them (backup branches `backup/phase-1-feed-pre-scrub*` are local only and still contain it).
