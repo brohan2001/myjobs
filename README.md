@@ -35,7 +35,14 @@ python scripts/populate_taxonomy.py
 
 ### Running services
 
-Start the continuous crawl worker:
+One command starts Postgres and Redis, applies migrations, then runs the worker, the API (port 8090) and the web feed
+(port 3000) in one terminal and opens the feed. Ctrl-C stops them; `--no-worker` skips crawling.
+
+```bash
+./scripts/dev.sh
+```
+
+Or start each service by hand. The continuous crawl worker:
 
 ```bash
 myjobs worker
