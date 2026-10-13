@@ -27,6 +27,7 @@ alembic upgrade head                       # migrations in src/migrations/versio
 python scripts/load_geonames.py            # location taxonomy (once; idempotent)
 python scripts/populate_taxonomy.py        # seniority/occupation taxonomy (once)
 
+./scripts/dev.sh          # one command: DBs + migrations + worker + API :8090 + web :3000 (--no-worker, --no-browser)
 myjobs worker             # crawl continuously (syncs CSV config first); Ctrl-C to stop
 myjobs worker --no-browser
 myjobs crawl              # one pass: drain ready queues, then exit
