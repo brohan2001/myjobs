@@ -98,3 +98,16 @@ def test_from_rows_handles_null_name_and_population():
     assert idx.names[1] == ""
     assert idx.population[1] == 0
     assert 1 not in idx.iso2
+
+
+def test_search_matches_aliases():
+    rows = [
+        {"id": 1, "parent_id": None, "type": "country", "code": "IN", "population": 1_400_000_000, "name": "India"},
+        {"id": 2, "parent_id": 1, "type": "city", "code": None, "population": 8_400_000, "name": "Bengaluru"},
+        {"id": 3, "parent_id": None, "type": "country", "code": "BD", "population": 170_000_000, "name": "Bangladesh"},
+    ]
+    aliases = [{"location_id": 2, "name": "Bangalore"}, {"location_id": 2, "name": "Bengaluru"}]
+    idx = LocationIndex.from_rows(rows, (), aliases)
+    assert idx.search("bang") == [3, 2]  # countries first, then cities
+    assert idx.search("Bangalore") == [2]
+    assert idx.aliases[2] == ["bangalore"]  # the display name isn't repeated
