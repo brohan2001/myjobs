@@ -121,10 +121,14 @@ def drop_at_monitor(url: str, title: str | None) -> bool:
     if title and title.strip():
         return not is_tech_title(title)
     slug_title = title_from_url(url)
-    if not slug_title:
-        return False
-    slug = match_occupation(slug_title)
+    return bool(slug_title) and clearly_non_tech(slug_title)
+
+
+def clearly_non_tech(text: str) -> bool:
+    """High-precision negative for text that may not be a real title (URL slugs): it must name a
+    known non-tech occupation, or contain a non-tech role word and no tech word."""
+    slug = match_occupation(text)
     if slug is not None:
         return slug not in tech_occupations()
-    text = slug_title.lower()
-    return bool(_NON_TECH_WORDS.search(text)) and not _TECH_WORDS.search(text)
+    lowered = text.lower()
+    return bool(_NON_TECH_WORDS.search(lowered)) and not _TECH_WORDS.search(lowered)

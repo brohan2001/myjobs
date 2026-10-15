@@ -9,9 +9,10 @@ Steps:
    in both registries (it has the newer fixes); boards only we have are kept.
 2. Probe each board once with its monitor. Rich monitors give titles. URL-only monitors give
    URLs, whose slugs stand in for titles ("…/job/Bengaluru/Software-Engineer_R123").
-3. Keep a board if any title is tech (``src.core.tech_gate``), or if there's too little evidence to
-   judge (fewer than ``MIN_EVIDENCE`` titles, a probe error, or browser boards without --browser).
-   Drop it when robots.txt forbids it, or when ``MIN_EVIDENCE``+ titles are all non-tech.
+3. Keep a board if any title is tech (``src.core.tech_gate``), if its company is in a tech industry,
+   or if there's too little evidence to judge (fewer than ``MIN_EVIDENCE`` non-tech titles, a probe
+   error, or browser boards without --browser). Drop it when robots.txt forbids it, or when
+   ``MIN_EVIDENCE``+ titles are all non-tech.
 4. A company stays if any of its boards stays.
 
 Probe results are cached in ``output/vetting.jsonl``, so a rerun resumes and ``--apply`` is instant.
@@ -35,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.core.monitor import monitor_one  # noqa: E402
 from src.core.monitors import monitor_needs_browser  # noqa: E402
-from src.core.tech_gate import is_tech_title, title_from_url  # noqa: E402
+from src.core.static_registry import is_rich_monitor  # noqa: E402
+from src.core.tech_gate import clearly_non_tech, is_tech_title, title_from_url  # noqa: E402
 from src.logger import get_logger  # noqa: E402
 from src.shared.http import HONEST_USER_AGENT, create_http_client  # noqa: E402
 from src.shared.robots import RobotsDisallowedError, ensure_allowed  # noqa: E402
@@ -48,7 +50,8 @@ CACHE = ROOT / "output" / "vetting.jsonl"
 UPSTREAM_SHA = "cf71baa66147eb825c9569bfa70be87be7e92c91"  # keep in step with docs/UPSTREAM.md
 RAW = "https://raw.githubusercontent.com/colophon-group/jobseek/{sha}/apps/crawler/data/{name}.csv"
 
-MIN_EVIDENCE = 3  # titles needed before "no tech titles" counts as evidence
+MIN_EVIDENCE = 25  # non-tech titles needed to drop a board; small tech companies often have only sales roles open
+TECH_INDUSTRIES = {"1", "20", "21"}  # jobseek's Technology, Robotics, Cybersecurity: always kept
 MAX_TITLES = 200  # titles judged per board
 PROBE_TIMEOUT_S = 180
 CONCURRENCY = 24
@@ -58,16 +61,21 @@ BROWSER_CONCURRENCY = 2
 BOARD_FIELDS = ["company_slug", "board_slug", "board_url", "monitor_type", "monitor_config", "scraper_type", "scraper_config"]
 COMPANY_FIELDS = ["slug", "name", "website", "industry", "tier", "enabled", "country", "hq_city", "company_type"]
 
-def verdict(titles: list[str], error: str | None) -> tuple[bool, str]:
-    """(keep, reason) for one board's probe."""
+def verdict(titles: list[str], error: str | None, *, from_urls: bool) -> tuple[bool, str]:
+    """(keep, reason) for one board's probe.
+
+    Titles taken from URL slugs can be junk ("job description", random ids), so they drop a board
+    only when most of them clearly name non-tech roles; real titles use the normal tech check.
+    """
     if error == "robots":
         return False, "dropped: robots.txt disallows"
     if error:
         return True, "kept: probe failed"
     if any(is_tech_title(t) for t in titles):
         return True, "kept: has tech titles"
-    if len(titles) < MIN_EVIDENCE:
-        return True, "kept: too few titles to judge"
+    evidence = [t for t in titles if clearly_non_tech(t)] if from_urls else titles
+    if len(evidence) < MIN_EVIDENCE or (from_urls and len(evidence) * 2 < len(titles)):
+        return True, "kept: too little evidence to judge"
     return False, "dropped: no tech titles"
 
 
@@ -86,8 +94,10 @@ def merge(upstream_boards: list[dict], upstream_companies: list[dict]) -> tuple[
     """Upstream boards (newer) plus boards only we have; companies keyed by slug, ours first."""
     ours = read_csv(DATA / "boards.csv")
     upstream_slugs = {b["board_slug"] for b in upstream_boards}
+    upstream_urls = {b["board_url"].rstrip("/").lower() for b in upstream_boards}
     boards = [{k: b.get(k, "") for k in BOARD_FIELDS} for b in upstream_boards]
-    boards += [b for b in ours if b["board_slug"] not in upstream_slugs]
+    boards += [b for b in ours if b["board_slug"] not in upstream_slugs
+               and b["board_url"].rstrip("/").lower() not in upstream_urls]
 
     companies = {c["slug"]: c for c in read_csv(DATA / "companies.csv")}
     for c in upstream_companies:
@@ -204,7 +214,11 @@ def main() -> None:
     kept, reasons = [], Counter()
     for b in boards:
         r = results.get(b["board_slug"])
-        keep, reason = verdict(r["titles"], r["error"]) if r else (True, "kept: not probed (needs browser)")
+        from_urls = not is_rich_monitor(b["monitor_type"], json.loads(b["monitor_config"] or "{}"))
+        keep, reason = (verdict(r["titles"], r["error"], from_urls=from_urls) if r
+                        else (True, "kept: not probed (needs browser)"))
+        if not keep and companies.get(b["company_slug"], {}).get("industry") in TECH_INDUSTRIES and r["error"] != "robots":
+            keep, reason = True, "kept: tech-industry company"
         reasons[reason] += 1
         if keep:
             kept.append(b)
