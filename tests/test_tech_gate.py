@@ -13,6 +13,8 @@ from src.core.tech_gate import drop_at_monitor, is_tech_title
     "Site Reliability Engineer", "Embedded Software Engineer", "VLSI Design Engineer", "UI/UX Designer",
     "Associate Product Manager", "Technical Program Manager", "Program Manager", "Engineering Manager",
     "Solutions Architect", "Sales Engineer", "Business Analyst", "Security Engineer", "QA Automation Engineer",
+    "Consultant SAP PY", "Incident Response Sr. Consultant (Remote)",  # tech words outrank "consultant"
+    "下一代推荐大模型算法工程师 - TikTok算法",  # non-Latin titles can't be judged, so they're kept
 ])
 def test_tech_titles_are_kept(title):
     assert is_tech_title(title)
@@ -22,7 +24,8 @@ def test_tech_titles_are_kept(title):
     "Restaurant General Manager", "Crew Member", "Shift Manager", "Store Associate", "Cashier", "Barista",
     "Registered Nurse", "Pharmacist", "Warehouse Associate", "Delivery Driver", "Teacher", "Electrician",
     "Sales Associate", "Accountant", "HR Business Partner", "Customer Service Representative",
-    "Marketing Manager", "Trainee",
+    "Marketing Manager", "Trainee", "Data Entry Operator", "Customer Success Manager",
+    "Senior Relationship Executive - MFI South", "Praktikum Werkleitung und Fahrzeugbau Wolfsburg (w/m/d)",
 ])
 def test_non_tech_titles_are_dropped(title):
     assert not is_tech_title(title)
