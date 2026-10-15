@@ -6,7 +6,6 @@ import {
   COMPANY_TYPES,
   CURRENCIES,
   EXPERIENCE,
-  NOTICE,
   PassThroughFilter,
   PLACES,
   WINDOWS,
@@ -128,13 +127,6 @@ export function FeedHeader({
             value={filters.max_years}
             label="Experience"
             onChange={(v) => onFilterChange("max_years", v)}
-          />
-          , open to{" "}
-          <SentenceSelect
-            options={NOTICE}
-            value={filters.notice_days}
-            label="Your notice period"
-            onChange={(v) => onFilterChange("notice_days", v)}
           />
           , from the{" "}
           <span className="ctl dot">

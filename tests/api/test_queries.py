@@ -256,10 +256,3 @@ def test_company_type_filter_rejects_unknown_values():
     with pytest.raises(InvalidFilter):
         build_jobs_query(JobFilters(company_types=("unicorn",)))
 
-
-def test_notice_days_filter_keeps_unstated_and_longer_notice():
-    from src.api.queries import JobFilters, build_jobs_query
-
-    sql, args = build_jobs_query(JobFilters(notice_days=60))
-    assert "(jp.notice_max_days IS NULL OR jp.notice_max_days >= $1)" in sql
-    assert args[0] == 60

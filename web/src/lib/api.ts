@@ -20,7 +20,6 @@ export interface FetchJobsParams {
   work_mode?: string;
   company_type?: string;
   max_years?: string;
-  notice_days?: string;
   since?: string;
   cursor?: string;
   limit?: number;
