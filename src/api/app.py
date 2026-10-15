@@ -89,6 +89,8 @@ def serialize_job(row, index: LocationIndex) -> dict:
         ),
         "salary": salary,
         "ats": row["ats"],
+        "listed_at": _iso(row["listed_at"]),
+        "posted_at": _iso(row.get("posted_at")),
         "first_seen_at": _iso(row["first_seen_at"]),
         "last_seen_at": _iso(row["last_seen_at"]),
     }

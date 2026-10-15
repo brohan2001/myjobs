@@ -11,9 +11,9 @@ export type CollapsedItem =
     };
 
 function getBucket(job: Job, now?: Date): string | null {
-  if (!job.first_seen_at) return null;
+  if (!job.listed_at) return null;
   try {
-    return timeBucket(job.first_seen_at, now);
+    return timeBucket(job.listed_at, now);
   } catch {
     return null;
   }

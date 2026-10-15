@@ -31,6 +31,8 @@ export interface Job {
   employment_type: string | null;
   salary: Salary | null;
   ats: string;
+  listed_at: string; // posted_at when the ATS gives one (never later than first_seen_at)
+  posted_at: string | null;
   first_seen_at: string;
   last_seen_at: string;
   is_active?: boolean;

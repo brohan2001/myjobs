@@ -68,8 +68,8 @@ def parse_since(value: str | None, *, now: datetime | None = None) -> datetime |
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def encode_cursor(first_seen_at: datetime, posting_id: UUID | str) -> str:
-    raw = json.dumps([first_seen_at.isoformat(), str(posting_id)]).encode()
+def encode_cursor(listed_at: datetime, posting_id: UUID | str) -> str:
+    raw = json.dumps([listed_at.isoformat(), str(posting_id)]).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
@@ -108,6 +108,8 @@ _JOB_COLUMNS = """
     jp.experience_min,
     jp.experience_max,
     jp.first_seen_at,
+    jp.posted_at,
+    jp.listed_at,
     jp.last_seen_at,
     c.slug              AS company_slug,
     c.name              AS company_name,
@@ -120,7 +122,7 @@ _JOB_COLUMNS = """
 
 def build_jobs_query(f: JobFilters) -> tuple[str, list]:
     # URL-only boards insert a posting before its detail page is scraped; hide it until it has a title.
-    where = ["jp.is_active", "jp.titles[1] IS NOT NULL", f"lower(jp.titles[1]) !~ '{NON_JOB_TITLE_RE}'"]
+    where = ["jp.is_active", "jp.is_tech", "jp.titles[1] IS NOT NULL", f"lower(jp.titles[1]) !~ '{NON_JOB_TITLE_RE}'"]
     args: list = []
 
     def arg(value) -> str:
@@ -139,7 +141,7 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
             raise InvalidFilter(f"work_mode must be one of {', '.join(WORK_MODES)}")
         where.append(f"{arg(f.work_mode)} = ANY(jp.location_types)")
     if f.since:
-        where.append(f"jp.first_seen_at >= {arg(f.since)}")
+        where.append(f"jp.listed_at >= {arg(f.since)}")
     if f.seniority:
         where.append(f"jp.seniority_id = (SELECT id FROM seniority WHERE slug = {arg(f.seniority)})")
     if f.occupation:
@@ -157,7 +159,7 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
         where.append(f"c.extras->>'company_type' = ANY({arg(list(f.company_types))}::text[])")
     if f.cursor:
         ts, pid = f.cursor
-        where.append(f"(jp.first_seen_at, jp.id) < ({arg(ts)}, {arg(pid)})")
+        where.append(f"(jp.listed_at, jp.id) < ({arg(ts)}, {arg(pid)})")
 
     limit = max(1, min(int(f.limit), MAX_LIMIT))
     sql = (
@@ -166,7 +168,7 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
         "JOIN company c ON c.id = jp.company_id\n"
         "LEFT JOIN job_board jb ON jb.id = jp.board_id\n"
         f"WHERE {' AND '.join(where)}\n"
-        "ORDER BY jp.first_seen_at DESC, jp.id DESC\n"
+        "ORDER BY jp.listed_at DESC, jp.id DESC\n"
         f"LIMIT {arg(limit + 1)}"  # one extra row tells us whether there is a next page
     )
     return sql, args
@@ -181,7 +183,7 @@ async def fetch_jobs(pool: asyncpg.Pool, f: JobFilters) -> tuple[list[asyncpg.Re
     if len(rows) > limit:
         rows = rows[:limit]
         last = rows[-1]
-        next_cursor = encode_cursor(last["first_seen_at"], last["id"])
+        next_cursor = encode_cursor(last["listed_at"], last["id"])
     return rows, next_cursor
 
 
@@ -213,9 +215,9 @@ async def fetch_job(pool: asyncpg.Pool, posting_id: UUID) -> asyncpg.Record | No
 
 _COMPANIES = """
 SELECT c.slug, c.name, c.website, c.logo, COUNT(jp.id) AS active_jobs,
-       MAX(jp.first_seen_at) AS latest_job_at
+       MAX(jp.listed_at) AS latest_job_at
 FROM company c
-JOIN job_posting jp ON jp.company_id = c.id AND jp.is_active
+JOIN job_posting jp ON jp.company_id = c.id AND jp.is_active AND jp.is_tech
 WHERE ($1::text IS NULL OR lower(c.name) LIKE $1)
 GROUP BY c.id
 ORDER BY active_jobs DESC, c.name
@@ -231,9 +233,9 @@ async def fetch_companies(pool: asyncpg.Pool, q: str | None, limit: int) -> list
 
 _STATS = """
 SELECT
-    (SELECT COUNT(*) FROM job_posting WHERE is_active)                                         AS active_jobs,
-    (SELECT COUNT(*) FROM job_posting WHERE is_active AND first_seen_at >= now() - interval '24 hours') AS new_last_24h,
-    (SELECT COUNT(DISTINCT company_id) FROM job_posting WHERE is_active)                       AS companies_hiring,
+    (SELECT COUNT(*) FROM job_posting WHERE is_active AND is_tech)                             AS active_jobs,
+    (SELECT COUNT(*) FROM job_posting WHERE is_active AND is_tech AND listed_at >= now() - interval '24 hours') AS new_last_24h,
+    (SELECT COUNT(DISTINCT company_id) FROM job_posting WHERE is_active AND is_tech)           AS companies_hiring,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled)                                          AS boards_enabled,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled AND last_success_at >= now() - interval '24 hours') AS boards_fresh_24h,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled AND consecutive_failures > 0)             AS boards_failing,

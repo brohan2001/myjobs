@@ -12,6 +12,7 @@ import csv
 import re
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from src.core.occupation_resolve import match_occupation
 
@@ -63,3 +64,49 @@ def is_tech_title(title: str | None) -> bool:
     if slug is not None:
         return slug in tech_occupations()
     return bool(_TECH_WORDS.search(title.lower()))
+
+
+_SLUG_WORD = re.compile(r"[A-Za-z][A-Za-z+#.]+")
+
+# Clearly non-tech roles, used only for URL slugs that contain no tech word.
+_NON_TECH_WORDS = re.compile(
+    r"\b(nurse|nursing|physician|therapist|pharmacist|pharmacy|caregiver|clinical|medical assistant|"
+    r"dental|veterinary|restaurant|crew|cook|chef|barista|server|cashier|bartender|housekeeper|"
+    r"housekeeping|janitor|custodian|driver|warehouse|forklift|picker|packer|retail|store|"
+    r"merchandiser|teacher|tutor|nanny|security guard|electrician|plumber|carpenter|welder|"
+    r"mechanic|technician|beauty|stylist|cleaner|laborer|labourer)\b"
+)
+
+
+def title_from_url(url: str) -> str | None:
+    """The path segment that reads most like a job title, or None if the URL has only ids.
+
+    Segments need two words of 3+ letters (hex ids don't qualify); ties go to the later segment,
+    where ATSs put the job slug ("/en-US/External/job/Bengaluru/Software-Engineer_R123").
+    """
+    best, best_score = None, 1
+    for segment in urlparse(url).path.split("/"):
+        words = _SLUG_WORD.findall(unquote(segment).replace("-", " ").replace("_", " "))
+        score = sum(1 for w in words if len(w) >= 3)
+        if score >= max(best_score, 2):
+            best, best_score = " ".join(words), score
+    return best
+
+
+def drop_at_monitor(url: str, title: str | None) -> bool:
+    """Should a board check drop this posting before it is stored or scraped?
+
+    With a real title (rich monitors), drop non-tech titles. With only a URL, drop just when the
+    slug names a known non-tech occupation ("…/Restaurant-Crew-Member/123"): a vague slug like
+    "open-positions" must never cost a real tech job. Everything else is judged after the scrape.
+    """
+    if title and title.strip():
+        return not is_tech_title(title)
+    slug_title = title_from_url(url)
+    if not slug_title:
+        return False
+    slug = match_occupation(slug_title)
+    if slug is not None:
+        return slug not in tech_occupations()
+    text = slug_title.lower()
+    return bool(_NON_TECH_WORDS.search(text)) and not _TECH_WORDS.search(text)

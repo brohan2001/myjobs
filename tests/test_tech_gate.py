@@ -3,7 +3,7 @@ occupation: 99.1% of tech titles kept, 94.1% of non-tech titles dropped."""
 
 import pytest
 
-from src.core.tech_gate import is_tech_title
+from src.core.tech_gate import drop_at_monitor, is_tech_title
 
 
 @pytest.mark.parametrize("title", [
@@ -31,3 +31,20 @@ def test_non_tech_titles_are_dropped(title):
 @pytest.mark.parametrize("title", [None, "", "   "])
 def test_untitled_jobs_are_kept(title):
     assert is_tech_title(title)
+
+
+@pytest.mark.parametrize("url,title,dropped", [
+    ("https://x.io/1", "Cashier", True),
+    ("https://x.io/1", "Data Engineer", False),
+    ("https://mcd.com/job/Chicago-Restaurant-Crew-Member/1", None, True),
+    ("https://x.com/job/Registered-Nurse-ICU/9", None, True),
+    ("https://x.com/job/Store-Manager-Mumbai/9", None, True),
+    # Vague or id-only slugs are kept and judged after the scrape.
+    ("https://x.com/en-us/open-positions/123", None, False),
+    ("https://boards.greenhouse.io/acme/jobs/123", None, False),
+    ("https://x.com/job/Bengaluru/Software-Engineer_R1", None, False),
+    ("https://x.com/job/Data-Center-Technician/9", None, False),
+    ("https://x.com/job/IT-Support-Technician/9", None, False),
+])
+def test_drop_at_monitor(url, title, dropped):
+    assert drop_at_monitor(url, title) is dropped

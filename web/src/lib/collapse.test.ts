@@ -24,6 +24,8 @@ function makeJob(
     employment_type: "full-time",
     salary: null,
     ats: "greenhouse",
+    listed_at: firstSeenAt,
+    posted_at: null,
     first_seen_at: firstSeenAt,
     last_seen_at: firstSeenAt,
   };

@@ -29,7 +29,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
     notFound();
   }
 
-  const timeString = relativeTime(job.first_seen_at);
+  const timeString = relativeTime(job.listed_at);
   const atsName = formatAtsName(job.ats);
 
   // Formatted location
@@ -66,7 +66,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
         </Link>
 
         <div className="detail-header">
-          <p className="when">{timeString}</p>
+          <p className="when">{job.posted_at ? "posted" : "first seen"} {timeString}</p>
           <h1 className="detail-title">{job.title}</h1>
           <p className="detail-meta">
             <b>{job.company.name}</b> in {locationText}
