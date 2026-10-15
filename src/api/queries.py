@@ -122,7 +122,7 @@ _JOB_COLUMNS = """
 
 # Title words too senior for an experience cap, by cap. Postgres regex: \m and \M are word edges.
 _SENIOR_ROLES = (
-    r"senior|sr|lead|staff|principal|director|head|architect|vp|vice president|chief|distinguished|fellow|"
+    r"senior\w*|sr|lead|staff|principal|director|head|architect|vp|vice president|chief|distinguished|fellow|"
     r"engineering manager|senior manager|general manager|managing"  # not "manager": APM and PM roles take freshers
 )
 _LEADERSHIP = r"staff|principal|director|head|vp|vice president|chief|distinguished|fellow"

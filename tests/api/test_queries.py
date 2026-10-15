@@ -271,7 +271,7 @@ def _too_senior(max_years: int, title: str) -> bool:
 @pytest.mark.parametrize("title", [
     "Senior Software Engineer", "Sr Software Engineer", "Principal Systems Software Engineer",
     "Senior Platform Software Engineer", "Staff Engineer", "Lead Data Scientist", "Engineering Manager",
-    "Software Engineer III", "MTS 3",
+    "Software Engineer III", "MTS 3", "SeniorAdministrator - CheckPoint PPC",
 ])
 def test_up_to_two_years_excludes_senior_titles(title):
     assert _too_senior(2, title)
