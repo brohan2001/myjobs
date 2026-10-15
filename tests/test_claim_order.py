@@ -62,3 +62,27 @@ def test_scrapes_are_served_when_no_monitor_is_due(r):
     r.zadd("ready:simple:1", {"greenhouse": NOW + 3600})
 
     assert claim(r) == ["posting-1", "scrape", "a.example.com"]
+
+
+def test_shared_ats_domain_gets_its_fair_share_under_backlog(r):
+    """One throttle key ('greenhouse') covers ~1,400 boards. With 30 backlogged scrape domains,
+    rescheduling a claimed domain to 'now + delay' sent it behind every overdue domain, so it got
+    one claim per round (2026-10-15). Advancing its score by its own delay keeps it in front in
+    proportion to its rate (0.5 s for ATS APIs vs 2 s for sites)."""
+    old = NOW - 3600
+    for i in range(30):
+        d = f"site{i}.example.com"
+        r.zadd(f"ft_scrapes_simple:{d}", {f"p{i}-{k}": 0 for k in range(50)})
+        r.zadd("ready:simple:0", {d: old})
+    r.zadd("ft_monitors_simple:greenhouse", {f"board-{k}": 0 for k in range(200)})
+    r.zadd("ready:simple:0", {"greenhouse": old + 1})
+    r.set("delay:greenhouse", 0.5)
+
+    claimed = []
+    for step in range(120):  # 12 s of claims, one every 0.1 s
+        res = r.eval(LUA, 0, "simple", NOW + step * 0.1, 2.0, 10, 600)
+        if res:
+            claimed.append(res[2])
+    # Shares follow rates: a 0.5 s domain gets ~4x a 2 s domain. Round-robin gave it the same as a site.
+    busiest_site = max(claimed.count(d) for d in set(claimed) if d != "greenhouse")
+    assert claimed.count("greenhouse") >= 2 * busiest_site
