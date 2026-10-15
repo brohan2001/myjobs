@@ -56,14 +56,32 @@ def tech_occupations() -> frozenset[str]:
     return frozenset(in_domains | TECH_OCCUPATIONS)
 
 
+# Unambiguous tech words. They outrank a non-tech occupation match ("Consultant SAP PY",
+# "Incident Response Sr. Consultant").
+_STRONG_TECH_WORDS = re.compile(
+    r"\b(software|developer|programmer|devops|sre|sap|salesforce|servicenow|cloud|cyber\w*|"
+    r"incident response|penetration|machine learning|ml|ai|llm|algorithms?|data (?:scien\w*|engineer\w*))\b"
+)
+
+
+def _mostly_latin(text: str) -> bool:
+    letters = [c for c in text if c.isalpha()]
+    return not letters or sum(c.isascii() or "\u00c0" <= c <= "\u024f" for c in letters) / len(letters) >= 0.6
+
+
 def is_tech_title(title: str | None) -> bool:
-    """True if the title is a tech-adjacent job. An empty title is kept (it can't be judged)."""
-    if not title or not title.strip():
+    """True if the title is a tech-adjacent job.
+
+    Kept when it can't be judged: empty titles, and titles mostly in non-Latin scripts
+    ("下一代推荐大模型算法工程师") that neither the taxonomy nor the keywords can read.
+    """
+    if not title or not title.strip() or not _mostly_latin(title):
         return True
+    lowered = title.lower()
     slug = match_occupation(title)
     if slug is not None:
-        return slug in tech_occupations()
-    return bool(_TECH_WORDS.search(title.lower()))
+        return slug in tech_occupations() or bool(_STRONG_TECH_WORDS.search(lowered))
+    return bool(_TECH_WORDS.search(lowered.replace("data entry", "")))
 
 
 _SLUG_WORD = re.compile(r"[A-Za-z][A-Za-z+#.]+")
