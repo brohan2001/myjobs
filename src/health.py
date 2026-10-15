@@ -86,3 +86,20 @@ def evaluate(s: Snapshot) -> list[Alert]:
         if empty / boards > ATS_EMPTY_SHARE:
             alerts.append(Alert("ats_empty", f"{ats}: {empty}/{boards} boards had no jobs for 3 days"))
     return alerts
+
+
+_BOARDS_SQL = """
+SELECT c.slug AS company, b.board_slug, b.crawler_type, b.board_status, b.is_enabled,
+       b.last_success_at, b.next_check_at, b.consecutive_failures, left(b.last_error, 120) AS last_error,
+       (SELECT count(*) FROM job_posting jp WHERE jp.board_id = b.id AND jp.is_active) AS active_jobs
+FROM job_board b JOIN company c ON c.id = b.company_id
+WHERE c.slug = $1 OR c.name ILIKE '%' || $1 || '%' OR b.crawler_type = $1 OR b.board_slug = $1
+ORDER BY b.next_check_at
+LIMIT $2
+"""
+
+
+async def fetch_boards(pool: asyncpg.Pool, term: str, limit: int = 50) -> list[asyncpg.Record]:
+    """Boards matching a company slug or name, an ATS type, or a board slug, most overdue first."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(_BOARDS_SQL, term, limit)
