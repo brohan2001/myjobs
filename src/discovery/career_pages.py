@@ -605,7 +605,7 @@ async def _probe_link(
 ) -> _ProbeLinkResult:
     """Follow a career link, probe for monitor type, return candidates."""
     from src.core.monitors import probe_all_monitors
-    from src.workspace._compat import detect_ats_from_url
+    from src.core.static_registry import detect_ats_from_url
 
     # Follow redirects to get final URL
     try:
@@ -647,7 +647,7 @@ async def _probe_link(
         all_links, page_hreflang = _extract_links_with_hreflang(page_html, final_url)
         followups = [child for child in all_links if child.url not in (link.url, final_url)]
 
-    from src.workspace.job_links import analyze_job_links
+    from src.discovery.job_links import analyze_job_links
 
     link_analysis = analyze_job_links(final_url, page_html)
     hub_links = link_analysis.job_links_total
@@ -741,7 +741,7 @@ def _hubness_allows_candidate(
     jobs_hint_n: int,
 ) -> bool:
     """Require homepage/redirect pages to look like job hubs unless metadata is strong."""
-    from src.workspace.job_links import MIN_HUB_LINKS
+    from src.discovery.job_links import MIN_HUB_LINKS
 
     if source not in ("homepage_link", "redirect", "seed_path"):
         return True
@@ -866,7 +866,7 @@ async def discover_career_pages(
     Returns only confirmed detections, ranked by score descending.
     """
     from src.core.monitors import slugs_from_url
-    from src.workspace.job_links import analyze_job_links
+    from src.discovery.job_links import analyze_job_links
 
     # Phase 1: Extract direct links + deterministic same-site seeds
     homepage_links, homepage_hreflang = _extract_links_with_hreflang(homepage_html, homepage_url)

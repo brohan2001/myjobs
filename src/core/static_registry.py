@@ -1,7 +1,7 @@
 """Static monitor/scraper type classification for standalone use.
 
 Mirrors the runtime registries in ``src.core.monitors`` and
-``src.core.scrapers`` so that workspace commands and CI scripts can
+``src.core.scrapers`` so that discovery and SQL filters can
 classify types without importing the full crawler core (which pulls
 in asyncpg, playwright, etc.).
 
