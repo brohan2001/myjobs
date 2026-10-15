@@ -65,10 +65,9 @@ def test_scrapes_are_served_when_no_monitor_is_due(r):
 
 
 def test_shared_ats_domain_gets_its_fair_share_under_backlog(r):
-    """One throttle key ('greenhouse') covers ~1,400 boards. With 30 backlogged scrape domains,
-    rescheduling a claimed domain to 'now + delay' sent it behind every overdue domain, so it got
-    one claim per round (2026-10-15). Advancing its score by its own delay keeps it in front in
-    proportion to its rate (0.5 s for ATS APIs vs 2 s for sites)."""
+    """One throttle key ('greenhouse') covers ~1,400 boards. With 30 backlogged scrape domains it
+    got one claim per round of all domains (2026-10-15). Board checks now go first, so it is
+    claimed whenever its rate limit allows: every 0.5 s."""
     old = NOW - 3600
     for i in range(30):
         d = f"site{i}.example.com"
@@ -83,6 +82,22 @@ def test_shared_ats_domain_gets_its_fair_share_under_backlog(r):
         res = r.eval(LUA, 0, "simple", NOW + step * 0.1, 2.0, 10, 600)
         if res:
             claimed.append(res[2])
-    # Shares follow rates: a 0.5 s domain gets ~4x a 2 s domain. Round-robin gave it the same as a site.
-    busiest_site = max(claimed.count(d) for d in set(claimed) if d != "greenhouse")
-    assert claimed.count("greenhouse") >= 2 * busiest_site
+    # 12 s at one claim per 0.5 s = 24 (the first claim happens at t=0). Round-robin gave it ~3.
+    assert claimed.count("greenhouse") >= 23
+
+
+
+def test_big_monitor_backlog_is_not_starved_by_many_small_domains(r):
+    """~1,500 company domains each had one first-time board check, and greenhouse held 1,374. Served
+    one domain per turn, greenhouse got one check per round (2026-10-15)."""
+    for i in range(300):
+        d = f"careers{i}.example.com"
+        r.zadd(f"ft_monitors_simple:{d}", {f"b{i}": 0})
+        r.zadd("ready:simple:0", {d: NOW - 7200})
+    r.zadd("ft_monitors_simple:greenhouse", {f"gh-{k}": 0 for k in range(500)})
+    r.zadd("ready:simple:0", {"greenhouse": NOW - 60})
+    r.set("delay:greenhouse", 0.5)
+
+    claimed = [r.eval(LUA, 0, "simple", NOW + step * 0.1, 2.0, 10, 600)[2] for step in range(100)]
+    assert claimed.count("greenhouse") >= 19  # every 0.5 s over 10 s
+    assert len(set(claimed)) > 50  # the small domains still get served in between

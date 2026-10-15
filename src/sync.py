@@ -102,6 +102,19 @@ ON CONFLICT (board_url) DO UPDATE SET
     updated_at             = now()
 """
 
+# A board whose URL changed in the registry (same slug, e.g. an ATS move fixed upstream) keeps its
+# row: move it to the new URL and give it a fresh start, so the upsert below updates it instead of
+# colliding on the unique board_slug.
+_MOVE_CHANGED_URLS = """
+UPDATE job_board jb
+SET board_url = b.board_url, board_status = 'active', is_enabled = true,
+    consecutive_failures = 0, gone_at = NULL, last_error = NULL, updated_at = now()
+FROM unnest($1::text[], $2::text[]) AS b(board_slug, board_url)
+WHERE jb.board_slug = b.board_slug
+  AND jb.board_url <> b.board_url
+  AND NOT EXISTS (SELECT 1 FROM job_board o WHERE o.board_url = b.board_url)
+"""
+
 _DISABLE_REMOVED_BOARDS = """
 UPDATE job_board
 SET is_enabled = false, board_status = 'disabled', updated_at = now()
@@ -286,6 +299,9 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
     if not board_urls:
         log.info("sync.boards.all_skipped", skipped=skipped)
         return
+
+    moved = await conn.execute(_MOVE_CHANGED_URLS, board_slugs_list, board_urls)
+    log.info("sync.boards.url_changed", result=moved)
 
     # Upsert boards into local Postgres (generates UUIDs on first insert)
     await conn.execute(

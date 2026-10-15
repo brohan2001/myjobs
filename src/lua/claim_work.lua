@@ -3,22 +3,25 @@
 -- ARGV[1] = wtype ("simple" or "browser")
 -- ARGV[2] = now (float timestamp)
 -- ARGV[3] = default_rate_delay (float seconds)
--- ARGV[4] = max_domains_to_check (int)
+-- ARGV[4] = max_domains_to_check (int) for the scrape pass
 -- ARGV[5] = lease_ttl (float seconds; lease set on claim — see #3159 / #3173)
 --
 -- Returns: {task_id, source_type, domain} or nil
 --
--- Lease semantics (added in #3159 / #3173):
---   When a task is claimed, this script also records a lease entry in
---   the per-worker-type inflight ZSET (``inflight:<wtype>``) with
---   member ``"<task_type>|<domain>|<task_id>"`` and score
---   ``now + lease_ttl``. If the worker dies between claim and
---   completion, a periodic reaper (``reap_expired.lua``) re-enqueues
---   the task back to its per-domain ZSET so it isn't lost.
+-- Two passes (myjobs, 2026-10-15):
+--   A. Board checks. Among due domains that aren't rate-limited, claim a monitor from the one
+--      with the most due monitors. Monitors find new jobs and number under one per second
+--      overall, so they always go first.
+--   B. Page scrapes. jobseek's round-robin: tiers in order 0, 1, 2, the first max_check due
+--      domains each, pop that domain's next task.
+--   One pass used to do both, and a scrape backlog starved board checks twice over: tier-0
+--   domains went first on every claim, and a shared throttle key such as "greenhouse"
+--   (~1,400 boards) got one claim per round of all domains. On 2026-10-14, 2,371 of 2,845
+--   boards were more than 2 h overdue.
 --
---   On successful processing the worker MUST call ``complete_task.lua``
---   to remove the inflight entry. Heartbeats during long-running
---   processing extend the lease via ``heartbeat_task.lua``.
+-- Lease semantics (#3159 / #3173): a claim records "<task_type>|<domain>|<task_id>" in
+-- inflight:<wtype> with score now + lease_ttl. The worker must call complete_task.lua (or
+-- reschedule_task.lua); reap_expired.lua re-enqueues leases that expire.
 
 local wtype = ARGV[1]
 local now = tonumber(ARGV[2])
@@ -26,162 +29,114 @@ local default_delay = tonumber(ARGV[3])
 local max_check = tonumber(ARGV[4]) or 10
 local lease_ttl = tonumber(ARGV[5]) or 600
 
--- Try tiers in order 1, 0, 2: domains whose next task is a recurring monitor come before
--- domains holding first-time work. Domains are rate-limited, so tier 1 can't take every
--- worker, but with 0 first a scrape backlog in tier 0 starved all board checks (2026-10-14).
-for _, tier in ipairs({1, 0, 2}) do
+local MONITOR_SCAN = 2000  -- due domains examined in pass A
+
+local function key(prefix, domain)
+    return prefix .. wtype .. ":" .. domain
+end
+
+local function rate_limited(domain)
+    local rl_val = redis.call("GET", "ratelimit:" .. domain)
+    if rl_val and tonumber(rl_val) > now then
+        return tonumber(rl_val)
+    end
+    return nil
+end
+
+local function pop_due(prefix, domain)
+    local ft = redis.call("ZPOPMIN", key("ft_" .. prefix, domain), 1)
+    if #ft >= 2 then
+        return ft[1]
+    end
+    local due = redis.call("ZRANGEBYSCORE", key(prefix, domain), "-inf", tostring(now), "LIMIT", 0, 1)
+    if #due > 0 then
+        redis.call("ZREM", key(prefix, domain), due[1])
+        return due[1]
+    end
+    return nil
+end
+
+local function earliest(zkey)
+    local r = redis.call("ZRANGE", zkey, 0, 0, "WITHSCORES")
+    if #r >= 2 then
+        return tonumber(r[2])
+    end
+    return nil
+end
+
+-- Rate-limit the domain, record the lease, and re-file the domain in the tier of its next task
+-- (first-time work → 0, else the earlier of next monitor (1) and next scrape (2)).
+local function finish(ready_key, domain, task_id, source_type)
+    local rate_delay = tonumber(redis.call("GET", "delay:" .. domain) or default_delay)
+    redis.call("SET", "ratelimit:" .. domain, tostring(now + rate_delay), "EX", math.ceil(rate_delay) + 1)
+    redis.call("ZREM", ready_key, domain)
+    redis.call("ZADD", "inflight:" .. wtype, now + lease_ttl, source_type .. "|" .. domain .. "|" .. task_id)
+
+    local ft_score = earliest(key("ft_monitors_", domain))
+    local ft_scr = earliest(key("ft_scrapes_", domain))
+    if ft_scr ~= nil and (ft_score == nil or ft_scr < ft_score) then
+        ft_score = ft_scr
+    end
+    local mon_score = earliest(key("monitors_", domain))
+    local scr_score = earliest(key("scrapes_", domain))
+
+    local next_score, next_tier = nil, nil
+    if ft_score ~= nil then
+        next_score, next_tier = ft_score, 0
+    end
+    if mon_score ~= nil and (next_score == nil or mon_score < next_score) then
+        next_score, next_tier = mon_score, 1
+    end
+    if scr_score ~= nil and (next_score == nil or scr_score < next_score) then
+        next_score, next_tier = scr_score, 2
+    end
+    if next_score ~= nil then
+        redis.call("ZADD", "ready:" .. wtype .. ":" .. next_tier, math.max(now + rate_delay, next_score), domain)
+    end
+    return {task_id, source_type, domain}
+end
+
+-- Pass A: board checks, longest queue first. A shared throttle key such as "greenhouse" holds
+-- ~1,400 boards; served one domain per turn it would get one check per round of ~1,500 company
+-- domains. Picking the non-rate-limited domain with the most due checks drains big backlogs at
+-- their rate limit, and everything else is served in between.
+local best_domain, best_key, best_backlog = nil, nil, 0
+for tier = 0, 2 do
     local ready_key = "ready:" .. wtype .. ":" .. tier
-
-    -- Get candidate domains with score <= now (due or overdue)
-    -- Scores are virtual times (fair queueing): a claim advances the domain's score by its own
-    -- rate delay rather than resetting it to now + delay. Resetting sent a busy shared domain
-    -- ("greenhouse", ~1,400 boards behind one throttle key) behind every overdue domain, so under
-    -- a backlog it got one claim per round of all domains (2026-10-15). Real request rates are
-    -- still enforced by the ratelimit:<domain> keys.
-    local raw = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "WITHSCORES", "LIMIT", 0, max_check)
-
-    for i = 1, #raw, 2 do
-        local domain = raw[i]
-        local vscore = tonumber(raw[i + 1])
-        local domain_delay = redis.call("GET", "delay:" .. domain)
-        local rate_delay = default_delay
-        if domain_delay then
-            rate_delay = tonumber(domain_delay)
+    local due = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, MONITOR_SCAN)
+    for _, domain in ipairs(due) do
+        local backlog = redis.call("ZCARD", key("ft_monitors_", domain))
+            + redis.call("ZCOUNT", key("monitors_", domain), "-inf", tostring(now))
+        if backlog > best_backlog and not rate_limited(domain) then
+            best_domain, best_key, best_backlog = domain, ready_key, backlog
         end
-        -- Check shared rate limit
-        local rl_key = "ratelimit:" .. domain
-        local rl_val = redis.call("GET", rl_key)
-        if rl_val and tonumber(rl_val) > now then
-            -- Rate-limited: skip it but keep its place; it's claimable again within one delay.
+    end
+end
+if best_domain then
+    return finish(best_key, best_domain, pop_due("monitors_", best_domain), "monitor")
+end
+
+-- Pass B: page scrapes (and any monitor pass A couldn't reach), jobseek's round-robin.
+for tier = 0, 2 do
+    local ready_key = "ready:" .. wtype .. ":" .. tier
+    local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, max_check)
+    for _, domain in ipairs(candidates) do
+        local rl_at = rate_limited(domain)
+        if rl_at then
+            -- Rate-limited: move it to when it becomes available
+            redis.call("ZADD", ready_key, rl_at, domain)
         else
-            -- Domain is available — try to pop a task in priority order
-            local task_id = nil
-            local source_type = nil
-
-            -- 1. First-time monitors (unconditional pop)
-            local ft_mon = redis.call("ZPOPMIN", "ft_monitors_" .. wtype .. ":" .. domain, 1)
-            if #ft_mon >= 2 then
-                task_id = ft_mon[1]
-                source_type = "monitor"
-            end
-
-            -- 2. Recurring monitors (only if due): board checks find new jobs, so they go
-            --    before this domain's page scrapes.
+            local task_id = pop_due("monitors_", domain)
+            local source_type = "monitor"
             if not task_id then
-                local items = redis.call("ZRANGEBYSCORE", "monitors_" .. wtype .. ":" .. domain, "-inf", tostring(now), "LIMIT", 0, 1)
-                if #items > 0 then
-                    redis.call("ZREM", "monitors_" .. wtype .. ":" .. domain, items[1])
-                    task_id = items[1]
-                    source_type = "monitor"
-                end
+                task_id = pop_due("scrapes_", domain)
+                source_type = "scrape"
             end
-
-            -- 3. First-time scrapes (unconditional pop)
-            if not task_id then
-                local ft_scr = redis.call("ZPOPMIN", "ft_scrapes_" .. wtype .. ":" .. domain, 1)
-                if #ft_scr >= 2 then
-                    task_id = ft_scr[1]
-                    source_type = "scrape"
-                end
-            end
-
-            -- 4. Recurring scrapes (only if due)
-            if not task_id then
-                local items = redis.call("ZRANGEBYSCORE", "scrapes_" .. wtype .. ":" .. domain, "-inf", tostring(now), "LIMIT", 0, 1)
-                if #items > 0 then
-                    redis.call("ZREM", "scrapes_" .. wtype .. ":" .. domain, items[1])
-                    task_id = items[1]
-                    source_type = "scrape"
-                end
-            end
-
             if task_id then
-                -- Set shared rate limit
-                local rl_ttl = math.ceil(rate_delay) + 1
-                redis.call("SET", rl_key, tostring(now + rate_delay), "EX", rl_ttl)
-
-                -- Remove domain from current ready tier
-                redis.call("ZREM", ready_key, domain)
-
-                -- Record lease entry in inflight ZSET (#3159 / #3173).
-                -- Member encodes (task_type, domain, task_id) so the
-                -- reaper can re-enqueue without a side hash.
-                local inflight_member = source_type .. "|" .. domain .. "|" .. task_id
-                redis.call("ZADD", "inflight:" .. wtype, now + lease_ttl, inflight_member)
-
-                -- Recompute domain's tier and re-add if tasks remain.
-                --
-                -- Pick the bucket with the lowest next-due score (clamped to
-                -- now + rate_delay). This avoids the priority-inversion bug
-                -- where a domain with a far-future recurring monitor and a
-                -- due-now scrape backlog gets parked in tier 1 at the
-                -- monitor's future score and never claims its scrapes.
-                -- See issue #3016 for the empirical reproduction.
-                --
-                -- Tier semantics preserved:
-                --   - first-time tasks (ft_*) always land in tier 0
-                --   - recurring monitors land in tier 1
-                --   - recurring scrapes land in tier 2
-                -- When ft has any task, ft wins (highest priority).
-                -- Otherwise monitor vs scrape compete by next-due score with
-                -- monitor as tiebreaker (strict-less-than means monitor wins
-                -- when scores are equal — original tier ordering).
-                local ft_mon_count = redis.call("ZCARD", "ft_monitors_" .. wtype .. ":" .. domain)
-                local ft_scr_count = redis.call("ZCARD", "ft_scrapes_" .. wtype .. ":" .. domain)
-
-                local ft_score = nil
-                if ft_mon_count > 0 then
-                    local r1 = redis.call("ZRANGE", "ft_monitors_" .. wtype .. ":" .. domain, 0, 0, "WITHSCORES")
-                    if #r1 >= 2 then ft_score = tonumber(r1[2]) end
-                end
-                if ft_scr_count > 0 then
-                    local r2 = redis.call("ZRANGE", "ft_scrapes_" .. wtype .. ":" .. domain, 0, 0, "WITHSCORES")
-                    if #r2 >= 2 then
-                        local s = tonumber(r2[2])
-                        if ft_score == nil or s < ft_score then ft_score = s end
-                    end
-                end
-
-                local mon_score = nil
-                local has_monitors = redis.call("ZCARD", "monitors_" .. wtype .. ":" .. domain)
-                if has_monitors > 0 then
-                    local r3 = redis.call("ZRANGE", "monitors_" .. wtype .. ":" .. domain, 0, 0, "WITHSCORES")
-                    if #r3 >= 2 then mon_score = tonumber(r3[2]) end
-                end
-
-                local scr_score = nil
-                local has_scrapes = redis.call("ZCARD", "scrapes_" .. wtype .. ":" .. domain)
-                if has_scrapes > 0 then
-                    local r4 = redis.call("ZRANGE", "scrapes_" .. wtype .. ":" .. domain, 0, 0, "WITHSCORES")
-                    if #r4 >= 2 then scr_score = tonumber(r4[2]) end
-                end
-
-                local next_score = nil
-                local next_tier = nil
-                if ft_score ~= nil then
-                    next_score = ft_score
-                    next_tier = 0
-                end
-                if mon_score ~= nil and (next_score == nil or mon_score < next_score) then
-                    next_score = mon_score
-                    next_tier = 1
-                end
-                if scr_score ~= nil and (next_score == nil or scr_score < next_score) then
-                    next_score = scr_score
-                    next_tier = 2
-                end
-
-                if next_score ~= nil then
-                    redis.call("ZADD", "ready:" .. wtype .. ":" .. next_tier,
-                               math.max(vscore + rate_delay, next_score), domain)
-                end
-                -- else: domain fully drained, don't re-add
-
-                return {task_id, source_type, domain}
-            else
-                -- Domain had no claimable tasks — remove from ready queue
-                redis.call("ZREM", ready_key, domain)
+                return finish(ready_key, domain, task_id, source_type)
             end
+            -- Domain had no claimable tasks — remove from ready queue
+            redis.call("ZREM", ready_key, domain)
         end
     end
 end
