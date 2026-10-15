@@ -33,15 +33,26 @@ for _, tier in ipairs({1, 0, 2}) do
     local ready_key = "ready:" .. wtype .. ":" .. tier
 
     -- Get candidate domains with score <= now (due or overdue)
-    local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, max_check)
+    -- Scores are virtual times (fair queueing): a claim advances the domain's score by its own
+    -- rate delay rather than resetting it to now + delay. Resetting sent a busy shared domain
+    -- ("greenhouse", ~1,400 boards behind one throttle key) behind every overdue domain, so under
+    -- a backlog it got one claim per round of all domains (2026-10-15). Real request rates are
+    -- still enforced by the ratelimit:<domain> keys.
+    local raw = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "WITHSCORES", "LIMIT", 0, max_check)
 
-    for _, domain in ipairs(candidates) do
+    for i = 1, #raw, 2 do
+        local domain = raw[i]
+        local vscore = tonumber(raw[i + 1])
+        local domain_delay = redis.call("GET", "delay:" .. domain)
+        local rate_delay = default_delay
+        if domain_delay then
+            rate_delay = tonumber(domain_delay)
+        end
         -- Check shared rate limit
         local rl_key = "ratelimit:" .. domain
         local rl_val = redis.call("GET", rl_key)
         if rl_val and tonumber(rl_val) > now then
-            -- Rate-limited: update ready score to when it becomes available
-            redis.call("ZADD", ready_key, tonumber(rl_val), domain)
+            -- Rate-limited: skip it but keep its place; it's claimable again within one delay.
         else
             -- Domain is available — try to pop a task in priority order
             local task_id = nil
@@ -86,11 +97,6 @@ for _, tier in ipairs({1, 0, 2}) do
 
             if task_id then
                 -- Set shared rate limit
-                local domain_delay = redis.call("GET", "delay:" .. domain)
-                local rate_delay = default_delay
-                if domain_delay then
-                    rate_delay = tonumber(domain_delay)
-                end
                 local rl_ttl = math.ceil(rate_delay) + 1
                 redis.call("SET", rl_key, tostring(now + rate_delay), "EX", rl_ttl)
 
@@ -167,7 +173,7 @@ for _, tier in ipairs({1, 0, 2}) do
 
                 if next_score ~= nil then
                     redis.call("ZADD", "ready:" .. wtype .. ":" .. next_tier,
-                               math.max(now + rate_delay, next_score), domain)
+                               math.max(vscore + rate_delay, next_score), domain)
                 end
                 -- else: domain fully drained, don't re-add
 

@@ -320,7 +320,7 @@ async def claim_work(*, browser: bool = False) -> WorkItem | None:
         wtype,
         str(time.time()),
         str(settings.throttle_delay_default),
-        "10",  # max domains to check per tier
+        "50",  # max domains to check per tier (rate-limited ones keep their place, so look past them)
         str(settings.inflight_lease_ttl_seconds),
     )
 
