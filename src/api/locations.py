@@ -27,6 +27,9 @@ LEFT JOIN LATERAL (
 
 _LOAD_MACRO_MEMBERS = "SELECT macro_id, country_id FROM location_macro_member"
 
+# Other English names ("Bangalore" for Bengaluru), so search finds a place by any of them.
+_LOAD_ALIASES = "SELECT location_id, name FROM location_name WHERE locale = 'en'"
+
 
 @dataclass
 class LocationIndex:
@@ -38,11 +41,12 @@ class LocationIndex:
     iso2: dict[int, str] = field(default_factory=dict)  # country id → ISO-3166 alpha-2
     children: dict[int, list[int]] = field(default_factory=dict)
     macro_members: dict[int, list[int]] = field(default_factory=dict)
+    aliases: dict[int, list[str]] = field(default_factory=dict)  # lower-cased extra names
     _country_of: dict[int, int | None] = field(default_factory=dict)
     _descendants: dict[int, list[int]] = field(default_factory=dict)
 
     @classmethod
-    def from_rows(cls, rows, macro_rows=()) -> LocationIndex:
+    def from_rows(cls, rows, macro_rows=(), alias_rows=()) -> LocationIndex:
         idx = cls()
         for r in rows:
             loc_id = r["id"]
@@ -58,6 +62,10 @@ class LocationIndex:
                 idx.children.setdefault(r["parent_id"], []).append(loc_id)
         for m in macro_rows:
             idx.macro_members.setdefault(m["macro_id"], []).append(m["country_id"])
+        for a in alias_rows:
+            name = (a["name"] or "").lower()
+            if name and name != idx.names.get(a["location_id"], "").lower():
+                idx.aliases.setdefault(a["location_id"], []).append(name)
         return idx
 
     @property
@@ -106,14 +114,15 @@ class LocationIndex:
         return self.descendants(loc_id)
 
     def search(self, prefix: str, limit: int = 10) -> list[int]:
-        """Countries, macros and cities whose display name starts with ``prefix``."""
+        """Countries, macros and cities whose display name or an alias starts with ``prefix``."""
         needle = prefix.strip().lower()
         if not needle:
             return []
         order = {"macro": 0, "country": 1, "city": 2}
         hits = [
             loc_id for loc_id, name in self.names.items()
-            if self.types.get(loc_id) in order and name.lower().startswith(needle)
+            if self.types.get(loc_id) in order
+            and (name.lower().startswith(needle) or any(a.startswith(needle) for a in self.aliases.get(loc_id, ())))
         ]
         hits.sort(key=lambda i: (order[self.types[i]], -self.population.get(i, 0), self.names[i]))
         return hits[:limit]
@@ -133,6 +142,7 @@ async def load_location_index(pool: asyncpg.Pool) -> LocationIndex:
     async with pool.acquire() as conn:
         rows = await conn.fetch(_LOAD_LOCATIONS)
         macro_rows = await conn.fetch(_LOAD_MACRO_MEMBERS)
-    idx = LocationIndex.from_rows(rows, macro_rows)
+        alias_rows = await conn.fetch(_LOAD_ALIASES)
+    idx = LocationIndex.from_rows(rows, macro_rows, alias_rows)
     log.info("api.locations.loaded", extra={"locations": len(idx.names), "codes": len(idx.codes)})
     return idx
