@@ -27,7 +27,7 @@ from src.discovery.pipeline import (
     slugify,
     unique_slug,
 )
-from src.workspace.career_discover import CareerPageCandidate
+from src.discovery.career_pages import CareerPageCandidate
 
 
 from tests.discovery.conftest import NetworkAccessError
@@ -539,7 +539,7 @@ class TestEvaluate:
         ]
 
         monkeypatch.setattr(
-            "src.workspace.career_discover.discover_career_pages",
+            "src.discovery.career_pages.discover_career_pages",
             AsyncMock(return_value=discovered_candidates),
         )
         monkeypatch.setattr("src.core.monitors.monitor_needs_browser", lambda monitor, config: False)
@@ -566,7 +566,7 @@ class TestEvaluate:
             return httpx.Response(200, text="<html><body>No careers</body></html>")
 
         monkeypatch.setattr(
-            "src.workspace.career_discover.discover_career_pages",
+            "src.discovery.career_pages.discover_career_pages",
             AsyncMock(return_value=[]),
         )
 

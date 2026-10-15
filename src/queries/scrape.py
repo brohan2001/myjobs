@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.workspace._compat import auto_skip_crawler_types
+from src.core.static_registry import auto_skip_crawler_types
 
 
 def _build_skip_no_scrape_predicate(board_alias: str = "jb") -> str:

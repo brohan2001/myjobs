@@ -240,7 +240,7 @@ def _resolve_scraper(
     ``scraper_config`` wins over the auto-configured default, preserving
     board-level overrides.
     """
-    from src.workspace._compat import auto_scraper_type
+    from src.core.static_registry import auto_scraper_type
 
     explicit = metadata.get("scraper_type")
     if explicit:

@@ -280,7 +280,7 @@ def _is_skip_no_scrape(metadata: dict, crawler_type: str | None = None) -> bool:
     ct = crawler_type or None
     if scraper_type is None and ct:
         # Import here to avoid the workspace._compat dependency at module load
-        from src.workspace._compat import auto_skip_crawler_types
+        from src.core.static_registry import auto_skip_crawler_types
 
         if ct in auto_skip_crawler_types():
             return True
@@ -319,7 +319,7 @@ async def _load_board_scrapers(
         # Determine scraper: explicit > auto-configured > default (json-ld)
         if not explicit_scraper:
             # Check if monitor auto-configures a scraper
-            from src.workspace._compat import auto_scraper_type
+            from src.core.static_registry import auto_scraper_type
 
             auto = auto_scraper_type(crawler_type, metadata)
             if auto and auto[0] == "skip":

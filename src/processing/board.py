@@ -1639,7 +1639,7 @@ async def dry_run_single_board(
         if enrich_fields:
             scraper_type = "json-ld"
         else:
-            from src.workspace._compat import auto_scraper_type
+            from src.core.static_registry import auto_scraper_type
 
             auto = auto_scraper_type(crawler_type, metadata)
             if auto and auto[0] != "skip":

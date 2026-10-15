@@ -194,7 +194,7 @@ async def _find_board(c: Candidate, client: httpx.AsyncClient) -> tuple[str, str
         if detected:
             return c.careers_url, detected[0], detected[1] or {}
 
-    from src.workspace.career_discover import discover_career_pages
+    from src.discovery.career_pages import discover_career_pages
 
     homepage = c.website if "://" in c.website else f"https://{c.website}"
     resp = await client.get(homepage, timeout=20)
