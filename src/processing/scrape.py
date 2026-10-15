@@ -17,6 +17,7 @@ import structlog
 import src.queries.lookups as _lookups_mod  # noqa: E402
 from src.core.enum_normalize import normalize_employment_type
 from src.core.location_resolve import LocationResolver
+from src.core.tech_gate import is_tech_title
 from src.core.scrapers import (
     JobContent,
     get_scraper,
@@ -26,6 +27,7 @@ from src.processing.cpu import (
     BatchResult,
     _build_locales,
     _build_titles,
+    _coerce_datetime,
     _coerce_locations,
     _coerce_text,
     _error_message,
@@ -632,7 +634,9 @@ async def _process_one_enrich_scrape(
                     desc_hash,
                     desc_hash_legacy,
                 )
-            await conn.execute(_RECORD_SCRAPE_SUCCESS, item.job_posting_id)
+            await conn.execute(
+                _RECORD_SCRAPE_SUCCESS, item.job_posting_id, _coerce_datetime(content.date_posted), None
+            )
 
         await _batch._flush_location_misses(loc_resolver, pool)
         elapsed = monotonic() - t0
@@ -867,7 +871,12 @@ async def _process_one_scrape(
                     desc_hash,
                     desc_hash_legacy,
                 )
-            await conn.execute(_RECORD_SCRAPE_SUCCESS, item.job_posting_id)
+            await conn.execute(
+                _RECORD_SCRAPE_SUCCESS,
+                item.job_posting_id,
+                _coerce_datetime(content.date_posted),
+                is_tech_title(title_text) if title_text else None,
+            )
 
         await _batch._flush_location_misses(loc_resolver, pool)
 

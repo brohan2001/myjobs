@@ -22,8 +22,8 @@ NOW = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
 
 def test_default_query():
     sql, args = build_jobs_query(JobFilters())
-    assert "WHERE jp.is_active AND jp.titles[1] IS NOT NULL AND lower(jp.titles[1]) !~" in sql
-    assert "ORDER BY jp.first_seen_at DESC, jp.id DESC" in sql
+    assert "WHERE jp.is_active AND jp.is_tech AND jp.titles[1] IS NOT NULL AND lower(jp.titles[1]) !~" in sql
+    assert "ORDER BY jp.listed_at DESC, jp.id DESC" in sql
     assert sql.rstrip().endswith("LIMIT $1")
     assert args == [51]
 
@@ -73,7 +73,7 @@ def test_work_mode_invalid(mode):
 
 def test_since_filter():
     sql, args = build_jobs_query(JobFilters(since=NOW))
-    assert "jp.first_seen_at >= $1" in sql
+    assert "jp.listed_at >= $1" in sql
     assert args[0] == NOW
 
 
@@ -92,7 +92,7 @@ def test_occupation_filter_reuses_one_placeholder():
 def test_cursor_filter():
     pid = uuid4()
     sql, args = build_jobs_query(JobFilters(cursor=(NOW, pid)))
-    assert "(jp.first_seen_at, jp.id) < ($1, $2)" in sql
+    assert "(jp.listed_at, jp.id) < ($1, $2)" in sql
     assert args[:2] == [NOW, pid]
 
 

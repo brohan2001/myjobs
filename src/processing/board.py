@@ -17,6 +17,7 @@ import httpx
 import structlog
 
 from src.core.hashing import content_hash
+from src.core.tech_gate import drop_at_monitor
 from src.core.enum_normalize import normalize_employment_type
 from src.core.monitors import BoardGoneError, api_monitor_types
 from src.core.scrapers import enrich_description
@@ -33,6 +34,7 @@ from src.metrics import (
 from src.processing.cpu import (
     BatchResult,
     JobCPUResult,
+    _coerce_datetime,
     _build_locales,
     _build_titles,
     _coerce_locations,
@@ -55,6 +57,7 @@ from src.processing.scrape import (
 )
 from src.queries.monitor import (
     _BATCH_UPDATE_RICH_CONTENT,
+    _SET_POSTED_AT,
     _BLAST_RADIUS_FLOOR_DEFAULT,
     _COUNT_BOARD_ACTIVE_AND_MISSING,
     _CREATE_RICH_UPDATES_TEMP,
@@ -713,6 +716,7 @@ async def _process_one_board_streaming(
 
         total_discovered = 0
         total_processed = 0
+        non_tech_dropped = 0
         total_new = 0
         total_relisted = 0
         batch_count = 0
@@ -754,6 +758,11 @@ async def _process_one_board_streaming(
             for raw in result.urls:
                 u = _canonicalize_url(raw)
                 reason = _classify_job_url(u, board_url)
+                if reason is None:
+                    job = result.jobs_by_url.get(raw) if result.jobs_by_url else None
+                    if drop_at_monitor(u, job.title if job else None):
+                        reason = "non_tech"  # D27: never stored or scraped
+                        non_tech_dropped += 1
                 if reason is not None:
                     drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
                     continue
@@ -1000,6 +1009,13 @@ async def _process_one_board_streaming(
                                     source_url=j.url,
                                     path="rich",
                                 )
+                            posted = [
+                                (pid, dt)
+                                for j, _t_ids, pid in inserted_rich
+                                if (dt := _coerce_datetime(j.date_posted)) is not None
+                            ]
+                            if posted:
+                                await conn.executemany(_SET_POSTED_AT, posted)
                             if n_rich_dedup:
                                 monitor_dedup_total.labels(path="rich").inc(n_rich_dedup)
                                 board_log.info(
@@ -1242,7 +1258,8 @@ async def _process_one_board_streaming(
             )
 
         # After all batches: mark gone postings
-        if total_processed == 0:
+        # A board whose jobs were all non-tech is alive, not empty (D27).
+        if total_processed == 0 and non_tech_dropped == 0:
             # Nothing reached _DIFF_BATCH — either the monitor yielded 0 URLs
             # or every discovered URL was filtered out as implausible. Treat
             # both as an empty check so we don't mark every active posting

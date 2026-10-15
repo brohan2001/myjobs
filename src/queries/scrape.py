@@ -175,12 +175,16 @@ WHERE id = $1
 # ~400k pages a day and starved board checks; descriptions rarely change and the monitor
 # already detects removals. Relisted jobs (gone -> seen again) re-scrape once because
 # ``_enqueue_scrapes_for_relisted`` sets ``next_scrape_at = now()`` directly.
+# $2 is the page's posting date (kept when the page has none); $3 is the D27 tech verdict on the
+# scraped title (NULL leaves it unchanged).
 _RECORD_SCRAPE_SUCCESS = """
 UPDATE job_posting jp
 SET scrape_failures  = 0,
     last_scraped_at  = now(),
     next_scrape_at   = NULL,
-    leased_until     = NULL
+    leased_until     = NULL,
+    posted_at        = COALESCE($2::timestamptz, jp.posted_at),
+    is_tech          = COALESCE($3::boolean, jp.is_tech)
 WHERE jp.id = $1
 """
 

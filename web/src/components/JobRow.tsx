@@ -27,13 +27,13 @@ export function JobRow({
   onFocus,
   onOpen,
 }: JobRowProps) {
-  // Freshness check (< 60 minutes)
-  const firstSeenMs = new Date(job.first_seen_at).getTime();
-  const ageMin = Math.max(0, Math.round((Date.now() - firstSeenMs) / 60000));
+  // Freshness check (< 60 minutes). listed_at is the ATS's posting date when it gives one,
+  // otherwise when we first saw the job.
+  const listedMs = new Date(job.listed_at).getTime();
+  const ageMin = Math.max(0, Math.round((Date.now() - listedMs) / 60000));
   const isFresh = ageMin < 60;
 
-  // Relative time string
-  const timeString = relativeTime(job.first_seen_at);
+  const timeString = relativeTime(job.listed_at);
 
   // Formatted location
   let locationText = "Remote";
@@ -71,7 +71,9 @@ export function JobRow({
         }
       }}
     >
-      <p className="when">{timeString}</p>
+      <p className="when" title={job.posted_at ? "Posted by the company" : "First seen by our crawler"}>
+        {timeString}
+      </p>
       <div className="body">
         <a
           className="title"

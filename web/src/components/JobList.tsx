@@ -168,7 +168,7 @@ export function JobList({
 
   visibleItems.forEach((item, index) => {
     const jobForBucket = item.kind === "job" ? item.job : item.hidden[0];
-    const bucket = timeBucket(jobForBucket.first_seen_at);
+    const bucket = timeBucket(jobForBucket.listed_at);
 
     // Group header
     if (bucket !== lastBucket) {

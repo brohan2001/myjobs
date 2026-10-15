@@ -425,3 +425,8 @@ ON CONFLICT (taxonomy, raw_value) DO UPDATE SET
     last_seen_at = now()
 WHERE taxonomy_miss.status = 'pending'
 """
+
+
+# The ATS's own publish date for a newly inserted rich posting (feed's "posted X ago").
+_SET_POSTED_AT = "UPDATE job_posting SET posted_at = $2 WHERE id = $1::uuid"
+

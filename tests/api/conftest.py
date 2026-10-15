@@ -47,6 +47,8 @@ def make_job_row(n: int = 0, **over) -> dict:
         "salary_currency": None,
         "salary_period": None,
         "first_seen_at": datetime(2026, 1, 1, 12, 0, n % 60, tzinfo=timezone.utc),
+        "listed_at": datetime(2026, 1, 1, 12, 0, n % 60, tzinfo=timezone.utc),
+        "posted_at": None,
         "last_seen_at": datetime(2026, 1, 2, tzinfo=timezone.utc),
         "company_slug": "acme",
         "company_name": "Acme",

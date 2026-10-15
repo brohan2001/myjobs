@@ -47,7 +47,7 @@ def test_jobs_cursor_round_trip_into_args(client, pool):
     pool.fetch_rows = []
     assert client.get("/api/v1/jobs", params={"cursor": cur}).status_code == 200
     _, sql, args = pool.calls[-1]
-    assert "(jp.first_seen_at, jp.id) <" in sql
+    assert "(jp.listed_at, jp.id) <" in sql
     assert args[1] == UUID(int=2)
 
 
