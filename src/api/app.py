@@ -8,14 +8,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime
-from pathlib import Path
 from uuid import UUID
 
 import nh3
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
 from src.api import queries
 from src.api.locations import LocationIndex, load_location_index
@@ -25,7 +23,6 @@ from src.logger import get_logger
 
 log = get_logger(__name__)
 
-_STATIC_DIR = Path(__file__).parent / "static"
 
 _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -276,13 +273,6 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
         for row in data["by_ats"]:
             row["last_success_at"] = _iso(row.get("last_success_at"))
         return JSONResponse(data, headers={"Cache-Control": "public, max-age=300"})
-
-    if _STATIC_DIR.exists():
-        app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
-
-        @app.get("/", include_in_schema=False)
-        async def index_page():
-            return FileResponse(_STATIC_DIR / "index.html")
 
     return app
 
