@@ -122,6 +122,14 @@ WHERE board_url != ALL($1::text[])
   AND is_enabled = true
 """
 
+# A disabled board is never checked again, so its postings would stay "active" forever (28k did on
+# 2026-10-15). They come back through the relisted path if the board is re-enabled.
+_DEACTIVATE_DISABLED_BOARD_POSTINGS = """
+UPDATE job_posting jp SET is_active = false, updated_at = now()
+FROM job_board b
+WHERE jp.board_id = b.id AND jp.is_active AND NOT b.is_enabled
+"""
+
 _FETCH_DISABLED_BOARDS_FOR_REDIS_CLEANUP = """
 SELECT id::text AS board_id, throttle_key
 FROM job_board
@@ -321,6 +329,8 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
 
     # Disable boards no longer in the CSV
     await conn.execute(_DISABLE_REMOVED_BOARDS, board_urls)
+    stale = await conn.execute(_DEACTIVATE_DISABLED_BOARD_POSTINGS)
+    log.info("sync.postings.deactivated_for_disabled_boards", result=stale)
 
     # Fetch IDs that Postgres just assigned
     id_rows = await conn.fetch(_FETCH_BOARD_IDS, board_urls)
