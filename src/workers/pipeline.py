@@ -882,9 +882,12 @@ async def _process_scrape_work(
         status = "succeeded" if success else "failed"
         tasks_total.labels(kind="scrape", status=status).inc()
 
-        # Reschedule in Redis
-        next_scrape_at = time.time() + scrape_work.scrape_interval_hours * 3600
-        await reschedule_task(domain, posting_id, "scrape", next_scrape_at, browser=browser)
+        # Scraped once on success (see _RECORD_SCRAPE_SUCCESS); a failure retries after the interval.
+        if success:
+            await complete_task(domain, posting_id, "scrape", browser=browser)
+        else:
+            next_scrape_at = time.time() + scrape_work.scrape_interval_hours * 3600
+            await reschedule_task(domain, posting_id, "scrape", next_scrape_at, browser=browser)
 
         # Lifecycle anchor: emit ``posting.scraped`` only on success so an
         # operator with the posting_id can confirm "yes, this URL completed

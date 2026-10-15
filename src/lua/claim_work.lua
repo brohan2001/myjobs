@@ -26,8 +26,10 @@ local default_delay = tonumber(ARGV[3])
 local max_check = tonumber(ARGV[4]) or 10
 local lease_ttl = tonumber(ARGV[5]) or 600
 
--- Try tiers in priority order: 0=first-time, 1=monitors, 2=scrapes
-for tier = 0, 2 do
+-- Try tiers in order 1, 0, 2: domains whose next task is a recurring monitor come before
+-- domains holding first-time work. Domains are rate-limited, so tier 1 can't take every
+-- worker, but with 0 first a scrape backlog in tier 0 starved all board checks (2026-10-14).
+for _, tier in ipairs({1, 0, 2}) do
     local ready_key = "ready:" .. wtype .. ":" .. tier
 
     -- Get candidate domains with score <= now (due or overdue)
@@ -52,22 +54,23 @@ for tier = 0, 2 do
                 source_type = "monitor"
             end
 
-            -- 2. First-time scrapes (unconditional pop)
-            if not task_id then
-                local ft_scr = redis.call("ZPOPMIN", "ft_scrapes_" .. wtype .. ":" .. domain, 1)
-                if #ft_scr >= 2 then
-                    task_id = ft_scr[1]
-                    source_type = "scrape"
-                end
-            end
-
-            -- 3. Recurring monitors (only if due)
+            -- 2. Recurring monitors (only if due): board checks find new jobs, so they go
+            --    before this domain's page scrapes.
             if not task_id then
                 local items = redis.call("ZRANGEBYSCORE", "monitors_" .. wtype .. ":" .. domain, "-inf", tostring(now), "LIMIT", 0, 1)
                 if #items > 0 then
                     redis.call("ZREM", "monitors_" .. wtype .. ":" .. domain, items[1])
                     task_id = items[1]
                     source_type = "monitor"
+                end
+            end
+
+            -- 3. First-time scrapes (unconditional pop)
+            if not task_id then
+                local ft_scr = redis.call("ZPOPMIN", "ft_scrapes_" .. wtype .. ":" .. domain, 1)
+                if #ft_scr >= 2 then
+                    task_id = ft_scr[1]
+                    source_type = "scrape"
                 end
             end
 
