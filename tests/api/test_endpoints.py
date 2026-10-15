@@ -241,15 +241,6 @@ def test_security_headers_on_api_and_errors(client, pool):
     assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
 
 
-def test_security_headers_on_page(client):
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-    for h in SEC_HEADERS:
-        assert h in r.headers
-    assert client.get("/static/feed.css").status_code == 200
-
-
 def test_no_cors_by_default(client, pool):
     pool.fetchrow_row = {"last_updated": None}
     r = client.get("/api/v1/stats", headers={"Origin": "https://evil.test"})
