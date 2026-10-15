@@ -65,7 +65,7 @@ an honest UA in Phase 2B, then decide with data. robots.txt permission checks (2
 
 **A/B result (2026-10-12, `scripts/ua_ab_test.py`, 200 non-browser boards, 100 API + 100 site):** 187 same, 1 honest-blocked
 (i2cat on talentclue: 7 jobs with Chrome, 0 with the honest UA), 12 failed under both UAs, 0 honest-fewer. Data in
-`docs/research/ua_ab/2026-10-12.{md,json}`. The honest UA costs 0.5% of working boards, but the WAF-protected hosts that
+the A/B run's report (in git history before 2026-10-15). The honest UA costs 0.5% of working boards, but the WAF-protected hosts that
 prompted upstream's switch (Infosys, Deloitte, L'Oréal, Bain, umantis) were not in the sample. Recommendation: switch the
 default to `myjobs-bot/<ver> (+repo URL)` with a Chrome-UA allowlist for those hosts.
 
@@ -110,7 +110,7 @@ startups fold into `startup`, `mnc_gcc` into `gcc`. Discovery normalizes candida
 labels like "fintech" are not company types). A test keeps `data/companies.csv` inside the list. The API filter is
 `company_type=startup,gcc` (any of).
 
-## D22: Notice period is filled out-of-band (Default, 2026-10-12)
+## D22: Notice period is filled out-of-band (Default, 2026-10-12; superseded by D26)
 `job_posting.notice_max_days` (migration 0010) is written by a loop inside `myjobs worker` (`src/processing/notice.py`)
 that re-parses a posting whenever its description hash changes. The monitor and scrape writers use positional SQL in four
 places; threading a new column through all of them risked silent misalignment for a field that only ~0.03% of postings
@@ -125,6 +125,40 @@ exits 1 on any alert, so cron/systemd can notify. No webhook until deployment pi
 ## D24: Hosting costs ₹0 (User, 2026-10-12)
 The user won't pay for hosting. The plan is one Oracle Cloud Always Free A1 VM for everything: Postgres, Redis, worker, API, the
 Next.js web app and Caddy. A free DuckDNS hostname, Let's Encrypt, backups in Oracle Object Storage and the Healthchecks.io free
-tier complete the setup (`docs/INFRA_PROPOSAL.md` §6). Free managed Postgres tiers can't hold the 2.8 GB database, and running
+tier complete the setup (`docs/DEPLOY.md`). Free managed Postgres tiers can't hold the 2.8 GB database, and running
 the web app on the same VM avoids the Cloudflare/OpenNext adapter (Vercel's free plan bars commercial use). Never upgrade the
 Oracle account to Pay-As-You-Go.
+
+## D25: Portal monitors are allowed (User, 2026-10-15; replaces the portal part of the hard rule)
+The user asked for every jobseek monitor, including those that read job portals rather than company career sites: linkedin,
+seek, jobstreet, headhunter, computrabajo, job51, jobbank104 and jobs_ch. Their terms of service forbid scraping, and LinkedIn is
+known to sue scrapers; the user was told this and accepted the risk. They run through the same per-domain rate limits and honest
+User-Agent as every other monitor. Naukri still has no monitor.
+
+## D26: Cut list from the 2026-10-14 test pass (User, 2026-10-15)
+Removed:
+- `src/workspace/` (jobseek's workspace CLI);
+- the R2 client (only `content_hash` survives, in `src/core/hashing.py`);
+- the notice-period feature (0% of postings had a value);
+- the interim API page and the one-off scripts (build_csvs, fix_workday_sites, probe_jobseek_monitors, ua_ab_test, baseline_snapshot);
+- design mockups, finished delegation briefs, baseline snapshots, AUDIT and SCRAPING_REPORT, and the paid-hosting survey.
+
+Migration 0011 drops the notice columns and jobseek's `indexnow_submission`/`exporter_state` tables. `src/metrics.py` goes
+when the core is re-synced with upstream, since upstream's core calls it in many places.
+
+## D27: Tech-only scope (User, 2026-10-15)
+The feed covers tech-adjacent jobs only, and non-tech postings are dropped before they're fetched or stored.
+
+Tech means the occupation domains software-engineering, data-ai, infrastructure-security and product-design, plus:
+- PM and management: TPM, project manager, engineering manager, tech lead, scrum master;
+- sales and support engineering: solutions architect, sales/customer/support engineer;
+- analysts: business, quant and data analysts;
+- hardware: electrical, mechanical and automation engineers, data-center roles.
+
+A company stays in the registry only while it has at least one tech posting.
+
+## D28: Parity target is jseek.co (User, 2026-10-15)
+Every in-scope jseek.co job should also appear here. Coverage comes from importing jobseek's registry
+(`apps/crawler/data/{companies,boards}.csv`, MIT) and porting its monitors. A parity script samples jseek.co's public
+`/api/v1/search` and reports misses by cause.
+

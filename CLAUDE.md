@@ -1,8 +1,9 @@
-# myjobs: public feed of the latest jobs (revamp in progress)
+# myjobs: public feed of the latest tech jobs (revamp in progress)
 
 Continuous crawler over ~3,169 company career boards (2,882 companies) → Postgres → public read-only API and web feed (jseek.co-style).
-**Revamp underway**: worldwide coverage, strongest for India. Per-user profiles come later (DECISIONS D10). Read `docs/REVAMP_PLAN.md`, `docs/DECISIONS.md`
-and `docs/REPO_MAP.md` before starting work. `docs/AUDIT.md` and `docs/SCRAPING_REPORT.md` describe the current state.
+**Revamp underway**: worldwide coverage, strongest for India, tech-adjacent jobs only (D27), at least jseek.co's coverage (D28).
+Per-user profiles come later (D10). Read `docs/REVAMP_PLAN.md`, `docs/DECISIONS.md` and `docs/REPO_MAP.md` before starting work;
+`docs/HANDOFF.md` has the latest session state.
 
 ---
 
@@ -11,9 +12,11 @@ and `docs/REPO_MAP.md` before starting work. `docs/AUDIT.md` and `docs/SCRAPING_
   pre-commit hook (gitleaks + `private/pii_patterns.txt`) blocks leaks. Don't bypass it.
 - **Never fabricate resume content.** Tailoring may select and reorder real content only.
 - **Branches:** work on `revamp/<phase>` branches, small logical commits, never commit to `main`. The auto-push hook is disabled.
-- **Respect the web:** prefer public ATS APIs; no scrapers for Naukri/LinkedIn or other ToS-forbidden portals.
+- **Respect the web:** prefer public ATS APIs; honour robots.txt for site-reading monitors. jobseek's portal monitors (LinkedIn,
+  SEEK, JobStreet…) are allowed by the user's explicit decision (D25); don't add new portal scrapers (e.g. Naukri) without asking.
 - **Scraper changes** must keep `tests/characterization/` green or update snapshots deliberately (see DECISIONS D5).
 - `src/core/` and `src/shared/` are a fork of colophon-group/jobseek (MIT, see `THIRD_PARTY_NOTICES.md`). We may edit them.
+- **No bloat:** keep the codebase short. Cut code nothing uses; list removals and confirm with the user before deleting.
 
 ---
 
@@ -31,12 +34,12 @@ python scripts/populate_taxonomy.py        # seniority/occupation taxonomy (once
 myjobs worker             # crawl continuously (syncs CSV config first); Ctrl-C to stop
 myjobs worker --no-browser
 myjobs crawl              # one pass: drain ready queues, then exit
-myjobs serve              # API + interim page at http://127.0.0.1:8080 (docs at /api/docs)
+myjobs serve              # API at http://127.0.0.1:8080 (docs at /api/docs)
+myjobs health             # alerts (stale feed, worker behind, boards gone); exits 1 on alert
 myjobs stats              # freshness + coverage
 myjobs sync               # CSV → Postgres + Redis queues
 myjobs company list|add|disable
 
-python scripts/baseline_snapshot.py        # coverage snapshot → docs/baseline/
 python scripts/discover_companies.py data/candidates/india_companies.csv [--apply]   # candidate → verified board
 python scripts/discover_companies.py <gone.csv> --rediscover --apply                 # re-find boards that went away
 
@@ -53,13 +56,13 @@ Env: copy `.env.example` → `.env` (`LOCAL_DATABASE_URL`, `REDIS_URL`, `API_RAT
 data/companies.csv + data/boards.csv → src/sync.py → Postgres (company, job_board) + Redis queues
 src/workers/pipeline.py → src/core/monitors/* (37 types) → src/core/scrapers/* (16 types) → job_posting + descriptions
 src/processing/cpu.py enrichment (GeoNames locations, salary, seniority, occupation)
-src/api/ (FastAPI): /api/v1/jobs|jobs/{id}|companies|locations|stats|coverage (+ interim page in src/api/static/)
+src/api/ (FastAPI): /api/v1/jobs|jobs/{id}|companies|locations|stats|coverage 
 web/ (Next.js App Router + TS): server-rendered feed, job detail, coverage; talks to the API via /api rewrite
 src/discovery/ + scripts/discover_companies.py: candidate companies → careers board → ATS → robots/parse checks → registry or review queue
 ```
 
 - Config: `src/config.py` (pydantic-settings).
-- DB: Postgres via asyncpg (`src/db.py`); schema in alembic migrations 0001–0009.
+- DB: Postgres via asyncpg (`src/db.py`); schema in alembic migrations 0001–0011.
 - Queue: `src/redis_queue.py` + `src/lua/*.lua` (per-key rate limit, leases, reaper, dead letter).
 - SSRF guard: `src/shared/ssrf.py`, installed by `create_http_client` (used by the worker and discovery).
 - robots.txt: `src/shared/robots.py`. Site-reading monitors honour it; ATS API monitors (`API_MONITORS`) are exempt.
