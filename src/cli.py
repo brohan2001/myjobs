@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import os
 import re
 import signal
 from pathlib import Path
@@ -67,6 +68,24 @@ def _board_url_for(ats: str, slug: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_HARD_EXIT_AFTER_S = 60
+
+
+def _request_stop(loop: asyncio.AbstractEventLoop, shutdown_event: asyncio.Event) -> None:
+    """First signal: drain gracefully, with a hard exit as a backstop. Second signal: exit now.
+
+    The pipeline's drain is bounded, but a task that swallows cancellation (a hung browser
+    close) or a pool close can still block forever; on 2026-10-14 a worker ignored SIGTERM
+    for over a minute and needed SIGKILL.
+    """
+    if shutdown_event.is_set():
+        console.print("[red]Second stop signal: exiting now.[/red]")
+        os._exit(130)
+    shutdown_event.set()
+    console.print(f"Stopping: draining in-flight work (forced exit after {_HARD_EXIT_AFTER_S} s; Ctrl-C again to force now)")
+    loop.call_later(_HARD_EXIT_AFTER_S, os._exit, 1)
+
+
 async def _run_worker(*, browser: bool, sync_first: bool) -> None:
     """Run the crawl pipeline continuously until SIGINT/SIGTERM.
 
@@ -85,7 +104,7 @@ async def _run_worker(*, browser: bool, sync_first: bool) -> None:
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown_event.set)
+        loop.add_signal_handler(sig, _request_stop, loop, shutdown_event)
 
     local_pool = await create_local_pool()
     try:
