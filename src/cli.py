@@ -242,6 +242,46 @@ def health() -> None:
     console.print("[green]healthy[/green]")
 
 
+@app.command()
+def boards(
+    term: str = typer.Argument(help="Company slug or name, ATS type (e.g. greenhouse), or board slug"),
+    limit: int = typer.Option(50, "--limit"),
+) -> None:
+    """When each matching board was last checked, when it's due, and its last error."""
+    from datetime import UTC, datetime
+
+    from src.health import fetch_boards
+
+    async def _fetch():
+        from src.db import close_all_pools, create_local_pool
+        pool = await create_local_pool()
+        try:
+            return await fetch_boards(pool, term, limit)
+        finally:
+            await close_all_pools()
+
+    def ago(ts) -> str:
+        if ts is None:
+            return "never"
+        mins = (datetime.now(UTC) - ts).total_seconds() / 60
+        if mins < 0:
+            return f"in {-mins:.0f} min" if mins > -120 else f"in {-mins / 60:.0f} h"
+        return f"{mins:.0f} min ago" if mins < 120 else f"{mins / 60:.0f} h ago"
+
+    rows = asyncio.run(_fetch())
+    if not rows:
+        console.print(f"No boards match {term!r}.")
+        raise typer.Exit(code=1)
+    table = Table(box=box.SIMPLE)
+    for col in ("board", "ats", "status", "last success", "next check", "fails", "jobs", "last error"):
+        table.add_column(col)
+    for r in rows:
+        status = r["board_status"] if r["is_enabled"] else "disabled"
+        table.add_row(r["board_slug"], r["crawler_type"], status, ago(r["last_success_at"]), ago(r["next_check_at"]),
+                      str(r["consecutive_failures"]), str(r["active_jobs"]), r["last_error"] or "")
+    console.print(table)
+
+
 @app.command(name="prune-scrape-queues")
 def prune_scrape_queues() -> None:
     """Remove stale per-domain scrape queues from Redis."""
