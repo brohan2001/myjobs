@@ -120,6 +120,30 @@ _JOB_COLUMNS = """
 """
 
 
+# Title words too senior for an experience cap, by cap. Postgres regex: \m and \M are word edges.
+_SENIOR_ROLES = (
+    r"senior|sr|lead|staff|principal|director|head|architect|vp|vice president|chief|distinguished|fellow|"
+    r"engineering manager|senior manager|general manager|managing"  # not "manager": APM and PM roles take freshers
+)
+_LEADERSHIP = r"staff|principal|director|head|vp|vice president|chief|distinguished|fellow"
+_EXECUTIVE = r"director|vp|vice president|chief|head of"
+_LEVEL_2_UP = r"ii|iii|iv|v|2|3|4|5"  # "Software Engineer II", "SDE 2", "MTS 3"
+_LEVEL_3_UP = r"iii|iv|v|3|4|5"
+
+
+def _seniority_cutoff(max_years: int) -> tuple[str, tuple[str, ...]]:
+    """(title regex, seniority slugs) that a 'at most max_years of experience' filter excludes."""
+    if max_years == 0:  # freshers
+        return rf"\m({_SENIOR_ROLES})\M|\m(engineer|developer|sde|mts|analyst|scientist)[ -]*({_LEVEL_2_UP})\M", (
+            "mid", "senior", "lead", "staff", "principal", "director", "executive")
+    if max_years <= 2:
+        return rf"\m({_SENIOR_ROLES})\M|\m(engineer|developer|sde|mts|analyst|scientist)[ -]*({_LEVEL_3_UP})\M", (
+            "senior", "lead", "staff", "principal", "director", "executive")
+    if max_years <= 5:
+        return rf"\m({_LEADERSHIP})\M", ("staff", "principal", "director", "executive")
+    return rf"\m({_EXECUTIVE})\M", ("director", "executive")
+
+
 def build_jobs_query(f: JobFilters) -> tuple[str, list]:
     # URL-only boards insert a posting before its detail page is scraped; hide it until it has a title.
     where = ["jp.is_active", "jp.is_tech", "jp.titles[1] IS NOT NULL", f"lower(jp.titles[1]) !~ '{NON_JOB_TITLE_RE}'"]
@@ -151,7 +175,13 @@ def build_jobs_query(f: JobFilters) -> tuple[str, list]:
             f"OR parent_id = (SELECT id FROM occupation WHERE slug = {p}))"
         )
     if f.max_years is not None:
-        where.append(f"(jp.experience_min IS NULL OR jp.experience_min <= {arg(int(f.max_years))})")
+        years = int(f.max_years)
+        where.append(f"(jp.experience_min IS NULL OR jp.experience_min <= {arg(years)})")
+        # Most postings don't state years, so the title and seniority tag carry the signal.
+        too_senior, levels = _seniority_cutoff(years)
+        where.append(f"(jp.seniority_id IS NULL OR jp.seniority_id NOT IN "
+                     f"(SELECT id FROM seniority WHERE slug = ANY({arg(list(levels))}::text[])))")
+        where.append(f"lower(jp.titles[1]) !~ {arg(too_senior)}")
     if f.company_types:
         unknown = set(f.company_types) - set(COMPANY_TYPES)
         if unknown:

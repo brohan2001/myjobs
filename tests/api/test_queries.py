@@ -256,3 +256,45 @@ def test_company_type_filter_rejects_unknown_values():
     with pytest.raises(InvalidFilter):
         build_jobs_query(JobFilters(company_types=("unicorn",)))
 
+
+
+def _too_senior(max_years: int, title: str) -> bool:
+    """Apply the filter's Postgres title regex in Python (\\m and \\M are word edges)."""
+    import re
+
+    from src.api.queries import _seniority_cutoff
+
+    pattern = _seniority_cutoff(max_years)[0].replace(r"\m", r"\b").replace(r"\M", r"\b")
+    return re.search(pattern, title.lower()) is not None
+
+
+@pytest.mark.parametrize("title", [
+    "Senior Software Engineer", "Sr Software Engineer", "Principal Systems Software Engineer",
+    "Senior Platform Software Engineer", "Staff Engineer", "Lead Data Scientist", "Engineering Manager",
+    "Software Engineer III", "MTS 3",
+])
+def test_up_to_two_years_excludes_senior_titles(title):
+    assert _too_senior(2, title)
+
+
+@pytest.mark.parametrize("title", [
+    "Software Engineer", "Software Engineer II - Java", "SDE-1", "Associate Product Manager",
+    "Data Analyst", "Java Backend Engineer", "Software Engineer Apprenticeship", "Graduate Engineer Trainee",
+])
+def test_up_to_two_years_keeps_early_career_titles(title):
+    assert not _too_senior(2, title)
+
+
+def test_freshers_also_exclude_level_two():
+    assert _too_senior(0, "Software Engineer II - Java") and _too_senior(0, "SDE 2")
+    assert not _too_senior(0, "SDE-1")
+
+
+def test_max_years_filter_uses_title_and_seniority_tag():
+    from src.api.queries import JobFilters, build_jobs_query
+
+    sql, args = build_jobs_query(JobFilters(max_years=2))
+    assert "(jp.experience_min IS NULL OR jp.experience_min <= $1)" in sql
+    assert "seniority WHERE slug = ANY($2::text[])" in sql
+    assert "lower(jp.titles[1]) !~ $3" in sql
+    assert "senior" in args[1] and "mid" not in args[1]
