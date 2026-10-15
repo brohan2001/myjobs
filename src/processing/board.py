@@ -1349,8 +1349,6 @@ async def _process_one_board_streaming(
         if elapsed >= _SLOW_MONITOR_SECONDS:
             board_log.warning("batch.monitor.slow", duration_s=round(elapsed, 2))
 
-        if total_new or gone_count:
-
         return True, elapsed
 
     except TDMReservedError as exc:
