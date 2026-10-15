@@ -10,7 +10,8 @@ Large parts of this repository are derived from jobseek
 - Board rows in `data/boards.csv` and company rows in `data/companies.csv`
   taken from jobseek's crawler data (`apps/crawler/data/`)
 
-Files may have been modified from the originals.
+The core is vendored at upstream commit `cf71baa` (2026-10-14); `docs/UPSTREAM.md` lists what was copied and
+the few local modifications.
 
 ```
 MIT License

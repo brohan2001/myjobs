@@ -7,8 +7,12 @@ Returns full job data. Supports pagination via skip/limit. Rate limit: 2 req/sec
 from __future__ import annotations
 
 import asyncio
-import random
+import hashlib
+import os
 import re
+from contextlib import suppress
+from pathlib import Path
+from typing import cast
 
 import httpx
 import structlog
@@ -17,11 +21,11 @@ from src.core.enum_normalize import normalize_salary_unit
 from src.core.monitors import (
     BoardGoneError,
     DiscoveredJob,
-    fetch_page_text,
     register,
-    slugs_from_url,
 )
-from src.shared.http_retry import PaginationFetchError, is_retryable_status
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.raw import save_json_response
+from src.shared.http_retry import PaginationFetchError, fetch_json_page_with_retry
 from src.shared.truncation import truncated_rich_result
 
 log = structlog.get_logger()
@@ -53,6 +57,55 @@ _IGNORE_TOKENS = frozenset({"v0", "api", "js", "css", "assets"})
 # ``shared/http.py``) which was flipping responses to HTML and failing
 # ``response.json()`` with a bare ``JSONDecodeError``. Force JSON.
 _API_HEADERS = {"Accept": "application/json"}
+_CAPTURE_DIR = Path("/tmp")
+_CAPTURE_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_CAPTURE_MAX_BYTES = 16 << 20
+
+
+def _capture_scheduled_response(token: str, skip: int, body: bytes, status: int, url: str) -> None:
+    """Retain bounded bytes from the existing scheduled page, without another request."""
+    selected = {
+        item.strip()
+        for item in os.environ.get("LEVER_CAPTURE_TOKENS", "").split(",")
+        if item.strip()
+    }
+    if (
+        token not in selected
+        or len(selected) > 4
+        or _CAPTURE_TOKEN.fullmatch(token) is None
+        or skip not in {0, 100, 200, 300}
+        or len(body) > _CAPTURE_MAX_BYTES
+    ):
+        return
+    path = _CAPTURE_DIR / f"jobseek-lever-{token}-{skip}.body"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    created = False
+    try:
+        fd = os.open(path, flags, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as output:
+            output.write(body)
+            output.flush()
+            os.fsync(output.fileno())
+    except FileExistsError:
+        return
+    except OSError as exc:
+        if created:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+        log.warning("lever.capture_failed", error_type=type(exc).__name__)
+    else:
+        log.info(
+            "lever.response_captured",
+            token=token,
+            skip=skip,
+            status=status,
+            final_url=url,
+            bytes=len(body),
+            sha256=hashlib.sha256(body).hexdigest(),
+        )
 
 
 def _build_description(posting: dict) -> str | None:
@@ -162,6 +215,14 @@ async def _probe_token(
             return True, count
         return False, None
     except Exception:
+        log.debug(
+            "lever.probe_failed",
+            probe="token",
+            token=token,
+            region=region,
+            url=_api_url(token, region),
+            exc_info=True,
+        )
         return False, None
 
 
@@ -180,7 +241,53 @@ async def _fetch_job_count(
             return "100+" if len(data) >= 100 else len(data)
         return None
     except Exception:
+        log.debug(
+            "lever.probe_failed",
+            probe="job_count",
+            token=token,
+            region=region,
+            url=_api_url(token, region),
+            exc_info=True,
+        )
         return None
+
+
+async def _fetch_template_count(
+    token: str,
+    client: httpx.AsyncClient,
+    region: str | None,
+) -> ProbeCount | None:
+    return await _fetch_job_count(token, client, region)
+
+
+async def _probe_template_token(
+    token: str,
+    client: httpx.AsyncClient,
+    region: str | None,
+) -> ProbeResult:
+    return await _probe_token(token, client, region)
+
+
+def _build_template_result(
+    token: str,
+    count: ProbeCount | None,
+    region: str | None,
+) -> dict:
+    result: dict = {"token": token}
+    if region:
+        result["region"] = region
+    if count is not None:
+        result["jobs"] = count
+    return result
+
+
+def _region_from_template_match(
+    match: re.Match[str],
+    region: str | None,
+) -> str | None:
+    if region:
+        return region
+    return "eu" if ".eu.lever.co" in match.group(0) else None
 
 
 async def _get_page_with_retry(
@@ -191,134 +298,31 @@ async def _get_page_with_retry(
     retries: int = _RETRY_ATTEMPTS,
     base_delay: float = _RETRY_BASE_DELAY,
     skip: int = 0,
+    capture_token: str | None = None,
 ) -> list[dict]:
-    """GET a Lever list-API page with bounded retries (#2749).
-
-    Mirrors the contract used by ``fetch_with_retry`` (#2722) and the
-    sibling monitor helpers (workday #2748, accenture #2735, PCSX
-    #2734, api_sniffer #2733): retryable failures back off exponentially
-    and, on budget exhaustion, raise :class:`PaginationFetchError` so
-    the run is recorded as a failure rather than silently truncating to
-    whatever pages happened to succeed.
-
-    Lever's end-of-pagination signal is ``len(batch) < BATCH_SIZE``.
-    A CDN/anti-bot incident dropping the body and returning ``200 []``
-    looks identical to a legitimate empty page — pre-fix, the loop
-    simply broke and the caller treated the partial discovery as
-    success, which fed ``_MARK_GONE_BY_TIMESTAMP`` for the missing
-    URLs (same shape as #2722 / #2737 / #2748).
-
-    Retried:
-      - HTTP 5xx (Cloudflare 520-526/530 included), 408, 425, 429.
-      - Arbitrary network exceptions (timeout, connection reset, JSON
-        parse error on a captcha/HTML body served as 200).
-      - HTTP 200 with a body that decodes to a non-list shape — e.g.,
-        a CDN error envelope ``{}`` served as 200 (same shape as the
-        workday ``null``-body guard).
-
-    Fail-fast (non-retryable 4xx — auth-expired 401, misconfigured 400,
-    forbidden 403): raises :class:`PaginationFetchError` on the first
-    attempt. These won't recover within the retry budget and we'd
-    rather surface the misconfiguration than burn the budget. The
-    *first-page-only* 404 -> ``BoardGoneError`` mapping is preserved
-    by the caller (``discover``) because it's a structural signal,
-    not a transient one — see #2215.
-
-    Backoff: ``base_delay × 2^attempt × (0.5 + random())`` — exponential
-    with full jitter, identical cadence to workday (#2748).
-    """
-    # Retry observability (#3210). Same counter as ``http_retry.py`` so
-    # the cross-monitor "retry storm" PromQL query aggregates lever in.
-    from src.metrics import http_retry_attempts_total, http_retry_host
-    from src.shared.tdm import TDMReservedError
-    from src.shared.tdm import check_response as _tdm_check
-
-    host = http_retry_host(url)
-
-    last_exc: BaseException | None = None
-    last_status: int | None = None
-    retried = False
-
-    for attempt in range(retries):
-        try:
-            resp = await client.get(url, params=params, headers=_API_HEADERS)
-            last_status = resp.status_code
-            if resp.status_code == 200:
-                # TDM-Reservation respect (#2842) — header-only check on
-                # API endpoints (JSON body, no HTML meta to scan).
-                _tdm_check(resp)
-                # ``resp.json()`` may raise ``json.JSONDecodeError`` on a
-                # captcha/HTML body served as 200 — falls into the
-                # ``except Exception`` branch below, retried, then
-                # surfaced as ``PaginationFetchError``. No silent break.
-                data = resp.json()
-                # Lever's list endpoint returns a JSON array of postings.
-                # A body that decodes to ``null`` or to a non-list shape
-                # (e.g., an unexpected error envelope) is treated as a
-                # transient failure: retry, then raise. Without this
-                # guard, ``len(batch) < BATCH_SIZE`` on a non-list ``batch``
-                # raises ``TypeError`` mid-loop, OR (worse) a coincidental
-                # ``[]`` would silently break the loop — same shape of
-                # silent-break bug the issue (#2749) is fixing.
-                if not isinstance(data, list):
-                    raise ValueError(
-                        f"lever list endpoint returned non-list body: {type(data).__name__}"
-                    )
-                if retried:
-                    http_retry_attempts_total.labels(host=host, outcome="recovered").inc()
-                return data
-            if resp.status_code == 404 and skip == 0:
-                # First-page 404 is Lever's "board removed" signal.
-                # Re-raise as ``BoardGoneError`` via the caller; here we
-                # surface a sentinel by raising the canonical structural
-                # error and letting ``discover`` translate. We do this
-                # by attaching the response so the caller can detect.
-                raise PaginationFetchError(
-                    url,
-                    attempts=attempt + 1,
-                    last_status=404,
+    """GET a Lever list-API page with bounded retries (#2749)."""
+    # Kept for the existing first-page 404 mapping in ``discover``.
+    _ = skip
+    return cast(
+        list[dict],
+        await fetch_json_page_with_retry(
+            client,
+            url,
+            params=params,
+            headers=_API_HEADERS,
+            expect_shape=list,
+            retries=retries,
+            base_delay=base_delay,
+            log_event="lever.list_backoff",
+            sleep=asyncio.sleep,
+            on_success_body=(
+                lambda body, status, final_url: (
+                    _capture_scheduled_response(capture_token, skip, body, status, final_url)
+                    if capture_token is not None and os.environ.get("LEVER_CAPTURE_TOKENS")
+                    else None
                 )
-            if is_retryable_status(resp.status_code):
-                last_exc = None  # status-only, no exception
-                http_retry_attempts_total.labels(host=host, outcome="retry").inc()
-                retried = True
-            else:
-                # Non-retryable 4xx — fail fast. ``resp.raise_for_status``
-                # would raise ``HTTPStatusError`` which the caller doesn't
-                # uniformly handle; raise ``PaginationFetchError`` directly
-                # for cross-monitor symmetry (callers ``except
-                # PaginationFetchError`` will route to ``_RECORD_FAILURE``).
-                raise PaginationFetchError(
-                    url,
-                    attempts=attempt + 1,
-                    last_status=resp.status_code,
-                )
-        except (PaginationFetchError, TDMReservedError):
-            raise
-        except Exception as exc:  # noqa: BLE001 — timeout, network, JSON parse
-            last_exc = exc
-            last_status = None
-            http_retry_attempts_total.labels(host=host, outcome="retry").inc()
-            retried = True
-
-        if attempt < retries - 1:
-            delay = base_delay * (2**attempt) * (0.5 + random.random())
-            log.info(
-                "lever.list_backoff",
-                url=url,
-                attempt=attempt + 1,
-                delay_s=round(delay, 2),
-                last_status=last_status,
-                last_error=type(last_exc).__name__ if last_exc else None,
-            )
-            await asyncio.sleep(delay)
-
-    http_retry_attempts_total.labels(host=host, outcome="exhausted").inc()
-    raise PaginationFetchError(
-        url,
-        attempts=retries,
-        last_status=last_status,
-        last_error=type(last_exc).__name__ if last_exc else None,
+            ),
+        ),
     )
 
 
@@ -353,17 +357,22 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
     while True:
         try:
             batch = await _get_page_with_retry(
-                client, url, {"limit": BATCH_SIZE, "skip": skip}, skip=skip
+                client,
+                url,
+                {"limit": BATCH_SIZE, "skip": skip},
+                skip=skip,
+                capture_token=token,
             )
         except PaginationFetchError as exc:
             # First-page 404 is the "board removed" signal — re-raise as
-            # the canonical structural error so the board processor
-            # disables in one shot instead of accumulating five
-            # consecutive failures. See issue #2215.
+            # the canonical structural error so the board processor applies
+            # spaced confirmations instead of the generic failure ramp.
+            # See issues #2215 and #6156.
             if exc.last_status == 404 and skip == 0:
                 raise BoardGoneError(
                     f"Lever board token {token!r} returned 404",
                     url=url,
+                    status_code=404,
                 ) from exc
             raise
 
@@ -388,56 +397,47 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
     """Detect Lever: domain check -> page HTML scan -> slug-based API probe."""
+    _ = pw
     region = _region_from_url(url)
-    token = _token_from_url(url)
-    if token:
-        if client is not None:
-            count = await _fetch_job_count(token, client, region)
-            if count is not None:
-                result: dict = {"token": token, "jobs": count}
-                if region:
-                    result["region"] = region
-                return result
-        result = {"token": token}
-        if region:
-            result["region"] = region
-        return result
-
-    if client is None:
-        return None
-
-    html = await fetch_page_text(url, client)
-    if html:
-        for pattern in _PAGE_PATTERNS:
-            match = pattern.search(html)
-            if match:
-                found = match.group(1)
-                if found not in _IGNORE_TOKENS:
-                    log.info("lever.detected_in_page", url=url, board_token=found)
-                    # Detect region from the matched URL in the HTML
-                    html_region = region
-                    if not html_region and match.group(0) and ".eu.lever.co" in match.group(0):
-                        html_region = "eu"
-                    count = await _fetch_job_count(found, client, html_region)
-                    result = {"token": found}
-                    if html_region:
-                        result["region"] = html_region
-                    if count is not None:
-                        result["jobs"] = count
-                    return result
-
-    for slug in slugs_from_url(url):
-        found, count = await _probe_token(slug, client, region)
-        if found:
-            log.info("lever.detected_by_probe", url=url, board_token=slug)
-            result = {"token": slug}
-            if region:
-                result["region"] = region
-            if count is not None:
-                result["jobs"] = count
-            return result
-
-    return None
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="lever",
+        token_from_url=_token_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_TOKENS,
+        fetch_job_count=_fetch_template_count,
+        api_probe=_probe_template_token,
+        initial_context=region,
+        result_builder=_build_template_result,
+        context_from_match=_region_from_template_match,
+    )
 
 
-register("lever", discover, cost=10, can_handle=can_handle, rich=True)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    token = metadata.get("token") or _token_from_url(board_url)
+    if not token:
+        return
+    region = metadata.get("region") or _region_from_url(board_url)
+    await save_json_response(
+        artifact_dir,
+        client,
+        _api_url(token, region),
+        params={"limit": 100},
+        headers=_API_HEADERS,
+    )
+
+
+register(
+    "lever",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=True,
+    save_raw=save_raw,
+)

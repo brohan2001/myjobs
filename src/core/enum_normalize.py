@@ -10,10 +10,14 @@ Canonical employment-type values (matches the web filter UI):
 - ``full_time``
 - ``part_time``
 - ``contract``
-- ``internship``
 - ``temporary``
 - ``volunteer``
 - ``full_or_part``
+
+Internship-like upstream values are level signals, not employment types.
+``employment_type_implies_intern_level`` recognizes them so the processing
+pipeline can assign the ``intern`` seniority while persisting a NULL
+employment type.
 
 Canonical job-location-type values: ``onsite`` / ``remote`` / ``hybrid``.
 
@@ -34,8 +38,62 @@ import structlog
 log = structlog.get_logger()
 
 # ── Employment Type ─────────────────────────────────────────────────
-# Canonical: full_time, part_time, contract, internship, temporary,
-#            volunteer, full_or_part.
+# Canonical: full_time, part_time, contract, temporary, volunteer,
+#            full_or_part.
+
+_INTERNSHIP_LEVEL_SIGNALS = frozenset(
+    {
+        "internship",
+        "intern",
+        "interns",
+        "trainee",
+        "traineeship",
+        "apprentice",
+        "apprenticeship",
+        "co-op",
+        "coop",
+        "working student",
+        "student intern",
+        # Beehire public campaign codes
+        "contracttype_internship",
+        "contracttype_apprenticeship",
+        "contracttype_student",
+        # German
+        "werkstudent",
+        "praktikum",
+        "praktikant",
+        "lernende",
+        "ausbildung",
+        "azubi",
+        "auszubildende",
+        # Dutch
+        "stagiair",
+        # French
+        "stage",
+        "alternance",
+        "apprentissage",
+        "stagiaire",
+        # Italian
+        "tirocinio",
+        "apprendistato",
+        # Spanish
+        "becario",
+        "prácticas",
+        "practicas",
+        "contrato de prácticas",
+        "aprendizaje",
+        # Czech / Slovak
+        "stáž",
+        "stáž/prax",
+        # Chinese
+        "实习",
+        "實習",
+        "實習生",
+        "实习生",
+        # Polish
+        "staż",
+    }
+)
 
 _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     # ── Canonical self-mappings (idempotency) ───────────────────────
@@ -50,6 +108,7 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "permanent": "full_time",
     "permanent employment": "full_time",
     "permanent full-time": "full_time",
+    "full-time employee": "full_time",  # onlyfy
     "regular": "full_time",
     "employee / full-time": "full_time",
     "eor / full-time": "full_time",
@@ -73,6 +132,7 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "parttime_permanent": "part_time",
     "parttime_fixed_term": "part_time",
     "permanent_part_time": "part_time",
+    "part-time employee": "part_time",  # onlyfy
     "mini_job": "part_time",
     "minijob": "part_time",
     "seasonal": "part_time",
@@ -89,18 +149,19 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "consultant": "contract",
     "self-employed": "contract",
     "temporary": "temporary",
+    "temporary employee": "temporary",  # onlyfy
     "temporary positions": "temporary",
     "temp": "temporary",
-    "internship": "internship",
-    "intern": "internship",
-    "interns": "internship",
-    "trainee": "internship",
-    "traineeship": "internship",
-    "apprentice": "internship",
-    "apprenticeship": "internship",
-    "co-op": "internship",
-    "coop": "internship",
-    "working student": "internship",
+    # Beehire public campaign codes
+    "contracttype_permanent": "full_time",
+    "contracttype_fixedterm": "contract",
+    "contracttype_freelance": "contract",
+    "contracttype_interim": "contract",
+    "contracttype_replacement": "temporary",
+    "contractduration_fulltime": "full_time",
+    "contractduration_parttime": "part_time",
+    "contractduration_10h": "part_time",
+    "contractduration_20h": "part_time",
     "volunteer": "volunteer",
     "voluntary": "volunteer",
     "full time or part time": "full_or_part",
@@ -109,6 +170,8 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "temporary positions, full-time": "full_or_part",
     "full_time, part_time": "full_or_part",
     "full-time / part-time": "full_or_part",
+    # ── Portuguese / Brazilian contracts ────────────────────────────
+    "clt - tempo integral": "full_time",
     # ── schema.org JSON-LD enums ─────────────────────────────────────
     # The lookup lowercases keys, so FULL_TIME / PART_TIME / CONTRACTOR /
     # INTERN / TEMPORARY / VOLUNTEER / PER_DIEM / OTHER fall through to
@@ -120,13 +183,6 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "vollzeit": "full_time",
     "regulär": "full_time",
     "teilzeit": "part_time",
-    "werkstudent": "internship",
-    "praktikum": "internship",
-    "praktikant": "internship",
-    "lernende": "internship",
-    "ausbildung": "internship",
-    "azubi": "internship",
-    "auszubildende": "internship",
     "befristet": "contract",
     "zeitarbeit": "contract",
     "freiberuflich": "contract",
@@ -134,6 +190,12 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "voll- oder teilzeit": "full_or_part",
     "voll-/teilzeit": "full_or_part",
     "voll- und teilzeit": "full_or_part",
+    # ── Danish ──────────────────────────────────────────────────────
+    "fuldtid": "full_time",
+    "deltid": "part_time",
+    # ── Dutch ───────────────────────────────────────────────────────
+    "voltijds": "full_time",
+    "deeltijds": "part_time",
     # ── French ───────────────────────────────────────────────────────
     "cdi": "full_time",
     "emploi fixe": "full_time",
@@ -146,10 +208,6 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "intérim": "contract",
     "intérimaire": "contract",
     "indépendant": "contract",
-    "stage": "internship",
-    "alternance": "internship",
-    "apprentissage": "internship",
-    "stagiaire": "internship",
     "temps plein ou partiel": "full_or_part",
     "temps plein / temps partiel": "full_or_part",
     # ── Italian ──────────────────────────────────────────────────────
@@ -163,8 +221,6 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "contratto a termine": "contract",
     "lavoro interinale": "contract",
     "collaborazione": "contract",
-    "tirocinio": "internship",
-    "apprendistato": "internship",
     "tempo pieno o parziale": "full_or_part",
     # ── Spanish ──────────────────────────────────────────────────────
     "indefinido": "full_time",
@@ -177,11 +233,6 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "contrato temporal": "contract",
     "contrato por obra": "contract",
     "autónomo": "contract",
-    "becario": "internship",
-    "prácticas": "internship",
-    "practicas": "internship",
-    "contrato de prácticas": "internship",
-    "aprendizaje": "internship",
     # ── Czech / Slovak (almacareer ATS) ─────────────────────────────
     "práce na plný úvazek": "full_time",
     "práca na plný úväzok": "full_time",
@@ -195,17 +246,11 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "externí spolupráce": "contract",
     "živnosť": "contract",
     "dohoda": "contract",
-    "stáž": "internship",
-    "stáž/prax": "internship",
     # ── Chinese (Mokahr, 51job-style ATSes) ─────────────────────────
     "全职": "full_time",
     "全職": "full_time",
     "兼职": "part_time",
     "兼職": "part_time",
-    "实习": "internship",
-    "實習": "internship",
-    "實習生": "internship",
-    "实习生": "internship",
     "合同工": "contract",
     "合約": "contract",
     "派遣": "contract",
@@ -223,7 +268,6 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "czesc etatu": "part_time",
     "umowa zlecenie": "contract",
     "umowa o dzieło": "contract",
-    "staż": "internship",
 }
 
 
@@ -234,6 +278,8 @@ _JOB_LOCATION_TYPE_MAP: dict[str, str] = {
     # English
     "onsite": "onsite",
     "on-site": "onsite",
+    "on-site working": "onsite",  # Workday
+    "onsite working": "onsite",  # Workday variant
     "on_site": "onsite",  # workable / gem snake_case
     "on site": "onsite",
     "office": "onsite",
@@ -243,19 +289,29 @@ _JOB_LOCATION_TYPE_MAP: dict[str, str] = {
     "on-premises": "onsite",
     "in-person": "onsite",
     "in person": "onsite",
+    "no": "onsite",  # Welcome to the Jungle remote policy
     "remote": "remote",
+    "remote working": "remote",  # Workday
     "telecommute": "remote",
     "work from home": "remote",
     "wfh": "remote",
     "fully remote": "remote",
     "100% remote": "remote",
+    "fulltime": "remote",  # Welcome to the Jungle remote policy
     "hybrid": "hybrid",
+    "hybrid working": "hybrid",  # Workday
     "office, remote": "hybrid",
     "remote, office": "hybrid",
     "office/remote": "hybrid",
     "remote/office": "hybrid",
     "flexible": "hybrid",
     "partially remote": "hybrid",
+    "partial": "hybrid",  # Welcome to the Jungle remote policy
+    "punctual": "hybrid",  # Welcome to the Jungle occasional remote policy
+    # Beehire public campaign codes
+    "remotework_none": "onsite",
+    "remotework_full": "remote",
+    "remotework_partial": "hybrid",
     # German
     "vor ort": "onsite",
     "büro": "onsite",
@@ -275,7 +331,13 @@ _JOB_LOCATION_TYPE_MAP: dict[str, str] = {
     "à distance": "remote",
     "travail à distance": "remote",
     "hybride": "hybrid",
+    "travail à distance possible": "hybrid",
     "télétravail partiel": "hybrid",
+    # Dutch
+    "gedeeltelijk afstandswerk": "hybrid",
+    "afstandswerk mogelijk": "hybrid",
+    "volledig afstandswerk": "remote",
+    "geen afstandswerk": "onsite",
     # Italian
     "in sede": "onsite",
     "in ufficio": "onsite",
@@ -308,10 +370,19 @@ def normalize_employment_type(raw: str | None) -> str | None:
     key = raw.strip().lower()
     if not key:
         return None
+    if key in _INTERNSHIP_LEVEL_SIGNALS:
+        return None
     mapped = _EMPLOYMENT_TYPE_MAP.get(key)
     if mapped is None:
         log.warning("enum_normalize.employment_type.unknown", raw=raw)
     return mapped
+
+
+def employment_type_implies_intern_level(raw: str | None) -> bool:
+    """Return whether an upstream employment-type token means intern level."""
+    if raw is None:
+        return False
+    return raw.strip().lower() in _INTERNSHIP_LEVEL_SIGNALS
 
 
 def normalize_job_location_type(raw: str | None, default: str | None = None) -> str | None:
@@ -319,8 +390,10 @@ def normalize_job_location_type(raw: str | None, default: str | None = None) -> 
 
     Returns ``None`` when *raw* is ``None`` or empty/whitespace.
 
-    Lookup is case-insensitive and trims surrounding whitespace.  If the
-    trimmed value isn't in the map, emits a structured warning
+    Lookup is case-insensitive and trims surrounding whitespace.  A mapped
+    base value followed by a parenthetical qualifier is also accepted (for
+    example, ``"Onsite (5 Days per Week)"``).  If the trimmed value isn't in
+    the map, emits a structured warning
     (``enum_normalize.job_location_type.unknown``) and returns
     *default* (``None`` since #3222).  Callers that want a last-resort
     bucket can pass ``default="onsite"`` explicitly.
@@ -331,6 +404,8 @@ def normalize_job_location_type(raw: str | None, default: str | None = None) -> 
     if not key:
         return None
     mapped = _JOB_LOCATION_TYPE_MAP.get(key)
+    if mapped is None and key.endswith(")") and " (" in key:
+        mapped = _JOB_LOCATION_TYPE_MAP.get(key.split(" (", 1)[0])
     if mapped is None:
         log.warning("enum_normalize.job_location_type.unknown", raw=raw)
         return default

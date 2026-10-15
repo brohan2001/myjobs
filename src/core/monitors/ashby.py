@@ -7,7 +7,11 @@ No authentication required.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+from contextlib import suppress
+from pathlib import Path
 
 import httpx
 import structlog
@@ -16,15 +20,62 @@ from src.core.enum_normalize import normalize_job_location_type, normalize_salar
 from src.core.monitors import (
     BoardGoneError,
     DiscoveredJob,
-    fetch_page_text,
     register,
-    slugs_from_url,
+    slug_guess_allowed,
 )
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.raw import save_json_response
+from src.shared.tdm import check_response
 from src.shared.truncation import truncated_rich_result
 
 log = structlog.get_logger()
 
 MAX_JOBS = 50_000
+_CAPTURE_DIR = Path("/tmp")
+_CAPTURE_MAX_BYTES = 64 << 20
+_CAPTURE_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def _capture_scheduled_response(token: str, response: httpx.Response) -> None:
+    """Retain selected natural API bytes without issuing another request."""
+    selected = {
+        item.strip()
+        for item in os.environ.get("ASHBY_CAPTURE_TOKENS", "").split(",")
+        if item.strip()
+    }
+    if not selected or token not in selected or _CAPTURE_TOKEN.fullmatch(token) is None:
+        return
+    if len(selected) > 4 or len(response.content) > _CAPTURE_MAX_BYTES:
+        log.warning("ashby.capture_skipped", reason="selection_or_size")
+        return
+    path = _CAPTURE_DIR / f"jobseek-ashby-{token}.body"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    created = False
+    try:
+        fd = os.open(path, flags, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as output:
+            output.write(response.content)
+            output.flush()
+            os.fsync(output.fileno())
+    except FileExistsError:
+        return
+    except OSError as exc:
+        if created:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+        log.warning("ashby.capture_failed", error_type=type(exc).__name__)
+    else:
+        log.info(
+            "ashby.response_captured",
+            token=token,
+            status=response.status_code,
+            bytes=len(response.content),
+            sha256=hashlib.sha256(response.content).hexdigest(),
+        )
+
 
 _PAGE_PATTERNS = [
     re.compile(r"api\.ashbyhq\.com/posting-api/job-board/([\w-]+)"),
@@ -160,6 +211,13 @@ async def _probe_token(token: str, client: httpx.AsyncClient) -> tuple[bool, int
             return True, len(jobs)
         return False, None
     except Exception:
+        log.debug(
+            "ashby.probe_failed",
+            probe="token",
+            token=token,
+            url=_api_url(token),
+            exc_info=True,
+        )
         return False, None
 
 
@@ -173,7 +231,32 @@ async def _fetch_job_count(token: str, client: httpx.AsyncClient) -> int | None:
         jobs = data.get("jobs")
         return len(jobs) if isinstance(jobs, list) else None
     except Exception:
+        log.debug(
+            "ashby.probe_failed",
+            probe="job_count",
+            token=token,
+            url=_api_url(token),
+            exc_info=True,
+        )
         return None
+
+
+async def _fetch_template_count(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeCount | None:
+    _ = context
+    return await _fetch_job_count(token, client)
+
+
+async def _probe_template_token(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeResult:
+    _ = context
+    return await _probe_token(token, client)
 
 
 async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[DiscoveredJob]:
@@ -190,13 +273,16 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
     url = _api_url(token)
     params = {"includeCompensation": "true"}
     response = await client.get(url, params=params)
+    check_response(response)
+    _capture_scheduled_response(token, response)
     if response.status_code == 404:
         # Ashby returns 404 when the board token has been removed
-        # upstream. Surface as a "gone" signal for one-shot disable.
-        # See issue #2215.
+        # upstream. Surface as a provider-gone confirmation signal.
+        # See issues #2215 and #6156.
         raise BoardGoneError(
             f"Ashby board token {token!r} returned 404",
             url=str(response.url),
+            status_code=response.status_code,
         )
     response.raise_for_status()
 
@@ -222,41 +308,43 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
     """Detect Ashby: domain check -> page HTML scan -> slug-based API probe."""
-    token = _token_from_url(url)
-    if token:
-        if client is not None:
-            count = await _fetch_job_count(token, client)
-            if count is not None:
-                return {"token": token, "jobs": count}
-        return {"token": token}
-
-    if client is None:
-        return None
-
-    html = await fetch_page_text(url, client)
-    if html:
-        for pattern in _PAGE_PATTERNS:
-            match = pattern.search(html)
-            if match:
-                found = match.group(1)
-                if found not in _IGNORE_TOKENS:
-                    log.info("ashby.detected_in_page", url=url, board_token=found)
-                    count = await _fetch_job_count(found, client)
-                    result: dict = {"token": found}
-                    if count is not None:
-                        result["jobs"] = count
-                    return result
-
-    for slug in slugs_from_url(url):
-        found, count = await _probe_token(slug, client)
-        if found:
-            log.info("ashby.detected_by_probe", url=url, board_token=slug)
-            result = {"token": slug}
-            if count is not None:
-                result["jobs"] = count
-            return result
-
-    return None
+    _ = pw
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="ashby",
+        token_from_url=_token_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_TOKENS,
+        fetch_job_count=_fetch_template_count,
+        api_probe=_probe_template_token,
+        initial_context=None,
+        allow_slug_guess=slug_guess_allowed(),
+    )
 
 
-register("ashby", discover, cost=10, can_handle=can_handle, rich=True)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    token = metadata.get("token") or _token_from_url(board_url)
+    if not token:
+        return
+    await save_json_response(
+        artifact_dir,
+        client,
+        _api_url(token),
+        params={"includeCompensation": "true"},
+    )
+
+
+register(
+    "ashby",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=True,
+    save_raw=save_raw,
+)

@@ -11,13 +11,51 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+import structlog
 
 if TYPE_CHECKING:
     import httpx
+
+    from src.core.monitor import MonitorResult
+
+    SaveRawClient = httpx.AsyncClient
+else:
+    MonitorResult = Any
+    SaveRawClient = Any
+
+log = structlog.get_logger()
+
+
+# Explicit identities are deliberately not arbitrary text.  A provider lane
+# must namespace the tenant and the provider-owned identifier, for example
+# ``smartrecruiters:nagarro:7439990002``.  URL-only monitors never need to
+# manufacture this value: the board processor derives their identity from the
+# canonical outbound URL exactly as it did before #8034.
+SOURCE_IDENTITY_RE = re.compile(
+    r"^[a-z][a-z0-9_-]{1,31}:[a-z0-9][a-z0-9._-]{0,63}:"
+    r"[A-Za-z0-9][A-Za-z0-9._~:/-]{0,383}$"
+)
+
+
+def validate_explicit_source_identity(value: str) -> str:
+    """Validate one bounded, namespaced provider identity.
+
+    Keeping query strings, fragments, whitespace, and Unicode out of this
+    internal key makes log/SQL boundaries unambiguous.  The outbound ``url``
+    remains the place for a complete user-resolving provider URL.
+    """
+    if not isinstance(value, str) or SOURCE_IDENTITY_RE.fullmatch(value) is None:
+        raise ValueError(
+            "source_identity must be provider:tenant:id using bounded ASCII identity tokens"
+        )
+    return value
 
 
 @dataclass(slots=True)
@@ -48,19 +86,26 @@ class DiscoveredJob:
     #: Optional structured data (skills, responsibilities, qualifications, etc.)
     extras: dict | None = None
     metadata: dict | None = None
+    #: Stable provider identity, separate from the user-facing outbound URL.
+    #: Kept last to preserve legacy positional construction of DiscoveredJob.
+    #: When omitted, the canonical URL remains the identity for compatibility.
+    source_identity: str | None = None
 
     def __post_init__(self):
+        if self.source_identity is not None:
+            validate_explicit_source_identity(self.source_identity)
         if isinstance(self.base_salary, str):
             from src.core.salary_extract import parse_salary_text
 
             self.base_salary = parse_salary_text(self.base_salary)
 
 
-# Discover functions return either set[str] (URL-only), list[DiscoveredJob] (rich),
-# or tuple[set[str], str | None] (URL-only + metadata, e.g. sitemap).
-DiscoverFunc = Callable[
-    ..., Awaitable[set[str] | list[DiscoveredJob] | tuple[set[str], str | None]]
-]
+# Discover functions return either set[str] (URL-only), list[DiscoveredJob]
+# (rich), tuple[set[str], str | None] (URL-only + metadata, e.g. sitemap), or
+# MonitorResult for hybrid/truncated monitors that need to preserve flags.
+type DiscoverResult = set[str] | list[DiscoveredJob] | tuple[set[str], str | None] | MonitorResult
+DiscoverFunc = Callable[..., Awaitable[DiscoverResult]]
+SaveRawFunc = Callable[[Path, str, dict[str, Any], SaveRawClient], Awaitable[None]]
 
 # can_handle: async (url, client) -> dict | None.
 # Returns metadata dict (truthy) when the monitor can handle the URL,
@@ -75,7 +120,13 @@ class MonitorType:
     discover: DiscoverFunc
     can_handle: CanHandleFunc | None = None
     rich: bool = False  # True for API monitors that return full job data
+    # Code-owned guarantee that a successful, non-truncated result represents
+    # the provider's complete current inventory. This is stricter than
+    # ``rich``: paginated/browser monitors can return full content while still
+    # lacking a trustworthy inventory boundary.
+    complete_inventory: bool = False
     stream: Callable | None = None  # async generator yielding batches
+    save_raw: SaveRawFunc | None = None
 
 
 _REGISTRY: list[MonitorType] = []
@@ -83,22 +134,27 @@ _ALLOW_SLUG_GUESS = contextvars.ContextVar("allow_slug_guess", default=False)
 
 
 class BoardGoneError(Exception):
-    """The upstream ATS confirms the board no longer exists.
+    """The upstream ATS returned an explicit board-retirement signal.
 
     Raised by API monitors (greenhouse/lever/recruitee/ashby) when the
-    per-board API endpoint returns 404 — i.e. the board's slug/token
-    has been deleted at the source. Distinct from a generic
-    ``HTTPStatusError`` so the board processor can immediately mark
-    the board as ``board_status='gone'`` instead of accumulating five
-    consecutive ``_RECORD_FAILURE`` increments before disabling. See
-    issue #2215.
+    per-board API endpoint returns 404. Distinct from a generic
+    ``HTTPStatusError`` so the board processor can apply the spaced,
+    recoverable provider-gone confirmation policy. See issues #2215 and
+    #6156.
 
-    Carries the upstream URL that returned the 404 for log forensics.
+    Carries the upstream URL and HTTP status for durable forensics.
     """
 
-    def __init__(self, message: str, *, url: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.url = url
+        self.status_code = status_code
 
 
 _STREAM_BATCH = 200
@@ -119,11 +175,20 @@ def _make_chunked_stream(discover_fn: DiscoverFunc):
         result = await discover_fn(board, client, pw=pw)
         # Local import to avoid the circular dep with src.core.monitor.
         from src.core.monitor import MonitorResult as _MR
+        from src.core.monitor import _collapse_source_identity_publications
 
         if isinstance(result, _MR):
             yield result
             return
         if isinstance(result, list):
+            # Provider-localized publications must be considered as one
+            # complete result before the generic heartbeat chunks are cut.
+            # Otherwise matching publications at positions 200/201 become
+            # separate jobs and make identity handling depend on API order.
+            # URL-only and legacy rich results keep their existing streaming
+            # path unchanged.
+            if any(job.source_identity is not None for job in result):
+                result = _collapse_source_identity_publications(result)
             for i in range(0, len(result), _STREAM_BATCH):
                 yield result[i : i + _STREAM_BATCH]
         else:
@@ -139,7 +204,9 @@ def register(
     can_handle: CanHandleFunc | None = None,
     *,
     rich: bool = False,
+    complete_inventory: bool = False,
     stream: Callable | None = None,
+    save_raw: SaveRawFunc | None = None,
 ) -> None:
     """Register a monitor type. Registry stays sorted by cost (cheapest first).
 
@@ -156,7 +223,9 @@ def register(
             discover=discover,
             can_handle=can_handle,
             rich=rich,
+            complete_inventory=complete_inventory,
             stream=stream,
+            save_raw=save_raw,
         )
     )
     _REGISTRY.sort(key=lambda m: m.cost)
@@ -182,14 +251,44 @@ def api_monitor_types() -> frozenset[str]:
     return frozenset(m.name for m in _REGISTRY if m.rich)
 
 
+def complete_inventory_monitor_types() -> frozenset[str]:
+    """Return monitors with a code-reviewed complete-inventory contract."""
+    return frozenset(m.name for m in _REGISTRY if m.complete_inventory)
+
+
 def is_rich_monitor(monitor_type: str, config: dict | None = None) -> bool:
     """Check if a monitor type returns rich data (scraper not needed).
 
     Statically-rich monitors (greenhouse, lever, etc.) always return True.
-    api_sniffer is rich only when ``fields`` is present in config.
+    api_sniffer/nextdata are rich when ``fields`` is present; SmartRecruiters
+    is rich when exact ``jobId`` locale collapse is configured; dom is partial
+    rich when strict ``rich_rows`` or rich ``script_json_links``
+    extraction is configured.
     """
-    return monitor_type in api_monitor_types() or (
-        monitor_type in ("api_sniffer", "nextdata") and bool((config or {}).get("fields"))
+    return (
+        monitor_type in api_monitor_types()
+        or (monitor_type in ("api_sniffer", "nextdata") and bool((config or {}).get("fields")))
+        or (
+            monitor_type == "smartrecruiters"
+            and bool((config or {}).get("canonical_job_id_url_template"))
+        )
+        or (
+            monitor_type == "smartrecruiters"
+            and (config or {}).get("canonical_identity") in {"job-v1", "job-location-v1"}
+        )
+        or (
+            monitor_type == "dom"
+            and (
+                bool((config or {}).get("rich_rows"))
+                or (
+                    isinstance((config or {}).get("script_json_links"), dict)
+                    and bool(
+                        (config or {})["script_json_links"].get("title_field")
+                        and (config or {})["script_json_links"].get("locations_field")
+                    )
+                )
+            )
+        )
     )
 
 
@@ -201,12 +300,21 @@ def all_monitor_types() -> frozenset[str]:
 def monitor_needs_browser(name: str, config: dict | None = None) -> bool:
     """Return True if the monitor requires a Playwright browser.
 
-    accenture always needs a browser (cookie extraction via Playwright).
+    accenture, brassring, darwinbox, and dayforce always need a browser
+    (public session replay via Playwright).
     api_sniffer needs a browser when ``browser`` is set in config or when
     no ``api_url`` is configured (auto-discover mode).  dom always benefits
     from a browser but falls back to static HTML.
     """
-    if name == "accenture":
+    if name in {
+        "accenture",
+        "brassring",
+        "bytedance",
+        "candidatus",
+        "darwinbox",
+        "dayforce",
+        "njoyn",
+    }:
         return True
     if name == "api_sniffer":
         cfg = config or {}
@@ -215,9 +323,16 @@ def monitor_needs_browser(name: str, config: dict | None = None) -> bool:
         return bool(cfg.get("browser"))
     if name in ("dom", "inline"):
         return bool((config or {}).get("render"))
+    if name == "rss":
+        return bool((config or {}).get("render"))
     if name == "nextdata":
         cfg = config or {}
-        return bool(cfg.get("render") or cfg.get("actions"))
+        return bool(
+            cfg.get("render")
+            or cfg.get("actions")
+            or cfg.get("source") == "browser"
+            or cfg.get("browser_expression")
+        )
     return False
 
 
@@ -235,6 +350,14 @@ def get_stream_fn(name: str) -> Callable | None:
     for monitor in _REGISTRY:
         if monitor.name == name:
             return monitor.stream
+    return None
+
+
+def get_save_raw(name: str) -> SaveRawFunc | None:
+    """Look up the raw artifact saver for a monitor type, if one exists."""
+    for monitor in _REGISTRY:
+        if monitor.name == name:
+            return monitor.save_raw
     return None
 
 
@@ -275,6 +398,10 @@ def slugs_from_url(url: str) -> list[str]:
     """
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().removeprefix("www.")
+    # LinkedIn is the platform host, not the hiring company's slug. Guessing
+    # ``linkedin`` here hits LinkedIn's own Greenhouse/Lever test boards.
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        return []
     parts = host.split(".")
     if len(parts) >= 2:
         return [parts[-2]]
@@ -285,8 +412,14 @@ async def fetch_page_text(
     url: str,
     client: httpx.AsyncClient,
     max_chars: int = 500_000,
+    *,
+    board_gone_statuses: frozenset[int] = frozenset(),
+    request_headers: dict[str, str] | None = None,
 ) -> str | None:
     """Fetch a page and return its text content (capped), or None on error.
+
+    ``board_gone_statuses`` lets a provider wrapper turn an explicit first-page
+    retirement response into the crawler's recoverable board-gone workflow.
 
     TDM-Reservation respect (#2842). Lenient wrapper but still honors the
     W3C opt-out signal — :class:`TDMReservedError` is **not** swallowed by
@@ -298,8 +431,27 @@ async def fetch_page_text(
     from src.shared.tdm import TDMReservedError
     from src.shared.tdm import check_response as _tdm_check
 
+    public_headers: dict[str, str] = {}
+    if request_headers:
+        from src.shared.public_request_headers import validated_public_request_headers
+
+        public_headers = validated_public_request_headers(
+            request_headers, owner="monitor page fetch"
+        )
+
     try:
-        resp = await client.get(url, follow_redirects=True)
+        if public_headers:
+            from src.shared.public_request_headers import public_get
+
+            resp = await public_get(client, url, headers=public_headers)
+        else:
+            resp = await client.get(url, follow_redirects=True)
+        if resp.status_code in board_gone_statuses:
+            raise BoardGoneError(
+                f"Board page returned HTTP {resp.status_code}",
+                url=str(resp.url),
+                status_code=resp.status_code,
+            )
         if resp.status_code != 200:
             return None
         text = resp.text[:max_chars]
@@ -307,7 +459,10 @@ async def fetch_page_text(
         return text
     except TDMReservedError:
         raise
+    except BoardGoneError:
+        raise
     except Exception:
+        log.debug("monitors.fetch_page_text_failed", url=url, exc_info=True)
         return None
 
 
@@ -326,12 +481,186 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"BITE API \u2014 {label}, {jobs} jobs"
         return f"BITE API \u2014 {label}"
+    if name == "brassring":
+        partner_id = metadata.get("partner_id", "?")
+        site_id = metadata.get("site_id", "?")
+        return f"BrassRing TGnewUI \u2014 partner: {partner_id}, site: {site_id}"
     if name == "breezy":
         portal_url = metadata.get("portal_url", "?")
         jobs = metadata.get("jobs")
         if jobs is not None:
             return f"Breezy \u2014 {portal_url}, {jobs} jobs"
         return f"Breezy \u2014 {portal_url}"
+    if name == "beehire":
+        slug = metadata.get("slug", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Beehire public campaigns \u2014 slug: {slug}, {jobs} jobs"
+        return f"Beehire public campaigns \u2014 slug: {slug}"
+    if name == "bamboohr":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"BambooHR API \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"BambooHR API \u2014 tenant: {tenant}"
+    if name == "adp":
+        cid = metadata.get("cid", "?")
+        cc_id = metadata.get("cc_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"cid: {cid}, career center: {cc_id}"
+        if jobs is not None:
+            return f"ADP Workforce Now API \u2014 {label}, {jobs} jobs"
+        return f"ADP Workforce Now API \u2014 {label}"
+    if name == "paycom":
+        token = metadata.get("token", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Paycom API \u2014 portal: {token}, {jobs} jobs"
+        return f"Paycom API \u2014 portal: {token}"
+    if name == "paynet":
+        company_id = metadata.get("company_id", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Pay-Net API \u2014 company: {company_id}, {jobs} jobs"
+        return f"Pay-Net API \u2014 company: {company_id}"
+    if name == "jazzhr":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"JazzHR static listing \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"JazzHR static listing \u2014 tenant: {tenant}"
+    if name == "jobbank104":
+        token = metadata.get("token", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"104 Job Bank company listing \u2014 token: {token}, {jobs} jobs"
+        return f"104 Job Bank company listing \u2014 token: {token}"
+    if name == "computrabajo":
+        if metadata.get("variant") == "pandape":
+            host = metadata.get("host", "?")
+            jobs = metadata.get("jobs")
+            label = f"PandaPe employer portal — host: {host}"
+            return f"{label}, {jobs} jobs" if jobs is not None else label
+        company_id = metadata.get("company_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"Computrabajo employer profile \u2014 company: {company_id}"
+        return f"{label}, {jobs} jobs" if jobs is not None else label
+    if name == "papa_johns":
+        jobs = metadata.get("jobs")
+        pages = metadata.get("pages")
+        if jobs is not None and pages is not None:
+            return f"Papa Johns careers — {jobs} jobs across {pages} pages (proxy required)"
+        return "Papa Johns careers — proxy required"
+    if name == "cvwarehouse":
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"CVWarehouse hosted board \u2014 {jobs} jobs"
+        return "CVWarehouse hosted board"
+    if name == "jobstreet":
+        company_id = metadata.get("company_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"JobStreet employer profile \u2014 company: {company_id}"
+        return f"{label}, {jobs} jobs" if jobs is not None else label
+    if name == "seek":
+        advertiser_id = metadata.get("advertiser_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"SEEK advertiser board \u2014 advertiser: {advertiser_id}"
+        return f"{label}, {jobs} jobs" if jobs is not None else label
+    if name == "infoniqa":
+        employer = metadata.get("employer_name", "?")
+        jobs = metadata.get("jobs")
+        label = f"Infoniqa jobexchange \u2014 employer: {employer}"
+        return f"{label}, {jobs} jobs" if jobs is not None else label
+    if name == "jobvite":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Jobvite static listing \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"Jobvite static listing \u2014 tenant: {tenant}"
+    if name == "icims":
+        host = metadata.get("host", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"iCIMS static listing \u2014 host: {host}, {jobs} jobs"
+        return f"iCIMS static listing \u2014 host: {host}"
+    if name == "herp":
+        slug = metadata.get("slug", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"HERP static listing \u2014 slug: {slug}, {jobs} jobs"
+        return f"HERP static listing \u2014 slug: {slug}"
+    if name == "hrmos":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"HRMOS static listing \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"HRMOS static listing \u2014 tenant: {tenant}"
+    if name == "gupy":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Gupy NextData listing \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"Gupy NextData listing \u2014 tenant: {tenant}"
+    if name == "universia":
+        slug = metadata.get("slug", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Universia public API \u2014 board: {slug}, {jobs} jobs"
+        return f"Universia public API \u2014 board: {slug}"
+    if name == "earcu":
+        feed_url = metadata.get("feed_url", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"eArcu live-vacancy feed \u2014 {jobs} jobs at {feed_url}"
+        return f"eArcu live-vacancy feed \u2014 {feed_url}"
+    if name == "cornerstone":
+        tenant = metadata.get("tenant", "?")
+        site_id = metadata.get("site_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"tenant: {tenant}, site: {site_id}"
+        if jobs is not None:
+            return f"Cornerstone API \u2014 {label}, {jobs} jobs"
+        return f"Cornerstone API \u2014 {label}"
+    if name == "dayforce":
+        tenant = metadata.get("tenant", "?")
+        portal = metadata.get("portal", "?")
+        return f"Dayforce API \u2014 tenant: {tenant}, portal: {portal}"
+    if name == "darwinbox":
+        host = metadata.get("host", "?")
+        company_id = metadata.get("company_id", "main")
+        return f"Darwinbox API \u2014 host: {host}, company: {company_id}"
+    if name == "avature":
+        listing_url = metadata.get("listing_url", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Avature static listing \u2014 {jobs} jobs at {listing_url}"
+        return f"Avature static listing \u2014 {listing_url}"
+    if name == "pageup":
+        listing_url = metadata.get("listing_url", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"PageUp static listing \u2014 {jobs} jobs at {listing_url}"
+        return f"PageUp static listing \u2014 {listing_url}"
+    if name == "ukg":
+        tenant = metadata.get("tenant", "?")
+        board_id = metadata.get("board_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"tenant: {tenant}, board: {board_id}"
+        if jobs is not None:
+            return f"UKG Pro API \u2014 {label}, {jobs} jobs"
+        return f"UKG Pro API \u2014 {label}"
+    if name == "comeet":
+        jobs = metadata.get("jobs")
+        company_id = metadata.get("company_id")
+        if company_id:
+            label = f"API company: {company_id}"
+        else:
+            company = metadata.get("company", "?")
+            board_id = metadata.get("board_id", "?")
+            label = f"embedded data: {company}/{board_id}"
+        if jobs is not None:
+            return f"Comeet \u2014 {label}, {jobs} jobs"
+        return f"Comeet \u2014 {label}"
     if name == "eightfold":
         sitemap_url = metadata.get("sitemap_url", "?")
         urls = metadata.get("urls")
@@ -350,6 +679,34 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"Gem API \u2014 slug: {token}, {jobs} jobs"
         return f"Gem API \u2014 slug: {token}"
+    if name == "manatal":
+        slug = metadata.get("slug", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Manatal API \u2014 slug: {slug}, {jobs} jobs"
+        return f"Manatal API \u2014 slug: {slug}"
+    if name == "seamlesshiring":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"SeamlessHiring API \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"SeamlessHiring API \u2014 tenant: {tenant}"
+    if name == "inploi":
+        segment = metadata.get("segment_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"Inploi API \u2014 segment: {segment}"
+        return f"{label}, {jobs} jobs" if jobs is not None else label
+    if name == "intervieweb":
+        jobs = metadata.get("jobs")
+        pages = metadata.get("pages")
+        label = "Intervieweb POST-paginated listing"
+        if jobs is not None and pages is not None:
+            return f"{label} \u2014 {jobs} jobs across {pages} pages"
+        return f"{label} \u2014 {jobs} jobs" if jobs is not None else label
+    if name == "typify":
+        jobs = metadata.get("jobs")
+        label = "Typify partitioned vacancy API"
+        return f"{label} \u2014 {jobs} jobs" if jobs is not None else label
     if name == "greenhouse":
         token = metadata.get("token", "?")
         jobs = metadata.get("jobs")
@@ -368,6 +725,17 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"JOIN \u2014 slug: {slug}, {jobs} jobs"
         return f"JOIN \u2014 slug: {slug}"
+    if name == "linkedin":
+        company_id = metadata.get("company_id", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"LinkedIn guest jobs \u2014 company: {company_id}, {jobs} jobs"
+        return f"LinkedIn guest jobs \u2014 company: {company_id}"
+    if name == "headhunter":
+        employer_id = metadata.get("employer_id", "?")
+        jobs = metadata.get("jobs")
+        label = f"HeadHunter API \u2014 employer: {employer_id}"
+        return f"{label}, {jobs} jobs" if jobs is not None else f"{label} (proxy required)"
     if name == "nextdata":
         path = metadata.get("path", "?")
         count = metadata.get("count")
@@ -381,6 +749,28 @@ def _build_comment(name: str, metadata: dict) -> str:
         if urls is not None:
             return f"Sitemap \u2014 {urls} URLs at {sitemap_url}"
         return f"Sitemap \u2014 {sitemap_url}"
+    if name == "talentbrew":
+        jobs = metadata.get("jobs")
+        pages = metadata.get("pages")
+        if jobs is not None and pages is not None:
+            return f"TalentBrew/Radancy \u2014 {jobs} jobs across {pages} pages"
+        if jobs is not None:
+            return f"TalentBrew/Radancy \u2014 {jobs} jobs"
+        urls = metadata.get("urls")
+        if urls is not None:
+            return f"TalentBrew/Radancy \u2014 {urls} job links found"
+        return "TalentBrew/Radancy"
+    if name == "talemetry":
+        jobs = metadata.get("jobs")
+        pages = metadata.get("pages")
+        if jobs is not None and pages is not None:
+            return f"Talemetry/Jobvite Career Sites \u2014 {jobs} jobs across {pages} pages"
+        urls = metadata.get("urls")
+        if urls is not None:
+            return f"Talemetry/Jobvite Career Sites \u2014 {urls} job links found"
+        return "Talemetry/Jobvite Career Sites"
+    if name == "practicematch":
+        return "PracticeMatch employer board (proxy-routed form pagination)"
     if name == "dom":
         urls = metadata.get("urls")
         if urls is not None:
@@ -398,6 +788,12 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"SmartRecruiters API \u2014 token: {token}, {jobs} jobs"
         return f"SmartRecruiters API \u2014 token: {token}"
+    if name == "jobconvo":
+        career_page = metadata.get("career_page", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"JobConvo \u2014 career page: {career_page}, {jobs} jobs"
+        return f"JobConvo \u2014 career page: {career_page}"
     if name == "softgarden":
         slug = metadata.get("slug", "?")
         jobs = metadata.get("jobs")
@@ -434,18 +830,57 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"Recruitee API \u2014 {label}, {jobs} jobs"
         return f"Recruitee API \u2014 {label}"
+    if name == "recruiterbox":
+        tenant = metadata.get("tenant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Recruiterbox / Trakstar Hire \u2014 tenant: {tenant}, {jobs} jobs"
+        return f"Recruiterbox / Trakstar Hire \u2014 tenant: {tenant}"
+    if name == "keka":
+        tenant = metadata.get("tenant", "?")
+        portal = metadata.get("portal", "default")
+        jobs = metadata.get("jobs")
+        label = f"tenant: {tenant}, portal: {portal}"
+        if jobs is not None:
+            return f"Keka API \u2014 {label}, {jobs} jobs"
+        return f"Keka API \u2014 {label}"
+    if name == "taleo":
+        org = metadata.get("org", "?")
+        cws = metadata.get("cws", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Taleo Business Edition \u2014 {org}/cws-{cws}, {jobs} jobs"
+        return f"Taleo Business Edition \u2014 {org}/cws-{cws}"
     if name == "recruiter_co_kr":
         slug = metadata.get("slug", "?")
         jobs = metadata.get("jobs")
         if jobs is not None:
             return f"Recruiter.co.kr \u2014 slug: {slug}, {jobs} jobs"
         return f"Recruiter.co.kr \u2014 slug: {slug}"
+    if name == "hirehive":
+        slug = metadata.get("slug", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"HireHive API \u2014 slug: {slug}, {jobs} jobs"
+        return f"HireHive API \u2014 slug: {slug}"
+    if name == "woowa":
+        variant = metadata.get("variant", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Woowa careers API \u2014 {variant}, {jobs} jobs"
+        return f"Woowa careers API \u2014 {variant}"
     if name == "hireology":
         slug = metadata.get("slug", "?")
         jobs = metadata.get("jobs")
         if jobs is not None:
             return f"Hireology API \u2014 slug: {slug}, {jobs} jobs"
         return f"Hireology API \u2014 slug: {slug}"
+    if name == "turbohire":
+        org_id = metadata.get("org_id", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"TurboHire API \u2014 organization: {org_id}, {jobs} jobs"
+        return f"TurboHire API \u2014 organization: {org_id}"
     if name == "rippling":
         slug = metadata.get("slug", "?")
         jobs = metadata.get("jobs")
@@ -477,6 +912,11 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"Personio XML \u2014 slug: {slug}, {jobs} jobs"
         return f"Personio XML \u2014 slug: {slug}"
+    if name == "paylocity":
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Paylocity embedded data \u2014 {jobs} jobs"
+        return "Paylocity embedded data"
     if name == "phenom":
         sitemap_url = metadata.get("sitemap_url", "?")
         jobs = metadata.get("jobs")
@@ -491,21 +931,36 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"Jobylon embed \u2014 {label}, {jobs} jobs"
         return f"Jobylon embed \u2014 {label}"
+    if name == "jarvi":
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Jarvi public API \u2014 {jobs} jobs"
+        return "Jarvi public API"
     if name == "rss":
         preset = metadata.get("preset", "generic")
+        variant = metadata.get("variant")
+        if preset == "successfactors" and variant == "legacy":
+            company = metadata.get("company", "?")
+            host = metadata.get("host", "?")
+            jobs = metadata.get("jobs")
+            label = f"SuccessFactors legacy DWR \u2014 company: {company} @ {host}"
+            return f"{label}, {jobs} jobs" if jobs is not None else label
         feed_url = metadata.get("feed_url", "?")
         jobs = metadata.get("jobs")
         label = {
             "successfactors": "SuccessFactors RSS",
             "teamtailor": "Teamtailor RSS",
+            "wp_job_manager": "WP Job Manager RSS",
+            "governmentjobs": "NEOGOV/GovernmentJobs RSS",
+            "hr_manager": "Talent Recruiter / HR Manager RSS",
         }.get(preset, f"RSS ({preset})")
         count_str = f"{jobs}" if jobs is not None else ""
         # For paginated presets, first-page count may be approximate
-        if preset == "teamtailor" and jobs is not None:
+        if preset in {"teamtailor", "wp_job_manager"} and jobs is not None:
             from src.core.monitors.rss import _PRESETS
 
-            tt = _PRESETS.get("teamtailor")
-            if tt and jobs >= tt.page_size:
+            selected = _PRESETS.get(preset)
+            if selected and jobs >= selected.page_size:
                 count_str = f"{jobs}+"
         if count_str:
             return f"{label} \u2014 {feed_url}, {count_str} jobs"
@@ -536,6 +991,18 @@ def _build_comment(name: str, metadata: dict) -> str:
         if detail:
             return f"API sniffer \u2014 {detail} at {api_url}"
         return f"API sniffer \u2014 {api_url}"
+    if name == "welcometothejungle":
+        slug = metadata.get("slug", "?")
+        jobs = metadata.get("jobs")
+        if jobs is not None:
+            return f"Welcome to the Jungle \u2014 {slug}, {jobs} jobs"
+        return f"Welcome to the Jungle \u2014 {slug}"
+    if name == "johdi":
+        jobs = metadata.get("jobs")
+        locale = metadata.get("locale", "?")
+        if jobs is not None:
+            return f"Johdi Suite \u2014 {jobs} jobs, locale: {locale}"
+        return f"Johdi Suite \u2014 locale: {locale}"
     return str(metadata)
 
 
@@ -573,49 +1040,117 @@ async def probe_all_monitors(
 
 
 # Company-specific monitors excluded from generic probing.
-_PROBE_SKIP: frozenset[str] = frozenset({"amazon", "accenture"})
+_PROBE_SKIP: frozenset[str] = frozenset({"amazon", "accenture", "fenbi", "unifr", "unisante"})
 
 
 # Import modules to trigger registration
 from src.core.monitors import (  # noqa: E402
     accenture,  # noqa: F401
+    adp,  # noqa: F401
     almacareer,  # noqa: F401
     amazon,  # noqa: F401
     api_sniffer,  # noqa: F401
     ashby,  # noqa: F401
+    avature,  # noqa: F401
+    bamboohr,  # noqa: F401
+    beehire,  # noqa: F401
+    beisen,  # noqa: F401
     bite,  # noqa: F401
+    brassring,  # noqa: F401
     breezy,  # noqa: F401
+    bytedance,  # noqa: F401
+    candidatus,  # noqa: F401
+    cnstaff,  # noqa: F401
+    comeet,  # noqa: F401
+    computrabajo,  # noqa: F401
+    cornerstone,  # noqa: F401
+    curately,  # noqa: F401
+    cvwarehouse,  # noqa: F401
+    darwinbox,  # noqa: F401
+    dayforce,  # noqa: F401
     deel,  # noqa: F401
     dom,  # noqa: F401
     dvinci,  # noqa: F401
+    earcu,  # noqa: F401
     eightfold,  # noqa: F401
+    fenbi,  # noqa: F401
     gem,  # noqa: F401
     greenhouse,  # noqa: F401
-    greythr,  # noqa: F401
+    greythr,  # noqa: F401  (myjobs)
+    gupy,  # noqa: F401
+    headhunter,  # noqa: F401
+    herp,  # noqa: F401
+    hibob,  # noqa: F401
+    hirehive,  # noqa: F401
     hireology,  # noqa: F401
+    hrmos,  # noqa: F401
+    icims,  # noqa: F401
+    infoniqa,  # noqa: F401
+    infor,  # noqa: F401
     inline,  # noqa: F401
+    inploi,  # noqa: F401
+    intervieweb,  # noqa: F401
+    jarvi,  # noqa: F401
+    jazzhr,  # noqa: F401
+    job51,  # noqa: F401
+    jobbank104,  # noqa: F401
+    jobconvo,  # noqa: F401
+    jobdiva,  # noqa: F401
+    jobs_ch,  # noqa: F401
+    jobstreet,  # noqa: F401
+    jobvite,  # noqa: F401
     jobylon,  # noqa: F401
+    johdi,  # noqa: F401
     join,  # noqa: F401
     keka,  # noqa: F401
+    kipt,  # noqa: F401
     lever,  # noqa: F401
+    linkedin,  # noqa: F401
+    manatal,  # noqa: F401
     mokahr,  # noqa: F401
     nextdata,  # noqa: F401
+    njoyn,  # noqa: F401
     notion,  # noqa: F401
+    nowhiring,  # noqa: F401
     oracle_hcm,  # noqa: F401
+    pageup,  # noqa: F401
+    papa_johns,  # noqa: F401
+    paycom,  # noqa: F401
+    paylocity,  # noqa: F401
+    paynet,  # noqa: F401
+    peoplesoft,  # noqa: F401
     personio,  # noqa: F401
     phenom,  # noqa: F401
     pinpoint,  # noqa: F401
+    practicematch,  # noqa: F401
+    prospective,  # noqa: F401
     recruitee,  # noqa: F401
     recruiter_co_kr,  # noqa: F401
+    recruiterbox,  # noqa: F401
     rippling,  # noqa: F401
     rss,  # noqa: F401
+    seamlesshiring,  # noqa: F401
+    seek,  # noqa: F401
     sitemap,  # noqa: F401
     smartrecruiters,  # noqa: F401
     softgarden,  # noqa: F401
+    talemetry,  # noqa: F401
+    talentbrew,  # noqa: F401
+    talentreef,  # noqa: F401
+    taleo,  # noqa: F401
     traffit,  # noqa: F401
+    turbohire,  # noqa: F401
+    typify,  # noqa: F401
+    ukg,  # noqa: F401
     umantis,  # noqa: F401
+    unifr,  # noqa: F401
+    unisante,  # noqa: F401
+    universia,  # noqa: F401
+    wecruit,  # noqa: F401
+    welcometothejungle,  # noqa: F401
+    woowa,  # noqa: F401
     workable,  # noqa: F401
     workday,  # noqa: F401
     ycombinator,  # noqa: F401
-    zoho_recruit,  # noqa: F401
+    zoho_recruit,  # noqa: F401  (myjobs)
 )

@@ -6,5 +6,6 @@ useDefault = true
 description = "Public client-side ATS/search keys that companies embed in their own career pages (inherited from jobseek board data), and doc examples."
 paths = [
   '''data/boards\.csv''',
-  '''src/workspace/commands/help\.py''',
+  # Welcome to the Jungle's public search-only Algolia key, embedded in its site and in jobseek's repo.
+  '''src/core/monitors/welcometothejungle\.py''',
 ]

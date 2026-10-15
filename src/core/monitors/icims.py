@@ -1,0 +1,745 @@
+"""iCIMS public career-site monitor.
+
+iCIMS tenants expose server-rendered listings at
+``https://{host}/jobs/search?ss=1&in_iframe=1``.  This adapter discovers only
+stable job URLs, including explicitly configured child tenants linked by an
+aggregate portal. The existing JSON-LD scraper owns detail extraction on the
+normal scrape schedule.
+"""
+
+from __future__ import annotations
+
+import html as html_module
+import re
+from collections import Counter
+from pathlib import Path
+from urllib.parse import parse_qsl, urljoin, urlparse
+
+import httpx
+import structlog
+from selectolax.lexbor import LexborHTMLParser
+
+from src.core.monitors import BoardGoneError, register
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.dom import _extract_links_static, _raise_if_bot_challenge
+from src.core.monitors.raw import save_text_response
+from src.shared.http_retry import (
+    PaginationFetchError,
+    fetch_json_page_with_retry,
+    fetch_text_page_with_retry,
+)
+from src.shared.tdm import TDMReservedError
+from src.shared.truncation import truncated_url_result
+
+log = structlog.get_logger()
+
+MAX_JOBS = 50_000
+MAX_PAGES = 1_000
+MAX_HTML_CHARS = 2_000_000
+MAX_JOB_HOSTS = 20
+_JIBE_PAGE_SIZE = 100
+_JIBE_REDIRECT_RE = re.compile(
+    r"\s*<script\s+type=[\"']text/javascript[\"']>\s*"
+    r"window[.]top[.]location[.]href\s*=\s*[\"'](?P<url>https:[^\"']+)[\"'];\s*"
+    r"</script>\s*",
+    re.IGNORECASE,
+)
+
+_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.icims\.com$",
+    re.IGNORECASE,
+)
+_DIRECT_PATH_RE = re.compile(
+    r"^(?:/jobs(?:/search|/\d+(?:/[^/?#]+)?/job)?)?/?$",
+    re.IGNORECASE,
+)
+_PAGE_PATTERNS = [
+    re.compile(
+        r"https?://([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.icims\.com)"
+        r"(?:/jobs(?:/search|/\d+(?:/[^/?#]+)?/job)?)?/?"
+        r"(?:\?(?:in_iframe=1|ss=1(?:&(?:amp;)?in_iframe=1)?))?"
+        r"(?=[#\"'<\s]|$)",
+        re.IGNORECASE,
+    )
+]
+_RESERVED_HOSTS = frozenset(
+    {
+        "api.icims.com",
+        "app.icims.com",
+        "help.icims.com",
+        "support.icims.com",
+        "www.icims.com",
+    }
+)
+_LISTING_MARKER = "iCIMS_ListingsPage"
+_PAGE_MARKER_RE = re.compile(r"\bPage\s+(\d+)\s+of\s+(\d+)\b", re.IGNORECASE)
+_PAGE_PARAM_RE = re.compile(r"(?:[?&])pr=(\d+)(?=[&#\"'\s]|$)", re.IGNORECASE)
+_GONE_STATUSES = frozenset({404, 410})
+_ALLOWED_QUERY_VALUES: dict[str, re.Pattern[str]] = {
+    "in_iframe": re.compile(r"1"),
+    "o": re.compile(r""),
+    "pr": re.compile(r"\d+"),
+    "schemaId": re.compile(r""),
+    "searchRelation": re.compile(r"keyword_all"),
+    "ss": re.compile(r"1"),
+}
+
+_CROSS_LOCALE_DEDUPE_KEYS = frozenset({"peer_host", "title_aliases"})
+
+
+def _normalized_listing_text(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _cross_locale_dedupe_config(
+    metadata: dict,
+    host: str,
+) -> tuple[str, dict[str, str]] | None:
+    raw = metadata.get("cross_locale_dedupe")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) - _CROSS_LOCALE_DEDUPE_KEYS:
+        raise ValueError("iCIMS cross_locale_dedupe must contain only peer_host and title_aliases")
+    peer_host = _normalize_host(raw.get("peer_host"))
+    if peer_host is None or peer_host == host:
+        raise ValueError("iCIMS cross_locale_dedupe peer_host must be a different valid host")
+    raw_aliases = raw.get("title_aliases", {})
+    if not isinstance(raw_aliases, dict) or len(raw_aliases) > 100:
+        raise ValueError(
+            "iCIMS cross_locale_dedupe title_aliases must be an object up to 100 entries"
+        )
+    aliases: dict[str, str] = {}
+    for source, canonical in raw_aliases.items():
+        if (
+            not isinstance(source, str)
+            or not isinstance(canonical, str)
+            or not source.strip()
+            or not canonical.strip()
+            or len(source) > 200
+            or len(canonical) > 200
+        ):
+            raise ValueError(
+                "iCIMS cross_locale_dedupe title aliases must be non-empty strings up to 200 chars"
+            )
+        normalized_source = _normalized_listing_text(source)
+        normalized_canonical = _normalized_listing_text(canonical)
+        previous = aliases.setdefault(normalized_source, normalized_canonical)
+        if previous != normalized_canonical:
+            raise ValueError("iCIMS cross_locale_dedupe title aliases conflict after normalization")
+    return peer_host, aliases
+
+
+def _normalize_host(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    host = value.strip().lower().rstrip(".")
+    if _HOST_RE.fullmatch(host) is None or host in _RESERVED_HOSTS:
+        return None
+    return host
+
+
+def _job_hosts_config(metadata: dict, listing_host: str) -> frozenset[str]:
+    """Return the explicitly trusted detail hosts for an iCIMS listing."""
+    raw = metadata.get("job_hosts")
+    if raw is None:
+        return frozenset({listing_host})
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_JOB_HOSTS:
+        raise ValueError(f"iCIMS job_hosts must be a list of 1-{MAX_JOB_HOSTS} valid hosts")
+
+    job_hosts: list[str] = []
+    for value in raw:
+        host = _normalize_host(value)
+        if host is None:
+            raise ValueError("iCIMS job_hosts entries must be valid public iCIMS hosts")
+        job_hosts.append(host)
+    if len(job_hosts) != len(set(job_hosts)):
+        raise ValueError("iCIMS job_hosts entries must be unique")
+    return frozenset({listing_host, *job_hosts})
+
+
+def _dedupe_job_ids_from_hosts_config(
+    metadata: dict,
+    listing_host: str,
+) -> frozenset[str]:
+    """Return trusted peer hosts whose mirrored requisition IDs are excluded."""
+    raw = metadata.get("dedupe_job_ids_from_hosts")
+    if raw is None:
+        return frozenset()
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_JOB_HOSTS:
+        raise ValueError(
+            f"iCIMS dedupe_job_ids_from_hosts must be a list of 1-{MAX_JOB_HOSTS} valid hosts"
+        )
+
+    peer_hosts: list[str] = []
+    for value in raw:
+        host = _normalize_host(value)
+        if host is None or host == listing_host:
+            raise ValueError(
+                "iCIMS dedupe_job_ids_from_hosts entries must be different valid public iCIMS hosts"
+            )
+        peer_hosts.append(host)
+    if len(peer_hosts) != len(set(peer_hosts)):
+        raise ValueError("iCIMS dedupe_job_ids_from_hosts entries must be unique")
+    return frozenset(peer_hosts)
+
+
+def _jibe_config(metadata: dict, listing_host: str) -> tuple[str, frozenset[str]] | None:
+    raw_url = metadata.get("jibe_url")
+    raw_hosts = metadata.get("jibe_job_hosts")
+    if raw_url is None and raw_hosts is None:
+        return None
+    if not isinstance(raw_url, str) or not isinstance(raw_hosts, list):
+        raise ValueError("iCIMS Jibe fallback requires jibe_url and jibe_job_hosts")
+    parsed = urlparse(raw_url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+        or parsed.path.rstrip("/") != "/jobs"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("iCIMS jibe_url must be a canonical HTTPS /jobs URL")
+    hosts: list[str] = []
+    if not raw_hosts or len(raw_hosts) > MAX_JOB_HOSTS:
+        raise ValueError(f"iCIMS jibe_job_hosts must contain 1-{MAX_JOB_HOSTS} hosts")
+    for value in raw_hosts:
+        host = _normalize_host(value)
+        if host is None:
+            raise ValueError("iCIMS jibe_job_hosts entries must be valid iCIMS hosts")
+        hosts.append(host)
+    if len(hosts) != len(set(hosts)) or listing_host not in hosts:
+        raise ValueError("iCIMS jibe_job_hosts must be unique and include the listing host")
+    return raw_url.rstrip("/"), frozenset(hosts)
+
+
+def _host_from_url(url: str, *, validate_query: bool = True) -> str | None:
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = _normalize_host(parsed.hostname)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query_keys = [key for key, _value in query]
+    if (
+        host is None
+        or parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or _DIRECT_PATH_RE.fullmatch(parsed.path) is None
+        or (
+            validate_query
+            and (
+                len(query_keys) != len(set(query_keys))
+                or any(
+                    key not in _ALLOWED_QUERY_VALUES
+                    or _ALLOWED_QUERY_VALUES[key].fullmatch(value) is None
+                    for key, value in query
+                )
+            )
+        )
+    ):
+        return None
+    return host
+
+
+def _listing_url(host: str, page_index: int = 0) -> str:
+    if page_index == 0:
+        return f"https://{host}/jobs/search?ss=1&in_iframe=1"
+    return (
+        f"https://{host}/jobs/search?pr={page_index}&in_iframe=1"
+        "&searchRelation=keyword_all&schemaId=&o="
+    )
+
+
+def _job_matcher(hosts: frozenset[str]) -> re.Pattern[str]:
+    host_pattern = "|".join(re.escape(host) for host in sorted(hosts))
+    return re.compile(
+        rf"^https://(?:{host_pattern})/jobs/\d+(?:/[^/?#]+)?/job(?:[/?#]|$)",
+        re.IGNORECASE,
+    )
+
+
+def _canonical_job_url(url: str, hosts: frozenset[str]) -> str | None:
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in hosts
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        return None
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        len(segments) not in {3, 4}
+        or segments[0].lower() != "jobs"
+        or re.fullmatch(r"\d+", segments[1]) is None
+        or segments[-1].lower() != "job"
+    ):
+        return None
+    host = (parsed.hostname or "").lower()
+    return f"https://{host}/jobs/{segments[1]}/job?in_iframe=1"
+
+
+def _parse_listing(page: str, listing_host: str, job_hosts: frozenset[str]) -> set[str]:
+    raw_urls = _extract_links_static(
+        page,
+        _listing_url(listing_host),
+        _job_matcher(job_hosts),
+    )
+    return {
+        canonical
+        for url in raw_urls
+        if (canonical := _canonical_job_url(url, job_hosts)) is not None
+    }
+
+
+def _parse_listing_identities(
+    page: str,
+    listing_host: str,
+    job_hosts: frozenset[str],
+) -> dict[str, tuple[str, str, str]]:
+    """Return stable title/region/type identities from iCIMS listing cards."""
+    document = LexborHTMLParser(page)
+    records: dict[str, tuple[str, str, str]] = {}
+    for card in document.css(".iCIMS_JobCardItem"):
+        anchor = card.css_first("a.iCIMS_Anchor")
+        title = card.css_first("h3")
+        region_container = card.css_first("div.header.left")
+        if anchor is None or title is None or region_container is None:
+            raise ValueError(f"iCIMS host {listing_host!r} returned an incomplete listing card")
+        url = _canonical_job_url(anchor.attributes.get("href") or "", job_hosts)
+        visible_region_spans = [
+            span
+            for span in region_container.css("span")
+            if "sr-only" not in (span.attributes.get("class") or "").split()
+        ]
+        job_type = None
+        for field in card.css(".iCIMS_JobHeaderTag"):
+            label = field.css_first("dt")
+            value = field.css_first("dd")
+            if (
+                label is not None
+                and value is not None
+                and _normalized_listing_text(label.text(strip=True)) == "job type"
+            ):
+                job_type = value.text(strip=True)
+                break
+        raw_title = title.text(strip=True)
+        raw_region = visible_region_spans[-1].text(strip=True) if visible_region_spans else ""
+        if url is None or not raw_title or not raw_region:
+            raise ValueError(f"iCIMS host {listing_host!r} returned an incomplete listing identity")
+        identity = (
+            _normalized_listing_text(raw_title),
+            _normalized_listing_text(raw_region),
+            _normalized_listing_text(job_type or ""),
+        )
+        previous = records.setdefault(url, identity)
+        if previous != identity:
+            raise ValueError(f"iCIMS host {listing_host!r} returned conflicting listing identities")
+    return records
+
+
+def _page_metadata(page: str) -> tuple[int | None, int]:
+    """Return the one-based current page (when visible) and total pages."""
+    marker = _PAGE_MARKER_RE.search(page)
+    current = int(marker.group(1)) if marker else None
+    marker_total = int(marker.group(2)) if marker else 1
+    decoded = html_module.unescape(page)
+    linked_indexes = [int(value) for value in _PAGE_PARAM_RE.findall(decoded)]
+    linked_total = max(linked_indexes, default=0) + 1
+    return current, max(marker_total, linked_total, 1)
+
+
+async def _fetch_listing(host: str, page_index: int, client: httpx.AsyncClient) -> str:
+    url = _listing_url(host, page_index)
+    try:
+        page = await fetch_text_page_with_retry(
+            client,
+            url,
+            max_chars=MAX_HTML_CHARS,
+            require_nonempty=True,
+            follow_redirects=False,
+            end_of_pagination_statuses=(),
+            retryable_statuses={202, 401, 403},
+            log_event="icims.list_backoff",
+        )
+    except PaginationFetchError as exc:
+        if page_index == 0 and exc.last_status in _GONE_STATUSES:
+            raise BoardGoneError("iCIMS board no longer exists", url=url) from exc
+        raise
+    if page is None:  # Strict status handling above makes this unreachable.
+        raise RuntimeError(f"iCIMS listing fetch returned no page for {host!r}")
+    _raise_if_bot_challenge(url, page)
+    if _LISTING_MARKER.casefold() not in page.casefold():
+        raise ValueError(f"iCIMS host {host!r} returned a non-listing page")
+    return page
+
+
+async def _discover_jibe_redirect(
+    host: str,
+    jibe_url: str,
+    job_hosts: frozenset[str],
+    client: httpx.AsyncClient,
+) -> set[str]:
+    """Follow a reviewed classic-iCIMS redirect through its aggregate Jibe API."""
+    listing_url = _listing_url(host)
+    page = await fetch_text_page_with_retry(
+        client,
+        listing_url,
+        max_chars=MAX_HTML_CHARS,
+        require_nonempty=True,
+        follow_redirects=False,
+        end_of_pagination_statuses=(),
+        retryable_statuses={202, 401, 403},
+        log_event="icims.list_backoff",
+    )
+    if page is None:  # strict status handling makes this unreachable
+        raise RuntimeError(f"iCIMS listing fetch returned no page for {host!r}")
+    redirect = _JIBE_REDIRECT_RE.fullmatch(page)
+    target = redirect.group("url").replace(r"\/", "/") if redirect else None
+    if target != jibe_url:
+        raise ValueError(f"iCIMS host {host!r} did not return its configured Jibe redirect")
+
+    api_url = urljoin(f"{jibe_url}/", "/api/jobs")
+    expected_total: int | None = None
+    seen_slugs: set[str] = set()
+    urls: set[str] = set()
+    page_number = 1
+    while expected_total is None or len(seen_slugs) < expected_total:
+        if page_number > MAX_PAGES:
+            raise ValueError("iCIMS Jibe pagination exceeded its page limit")
+        payload = await fetch_json_page_with_retry(
+            client,
+            api_url,
+            params={"page": page_number, "limit": _JIBE_PAGE_SIZE},
+            expect_shape=dict,
+            follow_redirects=True,
+            max_bytes=MAX_HTML_CHARS,
+            log_event="icims.jibe_backoff",
+        )
+        total = payload.get("totalCount")
+        raw_jobs = payload.get("jobs")
+        if (
+            isinstance(total, bool)
+            or not isinstance(total, int)
+            or total < 0
+            or total > MAX_JOBS
+            or not isinstance(raw_jobs, list)
+        ):
+            raise ValueError("iCIMS Jibe API returned an invalid inventory envelope")
+        if expected_total is None:
+            expected_total = total
+        elif total != expected_total:
+            raise ValueError("iCIMS Jibe total changed during pagination")
+        if not raw_jobs and len(seen_slugs) < expected_total:
+            raise ValueError("iCIMS Jibe pagination ended before its advertised total")
+        for raw_job in raw_jobs:
+            data = raw_job.get("data") if isinstance(raw_job, dict) else None
+            slug = data.get("slug") if isinstance(data, dict) else None
+            apply_url = data.get("apply_url") if isinstance(data, dict) else None
+            if not isinstance(slug, str) or not slug.isdigit() or not isinstance(apply_url, str):
+                raise ValueError("iCIMS Jibe API returned an invalid job identity")
+            parsed = urlparse(apply_url)
+            apply_host = _normalize_host(parsed.hostname)
+            if (
+                apply_host not in job_hosts
+                or parsed.scheme != "https"
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in {None, 443}
+                or parsed.path != f"/jobs/{slug}/login"
+                or parsed.params
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("iCIMS Jibe API returned an untrusted application URL")
+            if slug in seen_slugs:
+                raise ValueError(f"iCIMS Jibe API repeated job {slug!r}")
+            seen_slugs.add(slug)
+            if apply_host == host:
+                urls.add(f"https://{host}/jobs/{slug}/job?in_iframe=1")
+        page_number += 1
+    if len(seen_slugs) != expected_total:
+        raise ValueError("iCIMS Jibe inventory did not match its advertised total")
+    return urls
+
+
+async def _discover_pages(
+    host: str,
+    client: httpx.AsyncClient,
+    *,
+    collect_identities: bool = False,
+    job_hosts: frozenset[str] | None = None,
+    allow_duplicate_urls: bool = False,
+) -> tuple[set[str], bool, int, dict[str, tuple[str, str, str]]]:
+    job_hosts = job_hosts or frozenset({host})
+    first_page = await _fetch_listing(host, 0, client)
+    first_current, advertised_pages = _page_metadata(first_page)
+    if first_current not in {None, 1}:
+        raise ValueError(f"iCIMS host {host!r} returned page {first_current} for page index 0")
+
+    urls: set[str] = set()
+    identities: dict[str, tuple[str, str, str]] = {}
+    truncated = advertised_pages > MAX_PAGES
+
+    def merge_page(page_index: int, page: str) -> None:
+        nonlocal truncated
+        current, total = _page_metadata(page)
+        if current is not None and current != page_index + 1:
+            raise ValueError(
+                f"iCIMS host {host!r} returned page {current} for page index {page_index}"
+            )
+        if total != advertised_pages:
+            truncated = True
+        page_urls = _parse_listing(page, host, job_hosts)
+        if page_index > 0 and not page_urls:
+            raise ValueError(
+                f"iCIMS host {host!r} returned an empty advertised page {page_index + 1}"
+            )
+        if urls.intersection(page_urls) and not allow_duplicate_urls:
+            truncated = True
+        urls.update(page_urls)
+        if collect_identities:
+            page_identities = _parse_listing_identities(page, host, job_hosts)
+            if set(page_identities) != page_urls:
+                raise ValueError(
+                    f"iCIMS host {host!r} listing identities do not match discovered jobs"
+                )
+            for url, identity in page_identities.items():
+                previous = identities.setdefault(url, identity)
+                if previous != identity:
+                    raise ValueError(f"iCIMS host {host!r} returned conflicting listing identities")
+        if len(page) >= MAX_HTML_CHARS:
+            truncated = True
+
+    merge_page(0, first_page)
+    page_limit = min(advertised_pages, MAX_PAGES)
+    for page_index in range(1, page_limit):
+        if len(urls) >= MAX_JOBS:
+            truncated = True
+            break
+        # iCIMS pagination is session-sensitive: concurrent requests through
+        # one cookie-bearing client can return a neighbouring page. Fetching
+        # sequentially is deterministic and lets each HTML body be discarded
+        # immediately after parsing.
+        page = await _fetch_listing(host, page_index, client)
+        merge_page(page_index, page)
+
+    return urls, truncated, advertised_pages, identities
+
+
+async def discover(board: dict, client: httpx.AsyncClient, pw=None):
+    """Discover stable iCIMS detail URLs with complete bounded pagination."""
+    _ = pw
+    metadata = board.get("metadata") or {}
+    host = _normalize_host(metadata.get("host")) or _host_from_url(board["board_url"])
+    if host is None:
+        raise ValueError(
+            f"Cannot derive iCIMS host from board URL {board['board_url']!r} "
+            "and no valid host is present in metadata"
+        )
+
+    jibe = _jibe_config(metadata, host)
+    if jibe is not None:
+        jibe_url, jibe_job_hosts = jibe
+        urls = await _discover_jibe_redirect(host, jibe_url, jibe_job_hosts, client)
+        log.info("icims.jibe_discovered", host=host, jobs=len(urls))
+        return urls
+
+    job_hosts = _job_hosts_config(metadata, host)
+    id_dedupe_hosts = _dedupe_job_ids_from_hosts_config(metadata, host)
+    dedupe = _cross_locale_dedupe_config(metadata, host)
+    aggregate_mode = len(job_hosts) > 1
+    urls, truncated, pages, identities = await _discover_pages(
+        host,
+        client,
+        collect_identities=dedupe is not None,
+        job_hosts=job_hosts,
+        allow_duplicate_urls=aggregate_mode,
+    )
+    if aggregate_mode:
+        aggregate_job_ids = {urlparse(url).path.split("/")[2] for url in urls}
+        child_job_ids: set[str] = set()
+        child_truncated = False
+        for job_host in sorted(job_hosts - {host}):
+            child_urls, host_truncated, _host_pages, _host_identities = await _discover_pages(
+                job_host,
+                client,
+            )
+            child_job_ids.update(urlparse(url).path.split("/")[2] for url in child_urls)
+            child_truncated = child_truncated or host_truncated
+        aggregate_verified = (
+            not child_truncated
+            and len(aggregate_job_ids) == len(urls)
+            and aggregate_job_ids == child_job_ids
+        )
+        if not aggregate_verified:
+            truncated = True
+        log_method = log.info if aggregate_verified else log.warning
+        log_method(
+            "icims.aggregate_verified",
+            host=host,
+            aggregate_jobs=len(aggregate_job_ids),
+            child_jobs=len(child_job_ids),
+            child_hosts=len(job_hosts) - 1,
+            child_truncated=child_truncated,
+            verified=aggregate_verified,
+        )
+    if id_dedupe_hosts:
+        peer_job_ids: set[str] = set()
+        for peer_host in sorted(id_dedupe_hosts):
+            peer_urls, peer_truncated, _peer_pages, _peer_identities = await _discover_pages(
+                peer_host,
+                client,
+            )
+            if peer_truncated:
+                raise ValueError(
+                    f"iCIMS job-ID dedupe peer {peer_host!r} was truncated; refusing partial dedupe"
+                )
+            peer_job_ids.update(urlparse(url).path.split("/")[2] for url in peer_urls)
+        duplicates = {url for url in urls if urlparse(url).path.split("/")[2] in peer_job_ids}
+        urls.difference_update(duplicates)
+        log.info(
+            "icims.job_ids_deduped",
+            host=host,
+            peer_hosts=len(id_dedupe_hosts),
+            peer_jobs=len(peer_job_ids),
+            removed=len(duplicates),
+            kept=len(urls),
+        )
+    if dedupe is not None:
+        peer_host, aliases = dedupe
+        _peer_urls, peer_truncated, _peer_pages, peer_identities = await _discover_pages(
+            peer_host,
+            client,
+            collect_identities=True,
+        )
+        if peer_truncated:
+            raise ValueError(
+                f"iCIMS cross-locale peer {peer_host!r} was truncated; refusing partial dedupe"
+            )
+
+        def canonical(identity: tuple[str, str, str]) -> tuple[str, str, str]:
+            title, region, job_type = identity
+            return aliases.get(title, title), region, job_type
+
+        unmatched_peer_keys = Counter(canonical(identity) for identity in peer_identities.values())
+        duplicates: set[str] = set()
+        for url, identity in sorted(identities.items()):
+            key = canonical(identity)
+            if unmatched_peer_keys[key] > 0:
+                duplicates.add(url)
+                unmatched_peer_keys[key] -= 1
+        urls.difference_update(duplicates)
+        log.info(
+            "icims.cross_locale_deduped",
+            host=host,
+            peer_host=peer_host,
+            removed=len(duplicates),
+            kept=len(urls),
+        )
+    log_method = log.warning if truncated else log.info
+    log_method("icims.discovered", host=host, jobs=len(urls), pages=pages, truncated=truncated)
+    return truncated_url_result(urls) if truncated else urls
+
+
+async def _probe_host(host: str, client: httpx.AsyncClient) -> ProbeResult:
+    try:
+        page = await _fetch_listing(host, 0, client)
+    except TDMReservedError:
+        raise
+    except Exception:
+        log.debug("icims.probe_failed", host=host, exc_info=True)
+        return False, None
+    urls = _parse_listing(page, host, frozenset({host}))
+    _, pages = _page_metadata(page)
+    count: ProbeCount = len(urls) if pages == 1 else f"{len(urls)}+ (first of {pages} pages)"
+    return True, count
+
+
+async def _fetch_job_count(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeCount | None:
+    _ = context
+    found, count = await _probe_host(token, client)
+    return count if found else None
+
+
+async def _probe_candidate(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeResult:
+    _ = context
+    return await _probe_host(token, client)
+
+
+def _build_result(host: str, count: ProbeCount | None, context: None) -> dict:
+    _ = context
+    result: dict = {"host": host}
+    if count is not None:
+        result["jobs"] = count
+    return result
+
+
+async def can_handle(
+    url: str,
+    client: httpx.AsyncClient | None = None,
+    pw=None,
+) -> dict | None:
+    """Detect only direct or explicitly linked iCIMS public hosts."""
+    _ = pw
+    if _host_from_url(url) is None and _host_from_url(url, validate_query=False) is not None:
+        # Do not fetch a filtered tenant URL and rediscover its host from its
+        # own job links; doing so would silently widen the configured scope.
+        return None
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="icims",
+        token_from_url=_host_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=frozenset(),
+        fetch_job_count=_fetch_job_count,
+        api_probe=_probe_candidate,
+        initial_context=None,
+        result_builder=_build_result,
+        page_token_probe=_probe_candidate,
+        require_direct_count=True,
+        allow_slug_guess=False,
+        log_token_field="host",
+    )
+
+
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    host = _normalize_host(metadata.get("host")) or _host_from_url(board_url)
+    if host is None:
+        return
+    await save_text_response(
+        artifact_dir,
+        client,
+        _listing_url(host),
+        filename="icims-listing.html",
+        follow_redirects=False,
+    )
+
+
+register("icims", discover, cost=10, can_handle=can_handle, save_raw=save_raw)

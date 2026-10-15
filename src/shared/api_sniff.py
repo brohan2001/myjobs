@@ -14,7 +14,7 @@ import random
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 import structlog
@@ -23,6 +23,15 @@ from src.shared.http_retry import PaginationFetchError, is_retryable_status
 
 log = structlog.get_logger()
 
+
+class ApiSnifferDomUnavailableError(RuntimeError):
+    """The page cannot safely run API-sniffer fallback interactions."""
+
+
+class ApiSnifferItemValidationError(ValueError):
+    """A strict API item list contained a non-object member."""
+
+
 # ---------------------------------------------------------------------------
 # Transport abstraction
 # ---------------------------------------------------------------------------
@@ -30,13 +39,17 @@ log = structlog.get_logger()
 FetchJsonFn = Callable[[str, str, dict, str | None], Awaitable[object]]
 """(method, url, headers, body) -> parsed JSON. Raises on error."""
 
+ItemProjector = Callable[[dict], dict]
+"""Reduce one API item before it is retained across pagination pages."""
+
 
 def make_browser_fetcher(page) -> FetchJsonFn:
     """Create a FetchJsonFn that executes fetch() inside the browser context.
 
     TDM-Reservation respect (#2842, #2925). The response body is parsed
-    inside :func:`fetch_json` which now surfaces ``r.headers`` through
-    the page-evaluate bridge alongside the body text and invokes
+    inside :func:`fetch_json` which surfaces ``r.status`` and ``r.headers``
+    through the page-evaluate bridge alongside the body text, raises HTTP
+    failures for the shared retry classifier, and invokes
     :func:`check_browser_response` before returning. A
     :class:`TDMReservedError` propagates out (not retried) and is
     treated as a clean board skip by the wrapper in
@@ -99,6 +112,7 @@ SKIP_PATTERNS: tuple[str, ...] = (
     "googlesyndication",
     "googletagmanager",
     "gtag",
+    "secureprivacy",
 )
 
 JOB_KEYWORDS = re.compile(
@@ -107,7 +121,17 @@ JOB_KEYWORDS = re.compile(
 )
 
 TITLE_FIELDS = re.compile(
-    r"^(title|name|job_?title|position_?title|label|heading|role|job_?name)$",
+    r"^(title|name|job_?title|position_?title|label|heading|role|job_?name"
+    r"|job_?opening_?name|Title__c)$",
+    re.IGNORECASE,
+)
+
+# Generic ``name``/``label`` keys are useful fallbacks, but reference-data
+# responses (locations, departments, filters) commonly expose those fields too.
+# Prefer arrays with an unambiguous job-title key when API captures otherwise
+# tie, as PeopleWeek's vacancy and vacancy-location endpoints do.
+EXPLICIT_TITLE_FIELDS = re.compile(
+    r"^(job_?title|position_?title|job_?name|job_?opening_?name|Title__c)$",
     re.IGNORECASE,
 )
 
@@ -121,7 +145,9 @@ COUNT_FIELDS = re.compile(
     # (job siblings to the array are always int-valued and evaluated in context,
     # so the broader match stays anchored to the array's parent object).
     r"^(total|count|total_?count|total_?results|total_?items|hits|num_?found|result_?count"
-    r"|size|total[A-Za-z]+|nbHits)$",
+    # A page count is not an item count. Treating ``totalPages`` as the
+    # advertised inventory size can make a 12-item first page look complete.
+    r"|size|total(?!_?pages?$)[A-Za-z]+|nbHits)$",
     re.IGNORECASE,
 )
 
@@ -187,34 +213,37 @@ _SKIP_HEADERS = frozenset(
 
 FIELD_PATTERNS: dict[str, re.Pattern] = {
     "title": re.compile(
-        r"^(title|name|job_?title|position_?title|label|heading|role|job_?name)$",
+        r"^(title|name|job_?title|position_?title|label|heading|role|job_?name"
+        r"|job_?opening_?name|Title__c)$",
         re.I,
     ),
     "description": re.compile(
         r"^(description|body|content|bodyHtml|body_?html|descriptionHtml"
-        r"|description_?html|text|details|job_?description|summary)$",
+        r"|description_?html|text|details|job_?description"
+        r"|position_?description_?html|summary|Job_Posting_Description__c)$",
         re.I,
     ),
     "employment_type": re.compile(
         r"^(employment_?type|type|job_?type|work_?type|contract_?type"
-        r"|employmentType|workType)$",
+        r"|employmentType|workType|employment_?status_?label)$",
         re.I,
     ),
     "date_posted": re.compile(
         r"^(date_?posted|posted_?at|posted_?date|published_?at|created_?at"
-        r"|datePosted|publishedAt|createdAt|publish_?date)$",
+        r"|datePosted|publishedAt|createdAt|publish_?date|publication_date__c)$",
         re.I,
     ),
     "job_location_type": re.compile(
         r"^(job_?location_?type|workplace_?type|remote_?type|location_?type"
-        r"|workplaceType|locationType|isRemote|remote)$",
+        r"|workplaceType|locationType|isRemote|remote|Modality__c)$",
         re.I,
     ),
 }
 
 # Location patterns — match both simple keys and array-of-object patterns
 _LOCATION_KEY_PATTERNS = re.compile(
-    r"^(location|locations|office|offices|city|cities|place|places)$",
+    r"^(location|locations|office|offices|city|cities|place|places"
+    r"|requisition_?locations|work_?locations|Location__c)$",
     re.I,
 )
 _LOCATION_SUBFIELD_PATTERNS = re.compile(
@@ -226,7 +255,8 @@ _LOCATION_SUBFIELD_PATTERNS = re.compile(
 _METADATA_PATTERNS: dict[str, re.Pattern] = {
     "metadata.team": re.compile(
         r"^(team|department|group|division|org|organization|category"
-        r"|departmentName|teamName|team_?name|department_?name)$",
+        r"|departmentName|teamName|team_?name|department_?name"
+        r"|department_?label)$",
         re.I,
     ),
 }
@@ -264,11 +294,27 @@ class ArrayCandidate:
 @dataclass
 class PaginationInfo:
     param_name: str
-    style: str  # "offset" or "page"
+    style: str  # "offset", "page", or "cumulative_limit"
     start_value: int
     increment: int
     location: str  # "query" or "body"
     observed_value: int | None = None
+    value_template: str | None = None
+
+
+def _formatted_pagination_value(pag: PaginationInfo, value: int) -> int | str:
+    """Wrap a numeric cursor for APIs that nest it in one parameter value."""
+    template = pag.value_template
+    if template is None:
+        return value
+    if (
+        len(template) > 256
+        or template.count("{value}") != 1
+        or "{" in template.replace("{value}", "")
+        or "}" in template.replace("{value}", "")
+    ):
+        raise ValueError("pagination value_template must contain exactly one {value} placeholder")
+    return template.replace("{value}", str(value))
 
 
 @dataclass
@@ -296,12 +342,25 @@ def _quote_key(key: str) -> str:
 
 
 def find_arrays(obj: object, path: str = "") -> list[tuple[str, list[dict]]]:
-    """Recursively find arrays of 3+ dicts in any JSON structure."""
+    """Recursively find arrays of 3+ dicts in any JSON structure.
+
+    Small wrapper arrays are traversed as well as dictionaries.  RPC APIs
+    such as Salesforce Aura return an ``actions`` array whose entries wrap
+    the actual job arrays in ``returnValue``.  Large arrays are terminal once
+    recorded so normal job payloads do not trigger an expensive walk through
+    every posting and its nested fields.
+    """
     results: list[tuple[str, list[dict]]] = []
     if isinstance(obj, list):
         dicts = [x for x in obj if isinstance(x, dict)]
         if len(dicts) >= 3:
             results.append((path or "$", dicts))
+        if len(obj) <= 50:
+            for index, val in enumerate(obj):
+                if not isinstance(val, (dict, list)):
+                    continue
+                child_path = f"{path}[{index}]" if path else f"[{index}]"
+                results.extend(find_arrays(val, child_path))
     if isinstance(obj, dict):
         for key, val in obj.items():
             qkey = _quote_key(key)
@@ -316,24 +375,90 @@ def _looks_like_url(value: str) -> bool:
     return bool(value.startswith(("http://", "https://", "/")) and len(value) > 5)
 
 
+def _nested_scalar_paths(item: dict, prefix: str = "") -> list[tuple[str, str, object]]:
+    """Return dotted paths for scalar values nested in dictionaries.
+
+    Job-list APIs commonly group canonical links below a small ``links``
+    object. Keep list traversal out of automatic detection: choosing one URL
+    from a list of related links is ambiguous, while dictionary paths map
+    directly onto the field-path syntax already supported by api_sniffer.
+    """
+    paths: list[tuple[str, str, object]] = []
+    for key, value in item.items():
+        path_key = _quote_key(key)
+        path = f"{prefix}.{path_key}" if prefix else path_key
+        if isinstance(value, dict):
+            paths.extend(_nested_scalar_paths(value, path))
+        elif not isinstance(value, (list, tuple, set)):
+            paths.append((path, key, value))
+    return paths
+
+
+def _url_field_priority(key: str) -> int:
+    """Prefer canonical/detail links over application endpoints."""
+    normalized = re.sub(r"[^a-z]", "", key.lower())
+    # Listing APIs commonly expose branded artwork alongside the actual job
+    # link (for example Webcruiter's ``PictureUrl`` + ``OpenAdvertUrl``).
+    # Artwork must never become the posting identity merely because it appears
+    # first in the response object.
+    if any(token in normalized for token in ("image", "picture", "logo", "thumbnail", "avatar")):
+        return -1
+    if "canonical" in normalized:
+        return 100
+    if "apply" in normalized:
+        return 10
+    if any(token in normalized for token in ("job", "advert", "posting", "position")) and any(
+        token in normalized for token in ("url", "link", "href", "path", "uri")
+    ):
+        return 95
+    if "directlink" in normalized or "detail" in normalized:
+        return 90
+    if "url" in normalized or "href" in normalized:
+        return 80
+    if "link" in normalized:
+        return 70
+    if "slug" in normalized or "path" in normalized or "uri" in normalized:
+        return 60
+    return 0
+
+
 def find_url_field(items: list[dict]) -> str | None:
-    """Detect which field holds job URLs — first by name, then by value pattern."""
+    """Detect which field holds job URLs, including nested link objects."""
     if not items:
         return None
     sample = items[:5]
 
-    # By field name
-    for item in sample:
-        for key in item:
-            if URL_FIELDS.search(key) and any(
-                _looks_like_url(str(it.get(key, ""))) for it in sample
-            ):
-                return key
+    # Rank named candidates across both top-level and nested dictionary paths,
+    # e.g. Prospective's ``links.directlink``. Considering them together makes
+    # a canonical/detail page win even when the sibling apply URL is top-level.
+    from src.shared.nextdata import resolve_path
 
-    # By value pattern
-    for key in sample[0]:
-        if all(_looks_like_url(str(it.get(key, ""))) for it in sample if key in it):
-            return key
+    candidates: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for path, key, _value in _nested_scalar_paths(sample[0]):
+        if path in seen or not URL_FIELDS.search(key):
+            continue
+        seen.add(path)
+        priority = _url_field_priority(key)
+        if priority < 0:
+            continue
+        values = [resolve_path(item, path) for item in sample]
+        if values and all(isinstance(value, str) and _looks_like_url(value) for value in values):
+            candidates.append((priority, -len(candidates), path))
+    if candidates:
+        return max(candidates)[2]
+
+    # Value-pattern fallback for APIs whose URL field has an unusual name.
+    # Keep this at the top level to avoid selecting unrelated nested links.
+    for key, value in sample[0].items():
+        if isinstance(value, (dict, list, tuple, set)):
+            continue
+        if _url_field_priority(key) < 0:
+            continue
+        path = _quote_key(key)
+        values = [resolve_path(item, path) for item in sample]
+        if all(isinstance(value, str) and _looks_like_url(value) for value in values):
+            return path
 
     return None
 
@@ -393,10 +518,22 @@ def score_candidate(cand: ArrayCandidate, page_url: str) -> int:
         sample_keys.update(it.keys())
     if any(TITLE_FIELDS.match(k) for k in sample_keys):
         score += 15
+    if any(EXPLICIT_TITLE_FIELDS.match(k) for k in sample_keys):
+        score += 10
 
     # Job keyword in API URL or JSON path
     if JOB_KEYWORDS.search(ex.url) or JOB_KEYWORDS.search(cand.json_path):
         score += 10
+
+    # Salesforce Experience Cloud batches unrelated RPC actions through one
+    # Aura endpoint. A nested returnValue array on a JobOffer request is more
+    # specific than generic reference/config arrays captured from the page.
+    if (
+        "/s/sfsites/aura" in ex.url
+        and "returnValue" in cand.json_path
+        and JOB_KEYWORDS.search(ex.url)
+    ):
+        score += 20
 
     # Total count sibling
     total = find_total_count(ex.body, cand.json_path)
@@ -471,8 +608,10 @@ def extract_urls(items: list[dict], url_field: str | None, page_url: str) -> lis
     """Normalize relative->absolute URLs from JSON items."""
     urls = []
     if url_field:
+        from src.shared.nextdata import resolve_path
+
         for item in items:
-            val = item.get(url_field)
+            val = resolve_path(item, url_field)
             if isinstance(val, str) and val:
                 urls.append(urljoin(page_url, val))
     else:
@@ -575,9 +714,35 @@ def infer_pagination(
         pairs.sort(key=lambda x: x[0])
 
         for _, ex1, ex2 in pairs:
-            diff = _diff_query_params(ex1.url, ex2.url)
-            if diff:
-                name, v1, v2 = diff
+            query_diff = _diff_query_params(ex1.url, ex2.url)
+            body_diff = _diff_json_bodies(ex1.post_data, ex2.post_data)
+
+            # Salesforce Aura's ``r`` parameter is a request/action sequence
+            # number shared by unrelated RPC calls, not a page cursor. The
+            # actual job response may already contain the full active list.
+            if query_diff and query_diff[0] == "r" and parsed.path.endswith("/s/sfsites/aura"):
+                query_diff = None
+
+            # Some POST APIs (notably ByteDance) mirror the offset in both
+            # the query string and JSON body, but only honor the body value
+            # during replay. Prefer the body when both observations describe
+            # the same pagination parameter; retain query priority when the
+            # two locations differ so unrelated changing body values do not
+            # override a clear URL contract.
+            if body_diff and query_diff and body_diff[0] == query_diff[0]:
+                name, v1, v2 = body_diff
+                inc = abs(v2 - v1)
+                style = "offset" if inc == page_size else "page"
+                return PaginationInfo(
+                    param_name=name,
+                    style=style,
+                    start_value=min(v1, v2),
+                    increment=inc,
+                    location="body",
+                )
+
+            if query_diff:
+                name, v1, v2 = query_diff
                 inc = abs(v2 - v1)
                 style = "offset" if inc == page_size else "page"
                 return PaginationInfo(
@@ -588,9 +753,8 @@ def infer_pagination(
                     location="query",
                 )
 
-            diff = _diff_json_bodies(ex1.post_data, ex2.post_data)
-            if diff:
-                name, v1, v2 = diff
+            if body_diff:
+                name, v1, v2 = body_diff
                 inc = abs(v2 - v1)
                 style = "offset" if inc == page_size else "page"
                 return PaginationInfo(
@@ -624,6 +788,7 @@ def infer_pagination(
                     observed_value=val,
                 )
             except (ValueError, TypeError):
+                # Non-numeric candidate; keep scanning other pagination parameter names.
                 pass
 
     for param in ("page", "pageNumber", "p", "pageNo"):
@@ -639,6 +804,7 @@ def infer_pagination(
                     observed_value=val,
                 )
             except (ValueError, TypeError):
+                # Non-numeric candidate; keep scanning other pagination parameter names.
                 pass
 
     # Check POST body
@@ -659,6 +825,7 @@ def infer_pagination(
                                 observed_value=val,
                             )
                         except (ValueError, TypeError):
+                            # Non-numeric candidate; keep scanning other known parameter names.
                             pass
                 for param in ("page", "pageNumber", "p", "pageNo"):
                     if param in body:
@@ -673,8 +840,10 @@ def infer_pagination(
                                 observed_value=val,
                             )
                         except (ValueError, TypeError):
+                            # Non-numeric candidate; keep scanning other known parameter names.
                             pass
         except (json.JSONDecodeError, TypeError):
+            # Non-JSON bodies are not JSON pagination candidates.
             pass
 
     return None
@@ -750,13 +919,21 @@ def _is_multipart(body_str: str) -> bool:
 
 
 def set_body_param(body_str: str, param: str, value: object) -> str:
-    """Set a single field in a POST body (JSON or multipart/form-data)."""
+    """Set a single field in a JSON, multipart, or URL-encoded POST body."""
     if _is_multipart(body_str):
         return _set_multipart_param(body_str, param, value)
     try:
         body = json.loads(body_str)
     except (json.JSONDecodeError, TypeError):
-        return body_str
+        try:
+            fields = parse_qsl(body_str, keep_blank_values=True, max_num_fields=1_024)
+        except ValueError:
+            return body_str
+        if not fields or param not in {key for key, _value in fields}:
+            return body_str
+        return urlencode(
+            [(key, str(value) if key == param else current) for key, current in fields]
+        )
     parts = param.split(".")
     obj = body
     for part in parts[:-1]:
@@ -773,6 +950,7 @@ def detect_size_param(url: str, post_data: str | None) -> tuple[str, str, int] |
             try:
                 return (param, "query", int(qs[param][0]))
             except (ValueError, TypeError):
+                # Non-numeric candidate; keep scanning other size parameter names.
                 pass
     if post_data:
         if _is_multipart(post_data):
@@ -782,6 +960,7 @@ def detect_size_param(url: str, post_data: str | None) -> tuple[str, str, int] |
                     try:
                         return (param, "body", int(val))
                     except (ValueError, TypeError):
+                        # Non-numeric candidate; keep scanning other size parameter names.
                         pass
         else:
             try:
@@ -792,19 +971,49 @@ def detect_size_param(url: str, post_data: str | None) -> tuple[str, str, int] |
                             try:
                                 return (param, "body", int(body[param]))
                             except (ValueError, TypeError):
+                                # Non-numeric candidate; keep scanning other size parameter names.
                                 pass
             except (json.JSONDecodeError, TypeError):
+                # Non-JSON bodies are not JSON size-parameter candidates.
                 pass
     return None
 
 
-def extract_items(data: object, target_path: str) -> list[dict]:
+def extract_items(
+    data: object,
+    target_path: str,
+    *,
+    require_object_items: bool = False,
+) -> list[dict]:
     """Extract the job array from a parsed JSON response."""
+    # Resolve the configured expression first.  ``find_arrays`` can only
+    # describe literal list nodes, so JMESPath projections such as
+    # ``jobs.*`` (a dict keyed by requisition ID) otherwise work on the
+    # first page but disappear during pagination.  An exact empty result
+    # must also stay empty instead of falling back to an unrelated array in
+    # the response (for example, filter values).
+    if target_path:
+        from src.shared.nextdata import resolve_path
+
+        resolved = data if target_path == "$" else resolve_path(data, target_path)
+        if isinstance(resolved, list):
+            if require_object_items:
+                invalid_index = next(
+                    (index for index, item in enumerate(resolved) if not isinstance(item, dict)),
+                    None,
+                )
+                if invalid_index is not None:
+                    raise ApiSnifferItemValidationError(
+                        "api_sniffer required identity list contains a non-object item "
+                        f"at index {invalid_index}"
+                    )
+            return [item for item in resolved if isinstance(item, dict)]
+        # A configured path is authoritative. Missing/null/non-list data is
+        # an empty page, not permission to ingest an unrelated response array.
+        return []
+
     arrays = find_arrays(data)
-    for path, arr in arrays:
-        if path == target_path:
-            return arr
-    # Fallback: largest array
+    # Without a configured path, retain the probe heuristic: largest array.
     if arrays:
         return max(arrays, key=lambda x: len(x[1]))[1]
     return []
@@ -844,8 +1053,39 @@ def auto_map_fields(items: list[dict]) -> dict[str, str]:
                 mapping[field_name] = key
                 break
 
+    # ADP MyJobs exposes a generic requisition ``type`` (usually ``Normal``)
+    # alongside the useful schedule in ``workLevelCode``. Prefer the latter
+    # when present so auto-discovery does not label every job with an opaque
+    # provider-internal value.
+    if any(isinstance(item.get("workLevelCode"), str) and item["workLevelCode"] for item in sample):
+        mapping["employment_type"] = "workLevelCode"
+
+    # ADP MyJobs also labels requisitionLocations with property codes such as
+    # ``4121-Hotel Monaco SLC`` while the nested address contains the actual
+    # candidate-facing geography. Handle that shape before the generic
+    # location-name heuristic. The filter projection drops missing address
+    # parts, so countries without a state/province remain clean.
+    requisition_locations = next(
+        (
+            item.get("requisitionLocations")
+            for item in sample
+            if isinstance(item.get("requisitionLocations"), list) and item["requisitionLocations"]
+        ),
+        None,
+    )
+    if isinstance(requisition_locations, list) and isinstance(requisition_locations[0], dict):
+        address = requisition_locations[0].get("address")
+        if isinstance(address, dict) and isinstance(address.get("cityName"), str):
+            mapping["locations"] = (
+                "requisitionLocations[].join(', ', "
+                "[address.cityName, address.countrySubdivisionLevel1.codeValue, "
+                "address.country.longName][?@])"
+            )
+
     # Location matching — handles both simple strings and array-of-objects
     for key in all_keys:
+        if "locations" in mapping:
+            break
         if _LOCATION_KEY_PATTERNS.match(key):
             # Check the type of value in sample items
             sample_vals = [item.get(key) for item in sample if key in item]
@@ -860,6 +1100,17 @@ def auto_map_fields(items: list[dict]) -> dict[str, str]:
                     mapping["locations"] = key
                     break
                 if first and isinstance(first[0], dict):
+                    # ADP MyJobs wraps the display label one level deeper:
+                    # requisitionLocations[].nameCode.{shortName,longName}.
+                    # Prefer the concise label when both variants exist.
+                    name_code = first[0].get("nameCode")
+                    if isinstance(name_code, dict):
+                        for subkey in ("shortName", "longName"):
+                            if isinstance(name_code.get(subkey), str):
+                                mapping["locations"] = f"{key}[].nameCode.{subkey}"
+                                break
+                        if "locations" in mapping:
+                            break
                     # Find the name subfield
                     for subkey in first[0]:
                         if _LOCATION_SUBFIELD_PATTERNS.match(subkey):
@@ -872,6 +1123,20 @@ def auto_map_fields(items: list[dict]) -> dict[str, str]:
                                 mapping["locations"] = f"{key}[].{subkey}"
                                 break
                     break
+            if isinstance(first, dict):
+                # BambooHR and similar APIs return a single location object
+                # (for example ``{"city": "Sheffield", "state": "..."}``)
+                # instead of an array. Prefer a recognised display subfield.
+                for subkey in first:
+                    if _LOCATION_SUBFIELD_PATTERNS.match(subkey):
+                        mapping["locations"] = f"{key}.{subkey}"
+                        break
+                else:
+                    for subkey, subval in first.items():
+                        if isinstance(subval, str) and subval:
+                            mapping["locations"] = f"{key}.{subkey}"
+                            break
+                break
 
     # Metadata patterns (team/department)
     for field_name, pattern in _METADATA_PATTERNS.items():
@@ -948,6 +1213,17 @@ async def capture_exchanges(page, page_host: str) -> list[Exchange]:
 
 async def trigger_interactions(page, exchanges: list[Exchange]) -> None:
     """Dismiss overlays and trigger pagination / load-more to capture more exchanges."""
+    try:
+        has_body = await page.evaluate("() => document.body !== null")
+    except Exception as exc:
+        raise ApiSnifferDomUnavailableError(
+            "API sniffer fallback interactions require a usable document body"
+        ) from exc
+    if not has_body:
+        raise ApiSnifferDomUnavailableError(
+            "API sniffer fallback interactions require a usable document body"
+        )
+
     before = len(exchanges)
 
     # Phase A: search button click for Taleo/Workday-style pages
@@ -1027,7 +1303,17 @@ async def trigger_interactions(page, exchanges: list[Exchange]) -> None:
 
     # Scroll to bottom for infinite-scroll triggers
     if len(exchanges) == before_pagination:
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        scrolled = await page.evaluate("""() => {
+            const root =
+                document.scrollingElement || document.documentElement || document.body;
+            if (!root) return false;
+            window.scrollTo(0, root.scrollHeight);
+            return true;
+        }""")
+        if not scrolled:
+            raise ApiSnifferDomUnavailableError(
+                "API sniffer fallback interactions require a usable document body"
+            )
         await asyncio.sleep(3)
 
     for ex in exchanges[before:]:
@@ -1046,7 +1332,7 @@ async def fetch_json(
     """Execute a fetch inside the browser context, return parsed JSON.
 
     TDM-Reservation respect (#2842, #2925). The page-evaluate bridge
-    surfaces ``r.headers`` (entries materialised into a plain object
+    surfaces ``r.status`` and ``r.headers`` (entries materialised into a plain object
     with lower-cased keys, since ``Headers`` itself isn't directly
     serialisable across the bridge) alongside the body text so
     :func:`check_browser_response` can run on the Playwright path —
@@ -1065,7 +1351,7 @@ async def fetch_json(
         for (const [k, v] of resp.headers.entries()) {
             respHeaders[k.toLowerCase()] = v;
         }
-        return { headers: respHeaders, text: await resp.text() };
+        return { status: resp.status, headers: respHeaders, text: await resp.text() };
     }""",
         [method, url, json.dumps(headers), body],
     )
@@ -1077,6 +1363,17 @@ async def fetch_json(
     # ``_fetch_page_with_retry``. No defensive shape-check needed.
     text = result["text"]
     resp_headers = result.get("headers") or {}
+    status = result.get("status", 200)
+    if not isinstance(status, int):
+        raise TypeError("browser fetch returned an invalid HTTP status")
+    if not 200 <= status < 300:
+        response = httpx.Response(
+            status,
+            headers=resp_headers,
+            text=text,
+            request=httpx.Request(method, url),
+        )
+        response.raise_for_status()
     check_browser_response(resp_headers, text, url=url)
     return json.loads(text)
 
@@ -1098,6 +1395,7 @@ async def _fetch_page_with_retry(
     *,
     retries: int = _PAGINATE_FETCH_RETRIES,
     base_delay: float = _PAGINATE_FETCH_BASE_DELAY,
+    transient_403: bool = False,
 ) -> object:
     """Wrap a :data:`FetchJsonFn` with bounded retries (#2733).
 
@@ -1114,7 +1412,8 @@ async def _fetch_page_with_retry(
       plus 408/425/429), and on any other ``Exception`` (Playwright
       errors, network errors, JSON parse errors).
     - Raises :class:`PaginationFetchError` immediately on a
-      non-retryable 4xx (e.g. 401, 403, 400) — those won't recover.
+      non-retryable 4xx (e.g. 401, 403, 400) by default. Callers using a
+      rotating proxy may opt into retrying 401/403 with ``transient_403``.
     - Raises :class:`PaginationFetchError` after the retry budget is
       exhausted.
 
@@ -1153,7 +1452,7 @@ async def _fetch_page_with_retry(
             status = exc.response.status_code
             last_status = status
             last_exc = exc
-            if not is_retryable_status(status):
+            if not is_retryable_status(status) and not (transient_403 and status in (401, 403)):
                 # Non-transient — fail loudly so the run is recorded as
                 # a failure rather than truncating to whatever pages
                 # happened to succeed.
@@ -1195,11 +1494,24 @@ async def paginate_all(
     fetch_fn: FetchJsonFn,
     result: JobListResult,
     max_pages: int,
+    *,
+    item_projector: ItemProjector | None = None,
+    require_object_items: bool = False,
+    retries: int = _PAGINATE_FETCH_RETRIES,
+    transient_403: bool = False,
 ) -> list[dict]:
-    """Fetch all pages of a paginated API using the given transport function."""
+    """Fetch all pages of a paginated API using the given transport function.
+
+    ``item_projector`` is applied as each page arrives.  This lets callers
+    discard unused fields before thousands of response objects accumulate in
+    memory while preserving pagination decisions based on the original page.
+    When ``require_object_items`` is enabled, every raw list member must be an
+    object before projection or filtering on every fetched page.
+    """
     pag = result.pagination
     ex = result.candidate.exchange
-    all_items = list(result.candidate.items)
+    project = item_projector or (lambda item: item)
+    all_items = [project(item) for item in result.candidate.items]
 
     if pag is None:
         return all_items
@@ -1209,6 +1521,53 @@ async def paginate_all(
         return all_items
 
     headers = clean_headers(ex.request_headers)
+
+    # Some search APIs expose only a cumulative result limit: the UI loads
+    # more by requesting limit=15, then limit=30, and so on, with every
+    # response containing the previous prefix again. Treating that value as
+    # an offset appends duplicates and can still miss the tail. When the API
+    # advertises a total, request the bounded target once and replace the
+    # first-page prefix with the complete response.
+    if pag.style == "cumulative_limit":
+        if not result.total_count or result.total_count <= 0:
+            raise ValueError("cumulative_limit pagination requires a positive total count")
+        target = min(result.total_count, page_size * max_pages)
+        if target <= page_size:
+            return all_items
+
+        if pag.location == "query":
+            fetch_url = set_url_param(
+                ex.url, pag.param_name, _formatted_pagination_value(pag, target)
+            )
+            fetch_body = ex.post_data
+        else:
+            fetch_url = ex.url
+            fetch_body = set_body_param(
+                ex.post_data, pag.param_name, _formatted_pagination_value(pag, target)
+            )
+
+        data = await _fetch_page_with_retry(
+            fetch_fn,
+            ex.method,
+            fetch_url,
+            headers,
+            fetch_body,
+            retries=retries,
+            transient_403=transient_403,
+        )
+        items = extract_items(
+            data,
+            result.candidate.json_path,
+            require_object_items=require_object_items,
+        )
+        if len(items) < target:
+            log.warning(
+                "api_sniff.cumulative_limit_gap",
+                requested=target,
+                discovered=len(items),
+                total_count=result.total_count,
+            )
+        return [project(item) for item in items] if items else all_items
 
     # Try to increase page size
     size_info = detect_size_param(ex.url, ex.post_data)
@@ -1221,13 +1580,25 @@ async def paginate_all(
         else:
             probe_body = set_body_param(probe_body, sp_name, _DESIRED_PAGE_SIZE)
         if pag.location == "query":
-            probe_url = set_url_param(probe_url, pag.param_name, pag.start_value)
+            probe_url = set_url_param(
+                probe_url,
+                pag.param_name,
+                _formatted_pagination_value(pag, pag.start_value),
+            )
         else:
-            probe_body = set_body_param(probe_body, pag.param_name, pag.start_value)
+            probe_body = set_body_param(
+                probe_body,
+                pag.param_name,
+                _formatted_pagination_value(pag, pag.start_value),
+            )
 
         try:
             data = await fetch_fn(ex.method, probe_url, headers, probe_body)
-            probe_items = extract_items(data, result.candidate.json_path)
+            probe_items = extract_items(
+                data,
+                result.candidate.json_path,
+                require_object_items=require_object_items,
+            )
             if len(probe_items) > page_size:
                 log.debug(
                     "api_sniff.page_size_increased",
@@ -1235,7 +1606,7 @@ async def paginate_all(
                     new=len(probe_items),
                 )
                 page_size = len(probe_items)
-                all_items = probe_items
+                all_items = [project(item) for item in probe_items]
                 ex = Exchange(
                     method=ex.method,
                     url=probe_url,
@@ -1251,13 +1622,15 @@ async def paginate_all(
                     result.total_count = new_total
                 if pag.style == "offset":
                     pag.increment = page_size
+        except ApiSnifferItemValidationError:
+            raise
         except Exception:
             log.debug("api_sniff.page_size_probe_failed", exc_info=True)
 
     # Calculate total pages
-    if result.total_count and page_size > 0 and result.total_count > page_size:
+    if result.total_count is not None and page_size > 0:
         total_pages = min(
-            (result.total_count + page_size - 1) // page_size,
+            max(1, (result.total_count + page_size - 1) // page_size),
             max_pages,
         )
     else:
@@ -1273,11 +1646,19 @@ async def paginate_all(
 
     while pages_fetched < total_pages:
         if pag.location == "query":
-            fetch_url = set_url_param(ex.url, pag.param_name, current_value)
+            fetch_url = set_url_param(
+                ex.url,
+                pag.param_name,
+                _formatted_pagination_value(pag, current_value),
+            )
             fetch_body = ex.post_data
         else:
             fetch_url = ex.url
-            fetch_body = set_body_param(ex.post_data, pag.param_name, current_value)
+            fetch_body = set_body_param(
+                ex.post_data,
+                pag.param_name,
+                _formatted_pagination_value(pag, current_value),
+            )
 
         log.debug(
             "api_sniff.paginate",
@@ -1293,8 +1674,20 @@ async def paginate_all(
         # the run is recorded as a failure end-to-end. End-of-pagination
         # is still detected via the empty-page / partial-page branches
         # below.
-        data = await _fetch_page_with_retry(fetch_fn, ex.method, fetch_url, headers, fetch_body)
-        items = extract_items(data, result.candidate.json_path)
+        data = await _fetch_page_with_retry(
+            fetch_fn,
+            ex.method,
+            fetch_url,
+            headers,
+            fetch_body,
+            retries=retries,
+            transient_403=transient_403,
+        )
+        items = extract_items(
+            data,
+            result.candidate.json_path,
+            require_object_items=require_object_items,
+        )
 
         if not items:
             empty_count += 1
@@ -1303,15 +1696,21 @@ async def paginate_all(
                 break
         else:
             empty_count = 0
-            all_items.extend(items)
-            if len(items) < page_size:
+            all_items.extend(project(item) for item in items)
+            if len(items) < page_size and (
+                not result.total_count or len(all_items) >= result.total_count
+            ):
                 break
 
         pages_fetched += 1
         current_value += pag.increment
 
     # Warn if pagination increment doesn't match actual page size
-    if pag.style == "offset" and pag.increment > page_size:
+    if (
+        pag.style == "offset"
+        and pag.increment > page_size
+        and (result.total_count is None or result.total_count > page_size)
+    ):
         log.warning(
             "api_sniff.page_size_mismatch",
             configured_increment=pag.increment,

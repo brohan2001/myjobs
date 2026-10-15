@@ -12,15 +12,17 @@ Career page domains:
 from __future__ import annotations
 
 import asyncio
-import random
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 import structlog
 
-from src.core.monitors import DiscoveredJob, fetch_page_text, register, slugs_from_url
-from src.shared.http_retry import PaginationFetchError, is_retryable_status
+from src.core.monitors import DiscoveredJob, register
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.raw import save_json_response
+from src.shared.http_retry import fetch_json_page_with_retry
 from src.shared.truncation import truncated_rich_result
 
 log = structlog.get_logger()
@@ -144,7 +146,41 @@ async def _probe_slug(slug: str, client: httpx.AsyncClient) -> tuple[bool, int |
             return True, len(items)
         return False, None
     except Exception:
+        log.debug(
+            "hireology.probe_failed",
+            probe="slug",
+            slug=slug,
+            url=_api_url(slug),
+            exc_info=True,
+        )
         return False, None
+
+
+async def _fetch_template_count(
+    slug: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeCount | None:
+    _ = context
+    found, count = await _probe_slug(slug, client)
+    return count if found else None
+
+
+async def _probe_template_slug(
+    slug: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeResult:
+    _ = context
+    return await _probe_slug(slug, client)
+
+
+def _build_template_result(slug: str, count: ProbeCount | None, context: None) -> dict:
+    _ = context
+    result: dict = {"slug": slug}
+    if count is not None:
+        result["jobs"] = count
+    return result
 
 
 async def _get_page_with_retry(
@@ -155,120 +191,16 @@ async def _get_page_with_retry(
     retries: int = _RETRY_ATTEMPTS,
     base_delay: float = _RETRY_BASE_DELAY,
 ) -> dict:
-    """GET a Hireology list-API page with bounded retries (#2749).
-
-    Mirrors the contract used by ``fetch_with_retry`` (#2722) and the
-    sibling monitor helpers (workday #2748, lever #2749, smartrecruiters
-    #2749, accenture #2735, PCSX #2734, api_sniffer #2733): retryable
-    failures back off exponentially and, on budget exhaustion, raise
-    :class:`PaginationFetchError` so the run is recorded as a failure
-    rather than silently truncating to whatever pages happened to
-    succeed.
-
-    Hireology's end-of-pagination signal is
-    ``page * PAGE_SIZE >= count or len(data) < PAGE_SIZE``. Pre-fix, a
-    CDN/anti-bot incident dropping the body and returning ``200 {}``
-    decoded to an empty dict whose ``count`` defaulted to 0 and whose
-    ``data`` defaulted to ``[]`` — the loop broke after the first page
-    and the caller treated the partial discovery as success, which fed
-    ``_MARK_GONE_BY_TIMESTAMP`` for the missing URLs (same shape as
-    #2722 / #2737 / #2748 / smartrecruiters in this PR).
-
-    Retried:
-      - HTTP 5xx (Cloudflare 520-526/530 included), 408, 425, 429.
-      - Arbitrary network exceptions (timeout, connection reset, JSON
-        parse error on a captcha/HTML body served as 200).
-      - HTTP 200 with a body that decodes to a non-dict shape — e.g.,
-        a CDN error envelope or ``null`` served as 200 (same shape as
-        the workday ``null``-body guard).
-
-    Fail-fast (non-retryable 4xx — auth-expired 401, misconfigured 400,
-    forbidden 403, board-removed 404): raises
-    :class:`PaginationFetchError` on the first attempt.
-
-    Backoff: ``base_delay × 2^attempt × (0.5 + random())`` — exponential
-    with full jitter, identical cadence to workday (#2748).
-    """
-    # Retry observability (#3210). Same counter as ``http_retry.py`` so
-    # the cross-monitor "retry storm" PromQL query aggregates hireology in.
-    from src.metrics import http_retry_attempts_total, http_retry_host
-    from src.shared.tdm import TDMReservedError
-    from src.shared.tdm import check_response as _tdm_check
-
-    host = http_retry_host(url)
-
-    last_exc: BaseException | None = None
-    last_status: int | None = None
-    retried = False
-
-    for attempt in range(retries):
-        try:
-            resp = await client.get(url, params=params)
-            last_status = resp.status_code
-            if resp.status_code == 200:
-                # TDM-Reservation respect (#2842) — header-only check on
-                # API endpoints (JSON body, no HTML meta to scan).
-                _tdm_check(resp)
-                # ``resp.json()`` may raise ``json.JSONDecodeError`` on a
-                # captcha/HTML body served as 200 — falls into the
-                # ``except Exception`` branch below, retried, then
-                # surfaced as ``PaginationFetchError``. No silent break.
-                data = resp.json()
-                # Hireology's list endpoint returns a dict with ``data``
-                # / ``count``. A body that decodes to ``null`` or to a
-                # non-dict shape (e.g., an unexpected error envelope) is
-                # treated as a transient failure: retry, then raise.
-                # Without this guard, ``data.get(...)`` on a list/None
-                # silently falls back to defaults which fake a legitimate
-                # end-of-pagination — same shape of silent-break bug the
-                # issue (#2749) is fixing.
-                if not isinstance(data, dict):
-                    raise ValueError(
-                        f"hireology list endpoint returned non-dict body: {type(data).__name__}"
-                    )
-                if retried:
-                    http_retry_attempts_total.labels(host=host, outcome="recovered").inc()
-                return data
-            if is_retryable_status(resp.status_code):
-                last_exc = None  # status-only, no exception
-                http_retry_attempts_total.labels(host=host, outcome="retry").inc()
-                retried = True
-            else:
-                # Non-retryable 4xx — fail fast. ``resp.raise_for_status``
-                # would raise ``HTTPStatusError`` which the caller doesn't
-                # uniformly handle; raise ``PaginationFetchError`` directly
-                # for cross-monitor symmetry.
-                raise PaginationFetchError(
-                    url,
-                    attempts=attempt + 1,
-                    last_status=resp.status_code,
-                )
-        except (PaginationFetchError, TDMReservedError):
-            raise
-        except Exception as exc:  # noqa: BLE001 — timeout, network, JSON parse
-            last_exc = exc
-            last_status = None
-            http_retry_attempts_total.labels(host=host, outcome="retry").inc()
-            retried = True
-
-        if attempt < retries - 1:
-            delay = base_delay * (2**attempt) * (0.5 + random.random())
-            log.info(
-                "hireology.list_backoff",
-                url=url,
-                attempt=attempt + 1,
-                delay_s=round(delay, 2),
-                last_status=last_status,
-                last_error=type(last_exc).__name__ if last_exc else None,
-            )
-            await asyncio.sleep(delay)
-
-    http_retry_attempts_total.labels(host=host, outcome="exhausted").inc()
-    raise PaginationFetchError(
+    """GET a Hireology list-API page with bounded retries (#2749)."""
+    return await fetch_json_page_with_retry(
+        client,
         url,
-        attempts=retries,
-        last_status=last_status,
-        last_error=type(last_exc).__name__ if last_exc else None,
+        params=params,
+        expect_shape=dict,
+        retries=retries,
+        base_delay=base_delay,
+        log_event="hireology.list_backoff",
+        sleep=asyncio.sleep,
     )
 
 
@@ -331,45 +263,45 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
     """Detect Hireology: URL pattern -> page HTML scan -> slug-based API probe."""
-    slug = _slug_from_url(url)
-    if slug:
-        if client is not None:
-            found, count = await _probe_slug(slug, client)
-            if found:
-                result: dict = {"slug": slug}
-                if count is not None:
-                    result["jobs"] = count
-                return result
-        return {"slug": slug}
-
-    if client is None:
-        return None
-
-    html = await fetch_page_text(url, client)
-    if html:
-        for pattern in _PAGE_PATTERNS:
-            match = pattern.search(html)
-            if match:
-                found_slug = match.group(1)
-                if found_slug not in _IGNORE_SLUGS:
-                    log.info("hireology.detected_in_page", url=url, slug=found_slug)
-                    found, count = await _probe_slug(found_slug, client)
-                    if found:
-                        result = {"slug": found_slug}
-                        if count is not None:
-                            result["jobs"] = count
-                        return result
-
-    for slug_candidate in slugs_from_url(url):
-        found, count = await _probe_slug(slug_candidate, client)
-        if found:
-            log.info("hireology.detected_by_probe", url=url, slug=slug_candidate)
-            result = {"slug": slug_candidate}
-            if count is not None:
-                result["jobs"] = count
-            return result
-
-    return None
+    _ = pw
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="hireology",
+        token_from_url=_slug_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_SLUGS,
+        fetch_job_count=_fetch_template_count,
+        api_probe=_probe_template_slug,
+        initial_context=None,
+        result_builder=_build_template_result,
+        page_token_probe=_probe_template_slug,
+        log_token_field="slug",
+    )
 
 
-register("hireology", discover, cost=10, can_handle=can_handle, rich=True)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    slug = metadata.get("slug") or _slug_from_url(board_url)
+    if not slug:
+        return
+    await save_json_response(
+        artifact_dir,
+        client,
+        _api_url(slug),
+        params={"page_size": PAGE_SIZE},
+    )
+
+
+register(
+    "hireology",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=True,
+    save_raw=save_raw,
+)

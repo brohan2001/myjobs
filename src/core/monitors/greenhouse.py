@@ -6,7 +6,12 @@ Returns full job data — title, HTML description, locations, departments, etc.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+from contextlib import suppress
+from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -15,15 +20,23 @@ import structlog
 from src.core.monitors import (
     BoardGoneError,
     DiscoveredJob,
-    fetch_page_text,
     register,
-    slugs_from_url,
 )
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.raw import save_json_response
+from src.shared.tdm import check_response
 from src.shared.truncation import truncated_rich_result
+
+if TYPE_CHECKING:
+    from src.core.monitor import MonitorResult
 
 log = structlog.get_logger()
 
 MAX_JOBS = 50_000
+_ELASTIC_URL = "https://job-boards.greenhouse.io/elastic"
+_CAPTURE_MAX_BYTES = 64 << 20
+_CAPTURE_DIR = Path("/tmp")
+_CAPTURE_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 _PAGE_PATTERNS = [
     re.compile(r"boards-api\.greenhouse\.io/v1/boards/([\w-]+)"),
@@ -52,6 +65,14 @@ def _clean_description(html: str | None) -> str | None:
     return cleaned
 
 
+def _clean_text(value: object) -> str | None:
+    """Collapse source formatting whitespace in display fields."""
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split())
+    return cleaned or None
+
+
 def _parse_job(job: dict) -> DiscoveredJob | None:
     url = job.get("absolute_url")
     if not url:
@@ -61,11 +82,12 @@ def _parse_job(job: dict) -> DiscoveredJob | None:
     seen: set[str] = set()
     loc = job.get("location")
     if isinstance(loc, dict) and loc.get("name"):
-        name = loc["name"]
-        locations.append(name)
-        seen.add(name)
+        name = _clean_text(loc["name"])
+        if name:
+            locations.append(name)
+            seen.add(name)
     for office in job.get("offices", []):
-        name = office.get("name")
+        name = _clean_text(office.get("name"))
         if name and name not in seen:
             locations.append(name)
             seen.add(name)
@@ -81,7 +103,7 @@ def _parse_job(job: dict) -> DiscoveredJob | None:
 
     return DiscoveredJob(
         url=url,
-        title=job.get("title"),
+        title=_clean_text(job.get("title")),
         description=_clean_description(job.get("content")),
         locations=locations or None,
         date_posted=job.get("first_published"),
@@ -128,6 +150,61 @@ def _api_url(token: str) -> str:
     return f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
 
 
+def _capture_scheduled_greenhouse_response(
+    board_url: str, token: str, response: httpx.Response
+) -> None:
+    """Save one existing scheduled response for exact Go/Python replay.
+
+    This is default-off, performs no request, and never changes the monitor
+    result. The operator retrieves the mode-0600 file before container reuse.
+    """
+    path = None
+    selected = {
+        item.strip()
+        for item in os.environ.get("GREENHOUSE_CAPTURE_TOKENS", "").split(",")
+        if item.strip()
+    }
+    if len(selected) > 4:
+        log.warning("greenhouse.capture_skipped", reason="too_many_tokens")
+        return
+    if token in selected and _CAPTURE_TOKEN.fullmatch(token):
+        path = str(_CAPTURE_DIR / f"jobseek-greenhouse-{token}.body")
+    elif board_url == _ELASTIC_URL and token == "elastic":
+        path = os.environ.get("GREENHOUSE_ELASTIC_CAPTURE_PATH")
+    if not path:
+        return
+    if not os.path.isabs(path) or len(response.content) > _CAPTURE_MAX_BYTES:
+        log.warning("greenhouse.capture_skipped", reason="path_or_size")
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    created = False
+    try:
+        fd = os.open(path, flags, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as output:
+            output.write(response.content)
+            output.flush()
+            os.fsync(output.fileno())
+    except FileExistsError:
+        return
+    except OSError as exc:
+        if created:
+            with suppress(OSError):
+                os.unlink(path)
+        log.warning("greenhouse.capture_failed", error_type=type(exc).__name__)
+    else:
+        log.info(
+            "greenhouse.response_captured",
+            status=response.status_code,
+            final_url=str(response.url),
+            bytes=len(response.content),
+            sha256=hashlib.sha256(response.content).hexdigest(),
+            path=path,
+        )
+
+
 async def _probe_token(token: str, client: httpx.AsyncClient) -> tuple[bool, int | None]:
     """Probe the Greenhouse API for a token. Returns (found, job_count)."""
     try:
@@ -140,6 +217,13 @@ async def _probe_token(token: str, client: httpx.AsyncClient) -> tuple[bool, int
             return True, len(jobs)
         return False, None
     except Exception:
+        log.debug(
+            "greenhouse.probe_failed",
+            probe="token",
+            token=token,
+            url=_api_url(token),
+            exc_info=True,
+        )
         return False, None
 
 
@@ -153,10 +237,37 @@ async def _fetch_job_count(token: str, client: httpx.AsyncClient) -> int | None:
         jobs = data.get("jobs")
         return len(jobs) if isinstance(jobs, list) else None
     except Exception:
+        log.debug(
+            "greenhouse.probe_failed",
+            probe="job_count",
+            token=token,
+            url=_api_url(token),
+            exc_info=True,
+        )
         return None
 
 
-async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[DiscoveredJob]:
+async def _fetch_template_count(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeCount | None:
+    _ = context
+    return await _fetch_job_count(token, client)
+
+
+async def _probe_template_token(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeResult:
+    _ = context
+    return await _probe_token(token, client)
+
+
+async def discover(
+    board: dict, client: httpx.AsyncClient, pw=None
+) -> list[DiscoveredJob] | MonitorResult:
     """Fetch job listings with full content from the Greenhouse public API."""
     metadata = board.get("metadata") or {}
     token = metadata.get("token") or _token_from_url(board["board_url"])
@@ -169,26 +280,36 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
 
     url = _api_url(token)
     response = await client.get(url, params={"content": "true"})
+    check_response(response)
+    _capture_scheduled_greenhouse_response(board["board_url"], token, response)
     if response.status_code == 404:
         # Greenhouse returns 404 when the board token has been deleted
         # upstream — i.e. the company removed the board. Surface this
-        # as a structural "gone" signal so the board processor can
-        # disable in one shot instead of grinding through 5 retries.
-        # See issue #2215.
+        # as a structural "gone" signal so the board processor can apply
+        # spaced confirmations instead of the generic failure ramp.
+        # See issues #2215 and #6156.
         raise BoardGoneError(
             f"Greenhouse board token {token!r} returned 404",
             url=str(response.url),
+            status_code=response.status_code,
         )
     response.raise_for_status()
 
     data = response.json()
-    raw_jobs = data.get("jobs", [])
+    if not isinstance(data, dict):
+        raise ValueError("Greenhouse jobs response must be a JSON object")
+    raw_jobs = data.get("jobs")
+    if not isinstance(raw_jobs, list):
+        raise ValueError("Greenhouse jobs response must contain a jobs list")
 
     jobs: list[DiscoveredJob] = []
-    for raw in raw_jobs:
+    for index, raw in enumerate(raw_jobs):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Greenhouse job at index {index} must be an object")
         parsed = _parse_job(raw)
-        if parsed:
-            jobs.append(parsed)
+        if parsed is None:
+            raise ValueError(f"Greenhouse job at index {index} has no absolute_url")
+        jobs.append(parsed)
 
     if len(jobs) > MAX_JOBS:
         log.warning("greenhouse.truncated", url=url, total=len(jobs), cap=MAX_JOBS)
@@ -199,41 +320,43 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
     """Detect Greenhouse: domain check -> page HTML scan -> slug-based API probe."""
-    token = _token_from_url(url)
-    if token:
-        if client is not None:
-            count = await _fetch_job_count(token, client)
-            if count is not None:
-                return {"token": token, "jobs": count}
-        return {"token": token}
-
-    if client is None:
-        return None
-
-    html = await fetch_page_text(url, client)
-    if html:
-        for pattern in _PAGE_PATTERNS:
-            match = pattern.search(html)
-            if match:
-                found = match.group(1)
-                if found not in _IGNORE_TOKENS:
-                    log.info("greenhouse.detected_in_page", url=url, board_token=found)
-                    count = await _fetch_job_count(found, client)
-                    result: dict = {"token": found}
-                    if count is not None:
-                        result["jobs"] = count
-                    return result
-
-    for slug in slugs_from_url(url):
-        found, count = await _probe_token(slug, client)
-        if found:
-            log.info("greenhouse.detected_by_probe", url=url, board_token=slug)
-            result = {"token": slug}
-            if count is not None:
-                result["jobs"] = count
-            return result
-
-    return None
+    _ = pw
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="greenhouse",
+        token_from_url=_token_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_TOKENS,
+        fetch_job_count=_fetch_template_count,
+        api_probe=_probe_template_token,
+        initial_context=None,
+    )
 
 
-register("greenhouse", discover, cost=10, can_handle=can_handle, rich=True)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    token = metadata.get("token") or _token_from_url(board_url)
+    if not token:
+        return
+    await save_json_response(
+        artifact_dir,
+        client,
+        _api_url(token),
+        params={"content": "true"},
+    )
+
+
+register(
+    "greenhouse",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=True,
+    complete_inventory=True,
+    save_raw=save_raw,
+)

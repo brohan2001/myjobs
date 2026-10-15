@@ -9,15 +9,57 @@ fetches details on the daily scrape schedule.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
+import json
+import os
+import random
 import re
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
 
 from src.core.enum_normalize import normalize_job_location_type
 from src.core.scrapers import JobContent, register
+from src.shared.http import mark_transient_response_failure
 
 log = structlog.get_logger()
+
+_DETAIL_HEADERS = {"Accept": "application/json"}
+_DETAIL_RETRY_ATTEMPTS = 3
+_DETAIL_RETRY_BASE_DELAY = 0.5
+_DETAIL_CAPTURE_FILE = "/tmp/jobseek-workday-detail-replay.json"
+_DETAIL_CAPTURE_MAX_BYTES = 2 << 20
+
+
+class WorkdayDetailPayloadError(Exception):
+    """A Workday detail endpoint repeatedly returned an invalid success body."""
+
+    def __init__(
+        self,
+        *,
+        attempts: int,
+        reason: str,
+        status: int,
+        content_type: str,
+        body_length: int,
+        body_sha256: str,
+    ) -> None:
+        self.attempts = attempts
+        self.reason = reason
+        self.status = status
+        self.content_type = content_type
+        self.body_length = body_length
+        self.body_sha256 = body_sha256
+        super().__init__(
+            "Workday detail payload remained invalid "
+            f"after {attempts} attempts "
+            f"(reason={reason}, status={status}, content_type={content_type!r}, "
+            f"body_length={body_length}, body_sha256={body_sha256})"
+        )
+
 
 # Matches Workday job URLs — extracts company, wd instance number, site, and job path
 _JOB_URL_RE = re.compile(
@@ -49,6 +91,38 @@ def _detail_url(company: str, wd_instance: str, site: str, path: str) -> str:
     return f"https://{company}.{wd_instance}.myworkdayjobs.com/wday/cxs/{company}/{site}{path}"
 
 
+def _capture_natural_detail_response(url: str, api_url: str, response: httpx.Response) -> None:
+    """Retain one selected natural response for same-byte Go/Python comparison."""
+    selected_host = os.environ.get("WORKDAY_DETAIL_CAPTURE_HOST", "")
+    if not selected_host or urlsplit(url).hostname != selected_host:
+        return
+    body = response.content
+    if len(body) > _DETAIL_CAPTURE_MAX_BYTES:
+        log.warning("workday.detail_capture_limit", host=selected_host, bytes=len(body))
+        return
+    record = {
+        "source_url": url,
+        "api_url": api_url,
+        "status": response.status_code,
+        "content_type": response.headers.get("content-type", ""),
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "body_base64": base64.b64encode(body).decode("ascii"),
+    }
+    try:
+        fd = os.open(_DETAIL_CAPTURE_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    except OSError as exc:
+        log.warning("workday.detail_capture_open_failed", host=selected_host, error=str(exc))
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as target:
+            json.dump(record, target, separators=(",", ":"))
+        log.info("workday.detail_capture_complete", host=selected_host, bytes=len(body))
+    except OSError as exc:
+        log.warning("workday.detail_capture_write_failed", host=selected_host, error=str(exc))
+
+
 # Workday location format: "{COUNTRY}-{STATE}-{CITY}-{BUILDING} ~ {ADDRESS} ~ ..."
 # Strip building/address noise after ~ and normalize the code prefix.
 _TILDE_RE = re.compile(r"\s*~.*")
@@ -61,17 +135,86 @@ _CODE_RE = re.compile(
     r"-([A-Z][A-Z ]+)"  # city (all-caps, may contain spaces)
 )
 
-# Space-separated display format without commas: "New York New York United States"
-# Collapse multiple spaces before further processing.
-_MULTI_SPACE_RE = re.compile(r" {2,}")
+# Some Workday tenants expose a facility label instead of a plain locality,
+# followed by a reliable city/region/postal suffix. Keep this deliberately
+# narrow so ordinary hyphenated city names continue through unchanged.
+_FACILITY_PREFIX_RE = re.compile(
+    r"^(?:(?:Store\s+)?M?\d+|Corporate Office)\s*[-–]\s*(?P<body>.+)$",
+    re.IGNORECASE,
+)
+_CITY_REGION_POSTAL_RE = re.compile(
+    r"^(?P<head>.+?)(?:,\s*|\s+)(?P<region>[A-Z]{2})\s+"
+    r"(?P<postal>(?:\d{5}(?:-\d{4})?|[A-Z]\d[A-Z][ -]?\d[A-Z]\d))\s*$",
+    re.IGNORECASE,
+)
+_FACILITY_SEGMENT_RE = re.compile(
+    r"\b(?:mall|plaza|plz|center|centre|ctr|place|uptown|marketplace|"
+    r"shopping|shops?|commons?|comns|crossings?)\b",
+    re.IGNORECASE,
+)
 
 
-def _normalize_workday_location(raw: str) -> str:
+def _facility_city(
+    head: str,
+    *,
+    tenant: str | None,
+    tenant_aliases: tuple[str, ...] = (),
+) -> str | None:
+    """Extract a city only across an explicit, reliable facility boundary."""
+    prefix = _FACILITY_PREFIX_RE.match(head)
+    if not prefix:
+        return None
+
+    parts = [part.strip() for part in re.split(r"\s*[-–]\s*", prefix.group("body"))]
+    if not parts or any(not part for part in parts):
+        return None
+
+    separators = {alias.casefold() for alias in tenant_aliases}
+    if tenant:
+        separators.add(tenant.casefold())
+
+    if separators:
+        tenant_indexes = [
+            index for index, part in enumerate(parts) if part.casefold() in separators
+        ]
+        if tenant_indexes:
+            boundary = tenant_indexes[-1]
+            if boundary == len(parts) - 1:
+                return None
+            city = "-".join(parts[boundary + 1 :]).strip()
+            return city or None
+
+    facility_indexes = [
+        index for index, part in enumerate(parts) if _FACILITY_SEGMENT_RE.search(part)
+    ]
+    if not facility_indexes:
+        return None
+    boundary = facility_indexes[-1]
+    if boundary == len(parts) - 1:
+        return None
+    # Without an explicit tenant separator, multiple remaining segments are
+    # ambiguous: they could be a hyphenated city or an unconfigured tenant
+    # alias followed by the city. Fail closed instead of guessing.
+    remaining = parts[boundary + 1 :]
+    if len(remaining) != 1:
+        return None
+    city = remaining[0].strip()
+    return city or None
+
+
+def _normalize_workday_location(
+    raw: str,
+    *,
+    country: str | None = None,
+    tenant: str | None = None,
+    tenant_aliases: tuple[str, ...] = (),
+) -> str:
     """Normalize a Workday location string for the resolver.
 
-    Handles two Workday formats:
+    Handles three Workday formats:
     - Code: "US-AR-SPRINGDALE-BLDG 1 ~ 275 E Robinson Ave" -> "Springdale, AR, US"
     - Display: "New York New York United States" -> "New York, New York, United States"
+    - Facility: "Store 1272-...-Colby, KS 67701" -> "Colby, KS, United States"
     """
     # Strip building/address after ~
     cleaned = _TILDE_RE.sub("", raw).strip()
@@ -88,12 +231,41 @@ def _normalize_workday_location(raw: str) -> str:
             return f"{city.title()}, {state}, {country}"
         return f"{state}, {country}"
 
-    # Display format: Workday uses double spaces as segment separators
+    # Facility display format used by tenants such as maurices:
+    # "Store 1272-South Franklin-maurices-Colby, KS 67701".
+    # The facility portion is not geographical and prevents the location
+    # resolver from seeing the otherwise reliable city/region/country tuple.
+    m = _CITY_REGION_POSTAL_RE.match(cleaned)
+    if m:
+        city = _facility_city(
+            m.group("head"),
+            tenant=tenant,
+            tenant_aliases=tenant_aliases,
+        )
+        if city:
+            parts = [city, m.group("region").upper()]
+            if country:
+                parts.append(country)
+            return ", ".join(parts)
+
+    # Display format: Workday uses double spaces as segment separators.
+    # Facility parsing must run first because some providers insert two spaces
+    # before a postal code.
     # "Sg  Singapore", "Heredia  Costa Rica", "New York  New York  United States"
     if "  " in cleaned:
         return ", ".join(part.strip() for part in cleaned.split("  ") if part.strip())
 
     return cleaned
+
+
+def _country_descriptor(value: object) -> str | None:
+    """Extract Workday's human-readable country context when present."""
+    if isinstance(value, dict):
+        value = value.get("descriptor")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
 
 
 def _parse_location_type(value: str | None) -> str | None:
@@ -107,7 +279,12 @@ def _parse_location_type(value: str | None) -> str | None:
     return normalize_job_location_type(value, default=None)
 
 
-def _parse_detail(data: dict) -> JobContent:
+def _parse_detail(
+    data: dict,
+    *,
+    tenant: str | None = None,
+    tenant_aliases: tuple[str, ...] = (),
+) -> JobContent:
     """Parse the Workday detail API response into JobContent."""
     info = data.get("jobPostingInfo", {})
 
@@ -118,12 +295,18 @@ def _parse_detail(data: dict) -> JobContent:
     locations: list[str] | None = None
     primary = info.get("location")
     additional = info.get("additionalLocations") or []
+    country = _country_descriptor(info.get("country"))
     if primary or additional:
         seen: set[str] = set()
         locs: list[str] = []
         for loc in [primary, *additional]:
             if loc:
-                normalized = _normalize_workday_location(loc)
+                normalized = _normalize_workday_location(
+                    loc,
+                    country=country,
+                    tenant=tenant,
+                    tenant_aliases=tenant_aliases,
+                )
                 if normalized not in seen:
                     seen.add(normalized)
                     locs.append(normalized)
@@ -160,25 +343,106 @@ async def scrape(url: str, config: dict, http: httpx.AsyncClient, **kwargs) -> J
 
     company, wd_instance, site, path = parsed
     api_url = _detail_url(company, wd_instance, site, path)
+    sleep = kwargs.get("sleep", asyncio.sleep)
+    configured_aliases = config.get("facility_tenant_aliases")
+    tenant_aliases = (
+        tuple(
+            alias.strip()
+            for alias in configured_aliases
+            if isinstance(alias, str) and alias.strip()
+        )
+        if isinstance(configured_aliases, list)
+        else ()
+    )
 
-    resp = await http.get(api_url, headers={"Content-Type": "application/json"})
-    # Workday soft-fails (posting removed between list + detail fetches):
-    #   - 404 is the documented "not found" case.
-    #   - 403 with errorCode=S22 ("permission denied") is the *undocumented*
-    #     case Workday actually uses for closed/unlisted requisitions.
-    #     Verified 2026-04-19 against 15 consecutive 403 URLs from Loki:
-    #     0/15 were in the current LIST output — all genuinely delisted.
-    # Anything else (real WAF block, 5xx, other S-codes): raise so it
-    # surfaces in batch.scrape.error and gets retried.
-    if resp.status_code == 404:
-        log.info("workday_scraper.detail_gone", url=url, status=404)
-        return JobContent()
-    if resp.status_code == 403 and _is_gone_response(resp):
-        log.info("workday_scraper.detail_gone", url=url, status=403, error_code="S22")
-        return JobContent()
-    resp.raise_for_status()
+    from src.metrics import http_retry_attempts_total, http_retry_host
 
-    return _parse_detail(resp.json())
+    host = http_retry_host(api_url)
+    retried = False
+    last_payload: dict[str, object] | None = None
+
+    for attempt in range(_DETAIL_RETRY_ATTEMPTS):
+        # ``Accept`` describes the representation we want back. The previous
+        # request sent ``Content-Type`` on a bodyless GET and inherited the
+        # shared browser-oriented Accept header, leaving an API response open
+        # to HTML content negotiation during degraded edge behavior (#5230).
+        resp = await http.get(api_url, headers=_DETAIL_HEADERS)
+        _capture_natural_detail_response(url, api_url, resp)
+
+        # Workday soft-fails (posting removed between list + detail fetches):
+        #   - 404 is the documented "not found" case.
+        #   - 403 with errorCode=S22 ("permission denied") is the *undocumented*
+        #     case Workday actually uses for closed/unlisted requisitions.
+        #     Verified 2026-04-19 against 15 consecutive 403 URLs from Loki:
+        #     0/15 were in the current LIST output — all genuinely delisted.
+        # Anything else (real WAF block, 5xx, other S-codes): raise so it
+        # surfaces in batch.scrape.error and gets retried by the queue.
+        if resp.status_code == 404:
+            log.info("workday_scraper.detail_gone", url=url, status=404)
+            return JobContent()
+        if resp.status_code == 403 and _is_gone_response(resp):
+            log.info("workday_scraper.detail_gone", url=url, status=403, error_code="S22")
+            return JobContent()
+        resp.raise_for_status()
+
+        reason: str | None = None
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+            reason = "json_decode"
+        if reason is None and not isinstance(data, dict):
+            reason = f"json_{type(data).__name__}"
+        if reason is None and not isinstance(data.get("jobPostingInfo"), dict):
+            reason = "missing_job_posting_info"
+        if reason is None:
+            if retried:
+                http_retry_attempts_total.labels(host=host, outcome="recovered").inc()
+            return _parse_detail(
+                data,
+                tenant=company,
+                tenant_aliases=tenant_aliases,
+            )
+
+        body = resp.content
+        last_payload = {
+            "reason": reason,
+            "status": resp.status_code,
+            "content_type": resp.headers.get("content-type", ""),
+            "body_length": len(body),
+            "body_sha256": hashlib.sha256(body).hexdigest()[:16],
+        }
+        retried = True
+        http_retry_attempts_total.labels(host=host, outcome="retry").inc()
+        log.info(
+            "workday_scraper.detail_payload_retry",
+            url=url,
+            attempt=attempt + 1,
+            **last_payload,
+        )
+        if attempt < _DETAIL_RETRY_ATTEMPTS - 1:
+            delay = _DETAIL_RETRY_BASE_DELAY * (2**attempt) * (0.5 + random.random())
+            await sleep(delay)
+
+    assert last_payload is not None
+    http_retry_attempts_total.labels(host=host, outcome="exhausted").inc()
+    # Workday occasionally serves HTML or another invalid API body with HTTP
+    # 200 across many tenants at once (#5230). After all provider-specific
+    # retries are exhausted, promote this to a transient upstream outcome so
+    # the shared per-origin circuit defers sibling postings. Do not mark an
+    # individual invalid attempt: a later valid retry proves the host healthy.
+    mark_transient_response_failure(
+        str(resp.url),
+        reason="workday_invalid_detail_payload",
+    )
+    raise WorkdayDetailPayloadError(
+        attempts=_DETAIL_RETRY_ATTEMPTS,
+        reason=str(last_payload["reason"]),
+        status=int(last_payload["status"]),
+        content_type=str(last_payload["content_type"]),
+        body_length=int(last_payload["body_length"]),
+        body_sha256=str(last_payload["body_sha256"]),
+    )
 
 
 def _is_gone_response(resp: httpx.Response) -> bool:

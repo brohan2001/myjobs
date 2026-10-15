@@ -7,7 +7,10 @@ Also works on custom domains: GET https://{custom-domain}/api/offers
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import httpx
@@ -17,12 +20,15 @@ from src.core.enum_normalize import normalize_salary_unit
 from src.core.monitors import (
     BoardGoneError,
     DiscoveredJob,
-    fetch_page_text,
     register,
     slug_guess_allowed,
-    slugs_from_url,
 )
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.raw import save_json_response
 from src.shared.truncation import truncated_rich_result
+
+if TYPE_CHECKING:
+    from src.core.monitor import MonitorResult
 
 log = structlog.get_logger()
 
@@ -30,11 +36,15 @@ MAX_JOBS = 50_000
 
 _DOMAIN_RE = re.compile(r"^([\w-]+)\.recruitee\.com$")
 
-_PAGE_PATTERNS = [
-    re.compile(r"([\w-]+)\.recruitee\.com"),
-    re.compile(r"recruiteecdn\.com"),
-    re.compile(r"window\.recruitee"),
-]
+_PAGE_PATTERNS = (
+    # Nuxt hydration serializes URL slashes as JavaScript Unicode escapes.
+    re.compile(r"https?:\\u002F\\u002F([\w-]{1,63})\.recruitee\.com", re.I),
+    # A Recruitee tenant is a DNS label. Bounding the match prevents a large
+    # minified hydration token before ``.recruitee.com`` from causing regex
+    # backtracking across the whole wrapper page.
+    re.compile(r"(?<![\w-])([\w-]{1,63})\.recruitee\.com"),
+    re.compile(r"\b(?:recruiteecdn\.com|window\.recruitee)\b()"),
+)
 
 _IGNORE_SLUGS = frozenset({"api", "www", "app", "docs", "help", "support", "status"})
 
@@ -180,10 +190,76 @@ async def _probe_api(api_base: str, client: httpx.AsyncClient) -> tuple[bool, in
             return True, len(offers)
         return False, None
     except Exception:
+        log.debug(
+            "recruitee.probe_failed",
+            probe="api",
+            api_base=api_base,
+            url=_api_url(api_base),
+            exc_info=True,
+        )
         return False, None
 
 
-async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[DiscoveredJob]:
+def _api_base_from_slug(slug: str) -> str | None:
+    if not slug:
+        return None
+    return f"https://{slug}.recruitee.com"
+
+
+async def _fetch_template_count(
+    token: str,
+    client: httpx.AsyncClient,
+    context: str | None,
+) -> ProbeCount | None:
+    base = context or _api_base_from_slug(token)
+    if base is None:
+        return None
+    found, count = await _probe_api(base, client)
+    return count if found else None
+
+
+async def _probe_template_slug(
+    token: str,
+    client: httpx.AsyncClient,
+    context: str | None,
+) -> ProbeResult:
+    _ = context
+    base = _api_base_from_slug(token)
+    if base is None:
+        return False, None
+    return await _probe_api(base, client)
+
+
+async def _probe_page_token(
+    token: str,
+    client: httpx.AsyncClient,
+    context: str | None,
+) -> ProbeResult:
+    _ = token
+    if context is None:
+        return False, None
+    return await _probe_api(context, client)
+
+
+def _build_template_result(
+    slug: str,
+    count: ProbeCount | None,
+    api_base: str | None,
+) -> dict:
+    base = api_base or _api_base_from_slug(slug)
+    result: dict = {}
+    if slug:
+        result["slug"] = slug
+    if base is not None:
+        result["api_base"] = base
+    if count is not None:
+        result["jobs"] = count
+    return result
+
+
+async def discover(
+    board: dict, client: httpx.AsyncClient, pw=None
+) -> list[DiscoveredJob] | MonitorResult:
     """Fetch job listings from the Recruitee public API."""
     metadata = board.get("metadata") or {}
     board_url = board["board_url"]
@@ -208,13 +284,19 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
     response = await client.get(url, follow_redirects=True)
     if response.status_code == 404:
         # Recruitee 404s when the company subdomain (slug) has been
-        # removed. Surface as a "gone" signal for one-shot disable.
-        # See issue #2215.
+        # removed. Surface as a provider-gone confirmation signal.
+        # See issues #2215 and #6156.
         raise BoardGoneError(
             f"Recruitee API base {api_base!r} returned 404",
             url=str(response.url),
+            status_code=response.status_code,
         )
     response.raise_for_status()
+
+    if os.environ.get("RECRUITEE_CAPTURE_TENANTS"):
+        from src.core.monitors.recruitee_capture import capture_recruitee_response
+
+        capture_recruitee_response(str(response.url), response.content)
 
     data = response.json()
     raw_offers = data.get("offers", [])
@@ -236,66 +318,64 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
     """Detect Recruitee: domain check -> page HTML scan -> slug-based API probe."""
-    # 1. Direct *.recruitee.com URL
-    slug = _slug_from_url(url)
-    if slug:
-        api_base = f"https://{slug}.recruitee.com"
-        if client is not None:
-            found, count = await _probe_api(api_base, client)
-            if found:
-                result: dict = {"slug": slug, "api_base": api_base}
-                if count is not None:
-                    result["jobs"] = count
-                return result
-        return {"slug": slug, "api_base": api_base}
+    _ = pw
 
-    if client is None:
-        return None
+    def context_from_match(
+        match: re.Match[str],
+        context: str | None,
+    ) -> str | None:
+        _ = context
+        slug = match.group(1)
+        return _api_base_from_slug(slug) if slug else _api_base_from_url(url)
 
-    # 2. HTML scan for Recruitee markers (custom domains)
-    html = await fetch_page_text(url, client)
-    if html:
-        # Look for {slug}.recruitee.com references in page source
-        slug_match = re.search(r"([\w-]+)\.recruitee\.com", html)
-        if slug_match:
-            found_slug = slug_match.group(1)
-            if found_slug not in _IGNORE_SLUGS:
-                log.info("recruitee.detected_in_page", url=url, slug=found_slug)
-                # Custom domain: API is on the custom domain itself
-                api_base = _api_base_from_url(url)
-                if api_base:
-                    found, count = await _probe_api(api_base, client)
-                    if found:
-                        result = {"slug": found_slug, "api_base": api_base}
-                        if count is not None:
-                            result["jobs"] = count
-                        return result
-
-        # Also check for recruiteecdn.com or window.recruitee
-        if "recruiteecdn.com" in html or "window.recruitee" in html:
-            log.info("recruitee.detected_marker", url=url)
-            api_base = _api_base_from_url(url)
-            if api_base:
-                found, count = await _probe_api(api_base, client)
-                if found:
-                    result = {"api_base": api_base}
-                    if count is not None:
-                        result["jobs"] = count
-                    return result
-
-    # 3. Slug-based probe as fallback (explicit blind-probe mode only)
-    if slug_guess_allowed():
-        for slug in slugs_from_url(url):
-            api_base = f"https://{slug}.recruitee.com"
-            found, count = await _probe_api(api_base, client)
-            if found:
-                log.info("recruitee.detected_by_probe", url=url, slug=slug)
-                result = {"slug": slug, "api_base": api_base}
-                if count is not None:
-                    result["jobs"] = count
-                return result
-
-    return None
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="recruitee",
+        token_from_url=_slug_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_SLUGS,
+        fetch_job_count=_fetch_template_count,
+        api_probe=_probe_template_slug,
+        initial_context=None,
+        result_builder=_build_template_result,
+        context_from_match=context_from_match,
+        page_token_probe=_probe_page_token,
+        allow_slug_guess=slug_guess_allowed(),
+        log_token_field="slug",
+        # Server-rendered CMS wrappers can put the Recruitee application URL
+        # after a large hydration payload. Keep this provider-specific bound
+        # high enough to inspect those references without changing every ATS
+        # probe's default scan size.
+        page_max_chars=2_000_000,
+    )
 
 
-register("recruitee", discover, cost=10, can_handle=can_handle, rich=True)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    api_base = metadata.get("api_base")
+    if not api_base:
+        slug = metadata.get("slug") or _slug_from_url(board_url)
+        api_base = f"https://{slug}.recruitee.com" if slug else _api_base_from_url(board_url)
+    if not api_base:
+        return
+    await save_json_response(
+        artifact_dir,
+        client,
+        _api_url(api_base),
+        follow_redirects=True,
+    )
+
+
+register(
+    "recruitee",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=True,
+    save_raw=save_raw,
+)

@@ -9,7 +9,12 @@ Detection pipeline
 ------------------
 1. URL-host match (``*.jobs.cz`` or ``*.topjobs.sk``) — extracts slug.
 2. Fetch ``https://{host}/assets/js/script.min.js`` — extracts widgetId + apiKey
-   from the embedded ``widgets.main`` object.
+   from the embedded ``widgets.main`` object.  Newer tenants split the React
+   application into hashed chunks, so the ``react.min.js`` loader and its
+   same-origin chunks are checked when the legacy bundle has no config. Some
+   current templates instead expose the config directly in the page's
+   ``window.__LMC_CAREER_WIDGET__.push(...)`` bootstrap call, which is used as
+   the final config fallback.
 3. Page-HTML scan for ``cdn.capybara.lmc.cz`` markers (fallback for
    custom-domain portals).
 
@@ -30,13 +35,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
+from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 import structlog
 
 from src.core.monitors import BoardGoneError, DiscoveredJob, fetch_page_text, register
+from src.shared.http_retry import PaginationFetchError, fetch_text_page_with_retry
 from src.shared.truncation import truncated_rich_result
 
 log = structlog.get_logger()
@@ -51,6 +60,16 @@ GRAPHQL_URL = "https://api.capybara.lmc.cz/api/graphql/widget"
 # Concurrency cap for per-job detail fetches.  Higher values risk 429s;
 # 8 is a safe empirical middle ground.
 _DETAIL_CONCURRENCY = 8
+
+# A tenant bundle is served through a CDN during deploys. A single 200 response
+# can therefore contain a partial or mismatched asset even while the next edge
+# read is healthy. Refetch content-level parse misses just as we retry transient
+# HTTP failures, while keeping the total well inside the monitor lease.
+_CONFIG_RETRY_ATTEMPTS = 3
+_CONFIG_RETRY_BASE_DELAY_S = 0.5
+_GRAPHQL_MAX_BYTES = 10_000_000
+_GRAPHQL_RETRY_BASE_DELAY_S = 0.5
+_GRAPHQL_TRANSIENT_STATUSES = frozenset({401, 403, 429})
 
 # Supported country TLDs and the domain suffix Alma Career uses there.
 _COUNTRY_BY_SUFFIX = {
@@ -95,6 +114,28 @@ _WIDGET_WINDOW_BYTES = 65536
 _WIDGET_ID_RE = re.compile(r'"id"\s*:\s*"([0-9a-fA-F-]{36})"')
 _API_KEY_RE = re.compile(r'"apiKey"\s*:\s*"([a-fA-F0-9]{32,})"')
 _DETAIL_PATH_RE = re.compile(r'"detailPath"\s*:\s*"([^"]+)"')
+
+# Current Capybara templates can move the per-tenant config out of the legacy
+# JavaScript bundle and into an inline bootstrap call on the career page:
+#
+#   window.__LMC_CAREER_WIDGET__.push({"apiKey":"...","widgetId":"...",...});
+#
+# Use JSONDecoder.raw_decode after a narrow anchor instead of a greedy regular
+# expression so nested config objects remain safe to parse.
+_INLINE_WIDGET_PUSH_RE = re.compile(r"window\s*\.\s*__LMC_CAREER_WIDGET__\s*\.\s*push\s*\(\s*")
+_WIDGET_ID_VALUE_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_API_KEY_VALUE_RE = re.compile(r"[a-fA-F0-9]{32,256}")
+
+# Newer Career Pages builds keep the tenant config in one of the hashed React
+# chunks listed by ``/assets/js/react.min.js`` instead of ``script.min.js``.
+# Restrict names to the exact same-origin filename family emitted by the
+# loader; this prevents arbitrary paths in a compromised loader from becoming
+# crawler requests.
+_REACT_CHUNK_RE = re.compile(r'["\'](react\.[A-Za-z0-9._-]+\.react\.min\.js)["\']')
+_MAX_REACT_CHUNKS = 16
 
 # Employment-type mapping by stable numeric id
 # (``employmentTypesObjects.id``).  Labels are locale-specific (CZ/SK
@@ -302,6 +343,54 @@ def _extract_widget_config(script_text: str) -> dict | None:
     }
 
 
+def _extract_inline_widget_config(page_text: str) -> dict | None:
+    """Return widget config from an inline Capybara bootstrap call."""
+    decoder = json.JSONDecoder()
+    for anchor in _INLINE_WIDGET_PUSH_RE.finditer(page_text):
+        try:
+            raw, _ = decoder.raw_decode(page_text, anchor.end())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+
+        widget_id = raw.get("widgetId")
+        api_key = raw.get("apiKey")
+        if not isinstance(widget_id, str) or _WIDGET_ID_VALUE_RE.fullmatch(widget_id) is None:
+            continue
+        if not isinstance(api_key, str) or _API_KEY_VALUE_RE.fullmatch(api_key) is None:
+            continue
+
+        detail_path = raw.get("detailPath")
+        return {
+            "id": widget_id,
+            "apiKey": api_key,
+            "detail_path": (
+                detail_path if isinstance(detail_path, str) and detail_path else "detail-pozice"
+            ),
+        }
+    return None
+
+
+def _widget_config_fingerprint(script_text: str) -> dict[str, int | bool]:
+    """Return a redacted parser-outcome fingerprint for operator logs."""
+    anchor = _WIDGET_ANCHOR_RE.search(script_text)
+    if anchor is None:
+        return {
+            "body_bytes": len(script_text.encode("utf-8")),
+            "anchor_found": False,
+            "id_found": False,
+            "api_key_found": False,
+        }
+    window = script_text[anchor.end() : anchor.end() + _WIDGET_WINDOW_BYTES]
+    return {
+        "body_bytes": len(script_text.encode("utf-8")),
+        "anchor_found": True,
+        "id_found": _WIDGET_ID_RE.search(window) is not None,
+        "api_key_found": _API_KEY_RE.search(window) is not None,
+    }
+
+
 class _WidgetConfigGone(Exception):
     """Sentinel — the tenant's ``script.min.js`` returned 404.
 
@@ -311,26 +400,135 @@ class _WidgetConfigGone(Exception):
     """
 
 
-async def _fetch_widget_config(host: str, client: httpx.AsyncClient) -> dict | None:
-    url = f"https://{host}/assets/js/script.min.js"
+async def _fetch_chunked_widget_config(
+    host: str,
+    client: httpx.AsyncClient,
+) -> dict | None:
+    """Return widget config from a hashed React chunk, if the tenant uses one."""
+    loader_url = f"https://{host}/assets/js/react.min.js"
     try:
-        resp = await client.get(url, follow_redirects=True)
-    except httpx.HTTPError as exc:
-        # Transport errors propagate (retriable) — don't mask as None
-        # which would look indistinguishable from "widget config
-        # missing" and cause silent empty-crawls.
-        log.warning("almacareer.widget_config_transport_error", host=host, error=str(exc))
-        raise
-    if resp.status_code == 404:
-        raise _WidgetConfigGone(host)
-    if resp.status_code != 200:
-        log.warning(
-            "almacareer.widget_config_fetch_failed",
-            host=host,
-            status=resp.status_code,
-        )
+        loader = await client.get(loader_url, follow_redirects=True)
+    except httpx.HTTPError:
         return None
-    return _extract_widget_config(resp.text)
+    if loader.status_code != 200:
+        return None
+
+    chunk_names = list(dict.fromkeys(_REACT_CHUNK_RE.findall(loader.text)))
+    for chunk_name in chunk_names[:_MAX_REACT_CHUNKS]:
+        try:
+            response = await client.get(
+                f"https://{host}/assets/js/{chunk_name}",
+                follow_redirects=True,
+            )
+        except httpx.HTTPError:
+            continue
+        if response.status_code != 200:
+            continue
+        config = _extract_widget_config(response.text)
+        if config is not None:
+            log.info(
+                "almacareer.widget_config_chunk_recovered",
+                host=host,
+                chunk=chunk_name,
+            )
+            return config
+    return None
+
+
+async def _fetch_inline_widget_config(
+    host: str,
+    client: httpx.AsyncClient,
+) -> dict | None:
+    """Return config embedded in the tenant homepage, if present."""
+    page_text = await fetch_page_text(f"https://{host}/", client)
+    if page_text is None:
+        return None
+    config = _extract_inline_widget_config(page_text)
+    if config is not None:
+        log.info("almacareer.widget_config_inline_recovered", host=host)
+    return config
+
+
+async def _fetch_widget_config(
+    host: str,
+    client: httpx.AsyncClient,
+    *,
+    retries: int = _CONFIG_RETRY_ATTEMPTS,
+    base_delay: float = _CONFIG_RETRY_BASE_DELAY_S,
+    sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+) -> dict | None:
+    """Fetch and parse a tenant bundle with bounded content-level retries."""
+    from src.metrics import http_retry_attempts_total, http_retry_host
+    from src.shared.http_retry import is_retryable_status
+
+    if retries < 1:
+        raise ValueError("retries must be at least 1")
+
+    url = f"https://{host}/assets/js/script.min.js"
+    metric_host = http_retry_host(url)
+    retried = False
+
+    for attempt in range(retries):
+        try:
+            resp = await client.get(url, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            log.warning(
+                "almacareer.widget_config_transport_error",
+                host=host,
+                attempt=attempt + 1,
+                error=type(exc).__name__,
+            )
+            if attempt == retries - 1:
+                http_retry_attempts_total.labels(host=metric_host, outcome="exhausted").inc()
+                raise
+        else:
+            if resp.status_code == 404:
+                config = await _fetch_inline_widget_config(host, client)
+                if config is not None:
+                    return config
+                raise _WidgetConfigGone(host)
+            if resp.status_code == 200:
+                config = _extract_widget_config(resp.text)
+                if config is None:
+                    config = await _fetch_chunked_widget_config(host, client)
+                if config is None:
+                    config = await _fetch_inline_widget_config(host, client)
+                if config is not None:
+                    if retried:
+                        http_retry_attempts_total.labels(
+                            host=metric_host, outcome="recovered"
+                        ).inc()
+                    return config
+                log.warning(
+                    "almacareer.widget_config_parse_miss",
+                    host=host,
+                    attempt=attempt + 1,
+                    **_widget_config_fingerprint(resp.text),
+                )
+            elif is_retryable_status(resp.status_code):
+                log.warning(
+                    "almacareer.widget_config_fetch_failed",
+                    host=host,
+                    attempt=attempt + 1,
+                    status=resp.status_code,
+                )
+            else:
+                log.warning(
+                    "almacareer.widget_config_fetch_failed",
+                    host=host,
+                    attempt=attempt + 1,
+                    status=resp.status_code,
+                )
+                return None
+
+        http_retry_attempts_total.labels(host=metric_host, outcome="retry").inc()
+        retried = True
+        if attempt < retries - 1:
+            delay = base_delay * (2**attempt) * (0.5 + random.random())
+            await sleep(delay)
+
+    http_retry_attempts_total.labels(host=metric_host, outcome="exhausted").inc()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -497,13 +695,22 @@ async def _post_graphql(
     api_key: str,
     host: str,
 ) -> dict:
-    resp = await client.post(
+    raw = await fetch_text_page_with_retry(
+        client,
         GRAPHQL_URL,
-        headers=_build_headers(api_key, host),
+        method="POST",
         content=json.dumps({"query": query, "variables": variables}),
+        headers=_build_headers(api_key, host),
+        retryable_statuses=_GRAPHQL_TRANSIENT_STATUSES,
+        end_of_pagination_statuses=(),
+        require_nonempty=True,
+        max_bytes=_GRAPHQL_MAX_BYTES,
+        base_delay=_GRAPHQL_RETRY_BASE_DELAY_S,
+        log_event="almacareer.graphql_backoff",
     )
-    resp.raise_for_status()
-    payload = resp.json()
+    if raw is None:  # Strict status handling above makes this unreachable.
+        raise RuntimeError("AlmaCareer GraphQL returned no response")
+    payload = json.loads(raw)
     errors = payload.get("errors")
     data = payload.get("data") or {}
     if errors:
@@ -577,7 +784,20 @@ async def _fetch_job_html(
             host=host,
         )
     except Exception as exc:
-        log.warning("almacareer.detail_failed", job_id=job_id, host=host, error=str(exc))
+        log_fields: dict[str, object] = {
+            "job_id": job_id,
+            "host": host,
+            "stage": "detail_graphql",
+            "error": str(exc),
+            "error_class": type(exc).__name__,
+        }
+        if isinstance(exc, PaginationFetchError):
+            log_fields.update(
+                attempts=exc.attempts,
+                last_status=exc.last_status,
+                last_error=exc.last_error,
+            )
+        log.warning("almacareer.detail_failed", **log_fields)
         return None
     widget = data.get("widget") or {}
     job_ad = widget.get("jobAd") or {}
@@ -618,6 +838,7 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
             raise BoardGoneError(
                 f"AlmaCareer tenant {host!r} returned 404 on script.min.js",
                 url=f"https://{host}/",
+                status_code=404,
             ) from None
         if not config:
             raise ValueError(

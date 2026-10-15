@@ -10,6 +10,7 @@ Auto-probed via Playwright when ``ws probe scraper`` runs.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -43,7 +44,9 @@ _DESCRIPTION_FIELDS = (
     "details",
     "job_description",
     "jobDescription",
+    "position_description_html",
     "summary",
+    "Job_Posting_Description__c",
 )
 
 _LOCATION_FIELDS = (
@@ -56,6 +59,7 @@ _LOCATION_FIELDS = (
     "city",
     "cities",
     "place",
+    "Location__c",
 )
 
 _EMPLOYMENT_TYPE_FIELDS = (
@@ -97,6 +101,188 @@ _WORKPLACE_TYPE_FIELDS = (
 _DEFAULT_WAIT = "load"
 _DEFAULT_TIMEOUT = 20_000
 _DEFAULT_SETTLE = 3  # seconds to wait after navigation for XHRs to complete
+_MAX_TRANSPORT_ATTEMPTS = 5
+
+_SEEK_MARKETS = {
+    "au.seek.com": ("en-AU", "anz-1"),
+    "www.seek.com.au": ("en-AU", "anz-1"),
+    "nz.seek.com": ("en-NZ", "anz-1"),
+    "www.seek.co.nz": ("en-NZ", "anz-1"),
+}
+_SEEK_JOB_PATH_RE = re.compile(r"^/job/(?P<id>\d+)/?$")
+_AJINGA_JOB_PATH_RE = re.compile(r"^/job-description/(?P<id>[A-Za-z0-9_-]{8,64})/?$")
+_SEEK_JOB_DETAILS_QUERY = """\
+query JobDetails($id: ID!) {
+  jobDetails(id: $id) {
+    job {
+      id
+      title
+      content
+      abstract
+      location { label(locale: \"{locale}\") }
+      advertiser { id name(locale: \"{locale}\") }
+      workTypes { label(locale: \"{locale}\") }
+      createdAt { dateTimeUtc }
+      expiresAt { dateTimeUtc }
+      isExpired
+      status
+      url(zone: \"{zone}\", locale: \"{locale}\")
+    }
+  }
+}
+"""
+
+
+def _configured_transport_attempts(config: dict) -> int | None:
+    """Return a validated proxy-origin retry count for capture mode."""
+
+    raw_attempts = config.get("transport_attempts")
+    if raw_attempts is None:
+        return None
+    if (
+        not isinstance(raw_attempts, int)
+        or isinstance(raw_attempts, bool)
+        or not 1 <= raw_attempts <= _MAX_TRANSPORT_ATTEMPTS
+    ):
+        raise ValueError(
+            "API-sniffer scraper transport_attempts must be an integer "
+            f"from 1 to {_MAX_TRANSPORT_ATTEMPTS}"
+        )
+    return raw_attempts
+
+
+def _seek_http_config(urls: list[str]) -> dict | None:
+    """Return SEEK's public GraphQL detail config for canonical job URLs.
+
+    SEEK's company-profile listing is public, but direct ``/job/<id>``
+    navigation can be replaced by a Cloudflare verification page for crawler
+    egress. The same detail data is available from the first-party GraphQL
+    endpoint used by SEEK's candidate UI. Recognize only canonical AU/NZ SEEK
+    job URLs, and require every probe sample to belong to the same market.
+    """
+
+    if not urls:
+        return None
+
+    market: tuple[str, str] | None = None
+    api_host: str | None = None
+    for url in urls:
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError:
+            return None
+        host = (parsed.hostname or "").casefold()
+        current_market = _SEEK_MARKETS.get(host)
+        if (
+            parsed.scheme.casefold() != "https"
+            or current_market is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, 443)
+            or _SEEK_JOB_PATH_RE.fullmatch(parsed.path) is None
+        ):
+            return None
+        if market is None:
+            market = current_market
+            api_host = "au.seek.com" if current_market[0] == "en-AU" else "nz.seek.com"
+        elif market != current_market:
+            return None
+
+    assert market is not None and api_host is not None
+    locale, zone = market
+    query = _SEEK_JOB_DETAILS_QUERY.replace("{locale}", locale).replace("{zone}", zone)
+    post_body = json.dumps(
+        {
+            "operationName": "JobDetails",
+            "variables": {"id": "{id}"},
+            "query": query,
+        },
+        separators=(",", ":"),
+    )
+    return {
+        "api_url": f"https://{api_host}/graphql",
+        "method": "POST",
+        "post_body": post_body,
+        "url_pattern": r"/job/(?P<id>\d+)",
+        "json_path": "data.jobDetails.job",
+        "request_headers": {
+            "content-type": "application/json",
+            "referer": f"https://{api_host}/",
+        },
+        "fields": {
+            "title": "title",
+            "description": "content",
+            "locations": "location.label",
+            "employment_type": "workTypes.label",
+            "date_posted": "createdAt.dateTimeUtc",
+            "valid_through": "expiresAt.dateTimeUtc",
+            "metadata.seek_id": "id",
+            "metadata.advertiser": "advertiser.name",
+            "metadata.advertiser_id": "advertiser.id",
+            "metadata.abstract": "abstract",
+            "metadata.status": "status",
+            "metadata.is_expired": "isExpired",
+        },
+    }
+
+
+def _ajinga_http_config(urls: list[str]) -> dict | None:
+    """Return Ajinga's public detail-API config for short-ID job URLs.
+
+    Ajinga's desktop job pages are client-rendered and may redirect between
+    legacy and company-scoped routes. Its public mobile route keeps the stable
+    ``short_unique_id`` in the URL, which the same first-party SPA sends to the
+    JSON detail endpoint. Restrict this preset to canonical HTTPS Ajinga URLs
+    so unrelated ``job-description`` routes never receive Ajinga requests.
+    """
+
+    if not urls:
+        return None
+
+    for url in urls:
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme.casefold() != "https"
+            or (parsed.hostname or "").casefold() not in {"ajinga.com", "www.ajinga.com"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, 443)
+            or _AJINGA_JOB_PATH_RE.fullmatch(parsed.path) is None
+        ):
+            return None
+
+    return {
+        "api_url": "https://www.ajinga.com/django_rest/job-detail/info/{id}/",
+        "method": "GET",
+        "url_pattern": _AJINGA_JOB_PATH_RE.pattern,
+        "json_path": "data.data.job",
+        "fields": {
+            "title": "en_title || cn_title",
+            "description": "description || cn_description",
+            "locations": "cities[].name",
+            "employment_type": {
+                "path": "role_type",
+                "map": {
+                    "F": "full_time",
+                    "P": "part_time",
+                    "I": "internship",
+                    "T": "temporary",
+                },
+            },
+            "metadata.ajinga_id": "id",
+            "metadata.short_unique_id": "short_unique_id",
+            "metadata.company": "company.i18n_name",
+            "metadata.experience": "experience",
+            "metadata.compensation": "compensation.en_name || compensation.cn_name",
+            "metadata.work_time": "work_time.en_name || work_time.cn_name",
+            "metadata.updated_at": "updated_time",
+        },
+    }
 
 
 def _find_single_job(exchanges: list, *, json_path: str | None = None) -> dict | None:
@@ -133,7 +319,15 @@ def _find_single_job(exchanges: list, *, json_path: str | None = None) -> dict |
                 candidates.append((body, score))
 
             # Check nested: common patterns like {data: {...}} or {result: {...}}
-            for key in ("data", "result", "job", "posting", "position", "details"):
+            for key in (
+                "data",
+                "result",
+                "job",
+                "posting",
+                "position",
+                "details",
+                "funnel",
+            ):
                 nested = body.get(key)
                 if isinstance(nested, dict):
                     s = _score_job_object(nested)
@@ -146,6 +340,28 @@ def _find_single_job(exchanges: list, *, json_path: str | None = None) -> dict |
                             s2 = _score_job_object(deep)
                             if s2 > 0:
                                 candidates.append((deep, s2))
+
+            # Salesforce Aura and similar RPC transports wrap each result in
+            # an ``actions`` array before the actual returnValue object.  Walk
+            # bounded response envelopes so a complete detail record can win
+            # on normal title/description/location scoring.  Large lists are
+            # listing payloads rather than single-job envelopes and are
+            # deliberately not expanded here.
+            stack: list[tuple[object, int]] = [(body, 0)]
+            visited = 0
+            while stack and visited < 512:
+                current, depth = stack.pop()
+                visited += 1
+                if depth >= 8:
+                    continue
+                if isinstance(current, dict):
+                    if current is not body:
+                        nested_score = _score_job_object(current)
+                        if nested_score > 0:
+                            candidates.append((current, nested_score))
+                    stack.extend((value, depth + 1) for value in current.values())
+                elif isinstance(current, list) and len(current) <= 50:
+                    stack.extend((value, depth + 1) for value in current)
 
     if not candidates:
         return None
@@ -312,6 +528,80 @@ def _extract_heuristic(obj: dict) -> JobContent:
     return JobContent(**kwargs)
 
 
+async def _probe_http_preset(
+    urls: list[str],
+    config: dict,
+    *,
+    label: str,
+) -> tuple[dict | None, str]:
+    """Verify a provider preset against sampled jobs through direct HTTP."""
+
+    from src.shared.http import create_http_client
+    from src.shared.tdm import TDMReservedError
+
+    quality_fields = (
+        "title",
+        "description",
+        "locations",
+        "employment_type",
+        "job_location_type",
+        "date_posted",
+    )
+    http = create_http_client()
+    try:
+        raw_results = await asyncio.gather(
+            *[_scrape_http(url, config, http) for url in urls],
+            return_exceptions=True,
+        )
+    finally:
+        await http.aclose()
+
+    for result in raw_results:
+        if isinstance(result, TDMReservedError):
+            raise result
+
+    contents = [result for result in raw_results if isinstance(result, JobContent)]
+    detected_contents = [
+        item for item in contents if item.title and item.description and item.locations
+    ]
+    detected = len(detected_contents)
+    total = len(urls)
+    if detected == 0 or detected / total < 0.5:
+        return None, f"{label} not detected ({detected}/{total} complete jobs)"
+
+    field_counts = {
+        field: sum(bool(getattr(item, field, None)) for item in detected_contents)
+        for field in quality_fields
+    }
+    metadata = {
+        "config": config,
+        "total": detected,
+        "titles": field_counts["title"],
+        "descriptions": field_counts["description"],
+        "locations": field_counts["locations"],
+        "fields": {field: count for field, count in field_counts.items() if count > 0},
+    }
+    comment = (
+        f"{label} — "
+        f"{field_counts['title']}/{detected} titles, "
+        f"{field_counts['description']}/{detected} desc, "
+        f"{field_counts['locations']}/{detected} locations"
+    )
+    return metadata, comment
+
+
+async def _probe_seek_http(urls: list[str], config: dict) -> tuple[dict | None, str]:
+    """Verify the SEEK preset against each sampled job through direct HTTP."""
+
+    return await _probe_http_preset(urls, config, label="SEEK GraphQL")
+
+
+async def _probe_ajinga_http(urls: list[str], config: dict) -> tuple[dict | None, str]:
+    """Verify the Ajinga preset against each sampled job through direct HTTP."""
+
+    return await _probe_http_preset(urls, config, label="Ajinga detail API")
+
+
 async def probe_pw(
     urls: list[str],
     pw,
@@ -321,7 +611,21 @@ async def probe_pw(
     Opens each URL, captures XHR/fetch exchanges, and checks for single-job
     JSON responses.  Returns ``(metadata, comment)`` or ``(None, comment)``.
     """
-    from src.shared.browser import navigate, open_page
+    seek_config = _seek_http_config(urls)
+    if seek_config is not None:
+        # Do not navigate to SEEK detail pages: Cloudflare may replace them
+        # with a 403 verification document even though the public first-party
+        # GraphQL detail endpoint remains available.
+        return await _probe_seek_http(urls, seek_config)
+
+    ajinga_config = _ajinga_http_config(urls)
+    if ajinga_config is not None:
+        # Ajinga's SPA does not expose useful static HTML and its redirects can
+        # hide the detail XHR from the generic capture path. Probe the public
+        # first-party JSON endpoint directly instead.
+        return await _probe_ajinga_http(urls, ajinga_config)
+
+    from src.shared.browser import BrowserNavigationHTTPStatusError, navigate, open_page
 
     wait = _DEFAULT_WAIT
     timeout = _DEFAULT_TIMEOUT
@@ -339,7 +643,7 @@ async def probe_pw(
     async def _probe_one(url: str) -> tuple[JobContent | None, dict | None]:
         """Probe a single URL, return (content, job_obj) or (None, None)."""
         try:
-            async with open_page(pw, {}) as page:
+            async with open_page(pw, {}, target_url=url) as page:
                 page_host = urlparse(url).netloc
                 exchanges = await capture_exchanges(page, page_host)
                 await navigate(page, url, {"wait": wait, "timeout": timeout})
@@ -349,6 +653,8 @@ async def probe_pw(
                 if job_obj is None:
                     return None, None
                 return _extract_heuristic(job_obj), job_obj
+        except BrowserNavigationHTTPStatusError:
+            raise
         except Exception:
             log.debug("api_sniffer_scraper.probe_pw_error", url=url, exc_info=True)
             return None, None
@@ -402,11 +708,13 @@ async def _scrape_http(
     """Scrape via direct HTTP call to a detail API endpoint.
 
     Used when ``api_url`` is configured — no Playwright needed.
-    Constructs the request body from ``post_body`` (with ``{id}``
-    placeholder filled from the job URL) and navigates the response
-    via ``json_path`` before extracting fields.
+    Constructs the request body from ``post_body`` (with placeholders
+    filled from the job URL) and navigates the response via ``json_path``
+    before extracting fields. ``url_pattern`` may provide named capture
+    groups for IDs stored outside the final URL path segment.
     """
-    from src.core.monitors.api_sniffer import clean_headers, http_fetch
+    from src.core.monitors.api_sniffer import clean_headers, http_fetch_with_retry
+    from src.shared.http_retry import PaginationFetchError
 
     api_url = config["api_url"]
     method = config.get("method", "GET")
@@ -437,9 +745,80 @@ async def _scrape_http(
         for key, val in placeholders.items():
             post_body = post_body.replace(f"{{{key}}}", val)
 
-    data = await http_fetch(http, method, api_url, headers, post_body)
+    auth_request = config.get("auth_request")
+    if auth_request is not None:
+        if not isinstance(auth_request, dict):
+            raise ValueError("api_sniffer auth_request must be a mapping")
+        auth_url = auth_request.get("api_url")
+        header_fields = auth_request.get("header_fields")
+        if not isinstance(auth_url, str) or not auth_url:
+            raise ValueError("api_sniffer auth_request requires api_url")
+        if not isinstance(header_fields, dict) or not header_fields or len(header_fields) > 32:
+            raise ValueError(
+                "api_sniffer auth_request requires a bounded non-empty header_fields mapping"
+            )
+        auth_method = auth_request.get("method", "GET")
+        if auth_method not in {"GET", "POST"}:
+            raise ValueError("api_sniffer auth_request method must be GET or POST")
+        auth_headers = clean_headers(auth_request.get("request_headers") or {})
+        auth_body = auth_request.get("post_body") or auth_request.get("post_data")
+        if auth_body is not None and not isinstance(auth_body, str):
+            raise ValueError("api_sniffer auth_request post body must be a string")
+        auth_data = await http_fetch_with_retry(
+            http,
+            auth_method,
+            auth_url,
+            auth_headers,
+            auth_body,
+            raise_non_retryable=True,
+        )
+        auth_path = auth_request.get("json_path")
+        if auth_path:
+            import jmespath as _jmespath
+
+            auth_data = _jmespath.search(auth_path, auth_data)
+        if not isinstance(auth_data, dict):
+            raise RuntimeError("api_sniffer auth_request returned no header data")
+        for header_name, field_spec in header_fields.items():
+            if (
+                not isinstance(header_name, str)
+                or not header_name
+                or "\r" in header_name
+                or "\n" in header_name
+                or not isinstance(field_spec, (str, list, dict))
+            ):
+                raise ValueError("api_sniffer auth_request header_fields is invalid")
+            header_value = extract_field(auth_data, field_spec)
+            if header_value is None or isinstance(header_value, list):
+                raise RuntimeError(
+                    f"api_sniffer auth_request omitted scalar field for {header_name!r}"
+                )
+            normalized_value = str(header_value)
+            if "\r" in normalized_value or "\n" in normalized_value:
+                raise ValueError("api_sniffer auth_request produced an invalid header value")
+            headers[header_name] = normalized_value
+
+    try:
+        data = await http_fetch_with_retry(
+            http,
+            method,
+            api_url,
+            headers,
+            post_body,
+            raise_non_retryable=True,
+        )
+    except PaginationFetchError as exc:
+        log.warning(
+            "api_sniffer_scraper.http_fetch_failed",
+            url=url,
+            error_class=type(exc).__name__,
+            attempts=exc.attempts,
+            last_status=exc.last_status,
+            last_error=exc.last_error,
+        )
+        raise
     if data is None:
-        log.warning("api_sniffer_scraper.http_fetch_failed", url=url)
+        log.info("api_sniffer_scraper.empty_result", url=url, reason="gone")
         return JobContent()
 
     # Navigate to job object via json_path
@@ -485,9 +864,19 @@ async def scrape(
     if config.get("api_url"):
         return await _scrape_http(url, config, http)
 
-    from src.shared.browser import BROWSER_KEYS, NAVIGATE_KEYS, navigate, open_page
+    from src.shared.browser import (
+        BROWSER_KEYS,
+        NAVIGATE_KEYS,
+        BrowserNavigationHTTPStatusError,
+        is_proxy_origin_block_error,
+        navigate,
+        open_page,
+        retry_proxy_origin_blocks,
+    )
+    from src.shared.proxy import ProxyPoolExhaustedError
 
     use_proxy = bool(config.get("proxy"))
+    transport_attempts = _configured_transport_attempts(config)
 
     async def _do_scrape(p):
         settle = config.get("settle", _DEFAULT_SETTLE)
@@ -501,7 +890,12 @@ async def scrape(
         # pass {} and silently dropped keys like persistent_context.
         browser_config = {k: v for k, v in config.items() if k in BROWSER_KEYS}
 
-        async with open_page(p, browser_config, use_proxy=use_proxy) as page:
+        async with open_page(
+            p,
+            browser_config,
+            use_proxy=use_proxy,
+            target_url=url,
+        ) as page:
             page_host = urlparse(url).netloc
             exchanges = await capture_exchanges(page, page_host)
 
@@ -516,7 +910,7 @@ async def scrape(
 
             return _extract_from_object(job_obj, config)
 
-    try:
+    async def _scrape_attempt() -> JobContent:
         if pw is not None:
             return await _do_scrape(pw)
 
@@ -525,7 +919,23 @@ async def scrape(
         async with async_playwright() as p:
             return await _do_scrape(p)
 
-    except Exception:
+    retry_config = dict(config)
+    if transport_attempts is not None:
+        retry_config["transport_attempts"] = transport_attempts
+
+    try:
+        return await retry_proxy_origin_blocks(
+            _scrape_attempt,
+            retry_config,
+            event="api_sniffer_scraper.origin_block_retry",
+        )
+    except BrowserNavigationHTTPStatusError:
+        raise
+    except ProxyPoolExhaustedError:
+        raise
+    except Exception as exc:
+        if is_proxy_origin_block_error(exc):
+            raise
         log.error("api_sniffer_scraper.failed", url=url, exc_info=True)
         return JobContent()
 

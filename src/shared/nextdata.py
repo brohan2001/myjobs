@@ -11,8 +11,10 @@ Used by both the nextdata monitor and the nextdata scraper.
 
 from __future__ import annotations
 
+import html
 import json
 import re
+from datetime import UTC, datetime
 
 import jmespath
 
@@ -73,11 +75,28 @@ def extract_field(
            "separator": ", "}
           → "Warsaw, Poland"
 
-    **Dict with "path" + "map"** — value mapping.
-      Resolves the jmespath ``path``, stringifies the result, and looks
-      it up in ``map``.  Returns the mapped value or ``None``::
+    **Dict with "path" + optional "map" / "html_unescape" / "timestamp_unit"** — value
+    mapping and post-processing. ``html_unescape`` decodes entity-escaped
+    HTML returned by APIs before the value is stored::
+
+          {"path": "description", "html_unescape": true}
+
+      ``&lt;h2&gt;About&lt;/h2&gt;`` becomes ``<h2>About</h2>``.
+
+      ``timestamp_unit`` converts a numeric Unix timestamp to an ISO-8601 UTC
+      value. Supported units are ``"seconds"`` and ``"milliseconds"``.
+
+      With ``map``, resolves the jmespath ``path``, stringifies the result,
+      and looks it up in ``map``. Returns the mapped value or ``None``::
 
           {"path": "homeOffice", "map": {"True": "remote"}}
+
+      Transforms are applied after mapping.
+
+      ``key_pattern`` selects values from an object whose provider-defined
+      keys have a stable prefix but dynamic suffixes::
+
+          {"path": "attributes", "key_pattern": "^department_"}
 
     **Dict with "lookup_from" + "key_from"** — sibling-table lookup.
       Resolves ``item[key_from]`` (jmespath), stringifies it, and uses
@@ -102,13 +121,30 @@ def extract_field(
         return _extract_lookup(item, spec, root)
 
     if isinstance(spec, dict) and "path" in spec:
+        if "key_pattern" in spec:
+            return _extract_object_values_by_key(item, spec)
         if "map" in spec:
-            return _extract_mapped(item, spec)
-        return extract_field(item, spec["path"], root=root)
+            value = _extract_mapped(item, spec)
+        else:
+            value = extract_field(item, spec["path"], root=root)
+        if value is None:
+            return None
+        if spec.get("html_unescape"):
+            if isinstance(value, list):
+                return [html.unescape(part) for part in value]
+            if isinstance(value, str):
+                return html.unescape(value)
+        timestamp_unit = spec.get("timestamp_unit")
+        if timestamp_unit is not None:
+            return _timestamp_to_iso(value, timestamp_unit)
+        return value
 
     # Constant string (=prefix) — return literal value
     if isinstance(spec, str) and spec.startswith("="):
         return spec[1:]
+
+    if not isinstance(spec, str):
+        raise ValueError("field spec must be a string, list, or supported object")
 
     result = jmespath.search(spec, item)
     if result is None:
@@ -117,6 +153,62 @@ def extract_field(
         values = [str(v) for v in result if v is not None]
         return values or None
     return str(result)
+
+
+def _timestamp_to_iso(
+    value: str | list[str],
+    unit: object,
+) -> str | list[str]:
+    """Convert numeric Unix timestamps to ISO-8601 UTC strings."""
+    if unit not in {"seconds", "milliseconds"}:
+        raise ValueError("timestamp_unit must be 'seconds' or 'milliseconds'")
+
+    def convert(part: str) -> str:
+        try:
+            timestamp = float(part)
+            if unit == "milliseconds":
+                timestamp /= 1000
+            return datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError("timestamp field must be a numeric Unix timestamp") from exc
+
+    if isinstance(value, list):
+        return [convert(part) for part in value]
+    return convert(value)
+
+
+def _extract_object_values_by_key(item: dict, spec: dict) -> str | list[str] | None:
+    """Extract flattened values from object keys matching a bounded regex."""
+    if set(spec) != {"path", "key_pattern"}:
+        raise ValueError("key_pattern field specs must contain only path and key_pattern")
+    path = spec.get("path")
+    pattern = spec.get("key_pattern")
+    if not isinstance(path, str) or not path:
+        raise ValueError("key_pattern field spec path must be a non-empty string")
+    if not isinstance(pattern, str) or not pattern or len(pattern) > 256 or "\x00" in pattern:
+        raise ValueError("key_pattern field spec must be 1-256 characters")
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError("key_pattern field spec is invalid") from exc
+
+    source = jmespath.search(path, item)
+    if source is None:
+        return None
+    if not isinstance(source, dict):
+        raise ValueError("key_pattern field spec path must resolve to an object")
+    values: list[str] = []
+    for key in sorted(source):
+        if compiled.search(str(key)) is None:
+            continue
+        value = source[key]
+        if isinstance(value, list):
+            values.extend(str(part) for part in value if part is not None)
+        elif value is not None:
+            values.append(str(value))
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else values
 
 
 def _extract_lookup(item: dict, spec: dict, root: dict | None) -> str | None:
@@ -243,16 +335,21 @@ def _extract_concat(item: dict, specs: list, *, separator: str = "\n") -> str | 
         # Regular jmespath expression
         had_data_expr = True
         result = jmespath.search(s, item)
-        if result is None:
+        if result is None or (isinstance(result, str) and not result.strip()):
             pending_constants.clear()
             continue
 
-        parts.extend(pending_constants)
-        pending_constants.clear()
-
         if isinstance(result, list):
-            parts.extend(_plain_to_html(str(v)) for v in result if v is not None)
+            values = [str(value) for value in result if value is not None and str(value).strip()]
+            if not values:
+                pending_constants.clear()
+                continue
+            parts.extend(pending_constants)
+            pending_constants.clear()
+            parts.extend(_plain_to_html(value) for value in values)
         else:
+            parts.extend(pending_constants)
+            pending_constants.clear()
             parts.append(_plain_to_html(str(result)))
 
     # Trailing constants: include if we have data or if the spec is constants-only.

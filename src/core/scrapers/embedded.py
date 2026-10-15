@@ -45,18 +45,52 @@ log = structlog.get_logger()
 
 # ── Auto-detection helpers ────────────────────────────────────────────
 
-_TITLE_KEYS = {"title", "name", "jobTitle", "job_title", "position"}
-_DESC_KEYS = {"description", "content", "descriptionHtml", "body", "jobDescription"}
+_TITLE_FIELD_CANDIDATES = (
+    "title",
+    "name",
+    "jobTitle",
+    "job_title",
+    "position",
+    "displayName",
+)
+_DESCRIPTION_FIELD_CANDIDATES = (
+    "description",
+    "content",
+    "contents",
+    "descriptionHtml",
+    "body",
+    "jobDescription",
+)
 
 # Mapping from known raw keys to JobContent field names
 _FIELD_PATTERNS: dict[str, list[str]] = {
-    "title": ["title", "name", "jobTitle", "job_title", "position"],
-    "description": ["description", "content", "descriptionHtml", "body", "jobDescription"],
+    "title": list(_TITLE_FIELD_CANDIDATES),
+    "description": list(_DESCRIPTION_FIELD_CANDIDATES),
     "locations": ["location", "locations", "office", "offices"],
-    "employment_type": ["employmentType", "employment_type", "type", "jobType"],
+    "employment_type": [
+        "employmentType",
+        "employment_type",
+        "type",
+        "jobType",
+        "job_type",
+    ],
     "job_location_type": ["locationType", "workplaceType", "remoteType"],
-    "date_posted": ["datePosted", "createdAt", "publishedAt", "postedDate"],
+    "date_posted": ["datePosted", "createdAt", "publishedAt", "postedDate", "validFromDate"],
 }
+
+_NESTED_DESCRIPTION_CANDIDATES = (
+    "websiteDescription",
+    "descriptionHtml",
+    "description",
+    "text",
+    "body",
+)
+
+# Object detection and field mapping must use the same aliases. Keeping these
+# sets derived from the ordered mapping candidates prevents a newly supported
+# field from being recognized by only one half of auto-detection.
+_TITLE_KEYS = frozenset(_TITLE_FIELD_CANDIDATES)
+_DESC_KEYS = frozenset(_DESCRIPTION_FIELD_CANDIDATES)
 
 
 def _find_job_object(data: dict, prefix: str) -> tuple[str | None, dict | None]:
@@ -104,6 +138,21 @@ def _auto_map_fields(job_obj: dict) -> dict[str, str]:
                 continue
             val = job_obj[cand]
 
+            # Keep scanning aliases when a provider emits an empty primary
+            # field beside a populated alternative.  Talent.vn uses
+            # ``locations: []`` and ``offices: [{"name": ...}]``.
+            if val is None or val == "" or val == [] or val == {}:
+                continue
+
+            if target == "description" and isinstance(val, dict):
+                for nested in _NESTED_DESCRIPTION_CANDIDATES:
+                    if isinstance(val.get(nested), str) and val[nested].strip():
+                        fields[target] = f"{cand}.{nested}"
+                        break
+                if target in fields:
+                    break
+                continue
+
             if isinstance(val, list) and val and isinstance(val[0], dict):
                 if "name" in val[0]:
                     fields[target] = f"{cand}[].name"
@@ -115,6 +164,24 @@ def _auto_map_fields(job_obj: dict) -> dict[str, str]:
             else:
                 fields[target] = cand
             break
+
+    # Some enterprise career sites group public job attributes under a
+    # ``jobMetadata`` object rather than exposing them beside the title and
+    # description.  Recognize the common named-location shape so automatic
+    # Next.js scraper detection does not discard otherwise structured data.
+    metadata = job_obj.get("jobMetadata")
+    if isinstance(metadata, dict):
+        if "locations" not in fields:
+            locations = metadata.get("jobLocations")
+            if (
+                isinstance(locations, list)
+                and locations
+                and isinstance(locations[0], dict)
+                and isinstance(locations[0].get("name"), str)
+            ):
+                fields["locations"] = "jobMetadata.jobLocations[].name"
+        if "employment_type" not in fields and isinstance(metadata.get("workStatus"), str):
+            fields["employment_type"] = "jobMetadata.workStatus"
 
     return fields
 
@@ -181,6 +248,7 @@ def can_handle(htmls: list[str]) -> dict | None:
         "window.__INITIAL_STATE__",
         "window.__INITIAL_DATA__",
         "phApp.ddo",  # Phenom People Canvas detail pages
+        "Client.pageData",  # Talent.vn job detail payload
     ]
 
     # Try AF_initDataCallback

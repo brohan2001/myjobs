@@ -1,10 +1,10 @@
 """robots.txt permission checks for the crawler.
 
-ATS candidate APIs (Greenhouse boards-api, Lever postings API, …) exist so
-programs can list jobs, and their API hosts' robots files aren't written for
-them, so those monitors are exempt. Every other monitor reads a company's own
-site (sitemaps, HTML, embedded data, sniffed XHR), and those honour the site's
-robots.txt for the generic ``*`` agent. Results are cached per origin.
+The generic monitors in ``SITE_READING_MONITORS`` read a company's own site (sitemaps, HTML,
+embedded data, sniffed XHR), so they honour that site's robots.txt for the generic ``*`` agent.
+Every other monitor targets an ATS or portal endpoint built for listing jobs, whose robots
+file isn't written for it; those are exempt (portal monitors by the user's decision, D25).
+Results are cached per origin.
 """
 from __future__ import annotations
 
@@ -18,13 +18,8 @@ from src.logger import get_logger
 
 log = get_logger(__name__)
 
-# Monitors backed by an ATS's structured job API/feed (also the discovery pipeline's auto-accept list).
-API_MONITORS = frozenset({
-    "greenhouse", "lever", "ashby", "smartrecruiters", "workable", "recruitee", "workday", "pinpoint",
-    "breezy", "personio", "rippling", "gem", "jobylon", "oracle_hcm", "eightfold", "join", "mokahr",
-    "hireology", "dvinci", "deel", "almacareer", "traffit", "softgarden", "bite", "amazon", "rss",
-    "recruiter_co_kr", "notion", "keka", "greythr", "zoho_recruit",
-})
+# Generic monitors that read a company's own site. Everything else is an ATS/portal adapter.
+SITE_READING_MONITORS = frozenset({"sitemap", "dom", "nextdata", "inline", "api_sniffer"})
 
 _TTL_S = 24 * 3600
 _cache: dict[str, tuple[float, RobotFileParser | None]] = {}
@@ -70,7 +65,7 @@ async def _load(client: httpx.AsyncClient, origin: str, now: float) -> RobotFile
 
 async def ensure_allowed(client: httpx.AsyncClient, url: str, monitor_type: str) -> None:
     """Raise RobotsDisallowedError when the site's robots.txt forbids crawling ``url``."""
-    if monitor_type in API_MONITORS:
+    if monitor_type not in SITE_READING_MONITORS:
         return
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
