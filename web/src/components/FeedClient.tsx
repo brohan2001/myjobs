@@ -133,15 +133,9 @@ export function FeedClient({
     }
   };
 
-  // Search debounce handler
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Called on Enter (FeedHeader), so no debounce is needed.
   const handleSearchChange = (val: string) => {
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-    searchTimeoutRef.current = setTimeout(() => {
-      updateQueryParams({ q: val.trim() || null });
-    }, 250);
+    updateQueryParams({ q: val.trim() || null });
   };
 
   // Load more jobs

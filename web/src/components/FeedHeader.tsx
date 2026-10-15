@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import {
   COMPANY_TYPES,
   CURRENCIES,
@@ -36,18 +36,20 @@ export function FeedHeader({
   onSearchChange,
 }: FeedHeaderProps) {
   const [localSearch, setLocalSearch] = useState(searchQuery);
-  const [, startTransition] = useTransition();
 
   useEffect(() => {
     setLocalSearch(searchQuery);
   }, [searchQuery]);
 
+  // Search runs on Enter, not per keystroke. Clearing the box (Esc or the ✕) applies at once.
   const handleSearchInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setLocalSearch(val);
-    startTransition(() => {
-      onSearchChange(val);
-    });
+    if (val === "" && searchQuery !== "") onSearchChange("");
+  };
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (localSearch.trim() !== searchQuery) onSearchChange(localSearch);
   };
 
   // Find labels for the active sentence values
@@ -82,7 +84,7 @@ export function FeedHeader({
       </div>
       <p className="fresh">{freshnessText}</p>
       <h1 className="sr">Newest jobs</h1>
-      <form onSubmit={(e) => e.preventDefault()} role="search" aria-label="Filters">
+      <form onSubmit={handleSubmit} role="search" aria-label="Filters">
         <p className="sentence">
           Showing{" "}
           <span className="ctl">
@@ -166,7 +168,7 @@ export function FeedHeader({
             type="search"
             value={localSearch}
             onChange={handleSearchInput}
-            placeholder="Press / to search"
+            placeholder="Press / to search, Enter to run"
             autoComplete="off"
           />
         </label>
