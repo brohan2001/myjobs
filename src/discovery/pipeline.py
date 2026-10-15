@@ -38,7 +38,7 @@ BLOCKED_HOSTS = (
 )
 ROBOTS_AGENT = "*"
 
-from src.shared.robots import API_MONITORS as TRUSTED_MONITORS  # noqa: E402  (shared list)
+from src.shared.robots import SITE_READING_MONITORS  # noqa: E402
 
 
 @dataclass
@@ -260,7 +260,7 @@ async def evaluate(
     if out.jobs_found < min_jobs:
         out.reason = f"only {out.jobs_found} jobs parsed"
         return out
-    if monitor_type not in TRUSTED_MONITORS:
+    if monitor_type in SITE_READING_MONITORS:
         # Generic detectors can count ordinary pages as jobs. Accept only when sampled
         # URLs really are job postings (schema.org JobPosting), scraped via json-ld.
         if monitor_type in GENERIC_MONITORS and await _sample_is_jobs(client, sorted(result.urls)):

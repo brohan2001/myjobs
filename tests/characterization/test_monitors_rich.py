@@ -52,14 +52,13 @@ async def test_greenhouse_recorded_fixture(fixture_json, make_client):
     assert first.employment_type is None and first.base_salary is None
 
 
-async def test_greenhouse_token_from_metadata_and_skips_urlless(make_client):
+async def test_greenhouse_token_from_metadata(make_client):
     def handler(req):
         assert "/boards/tok-1/jobs" in req.url.path
         return httpx.Response(
             200,
             json={
                 "jobs": [
-                    {"title": "No url"},
                     {"absolute_url": "https://x/1", "title": "T", "location": {"name": "A"},
                      "offices": [{"name": "A"}, {"name": None}, {"name": "B"}],
                      "content": 'Hi <a>Read more</a> <a href="/x">Read more</a>'},
@@ -74,6 +73,14 @@ async def test_greenhouse_token_from_metadata_and_skips_urlless(make_client):
     # stray href-less toggle removed, real link kept
     assert jobs[0].description == 'Hi  <a href="/x">Read more</a>'
     assert jobs[0].metadata is None
+
+
+async def test_greenhouse_job_without_url_fails_the_check(make_client):
+    """Upstream (re-sync 2026-10-15) fails the board check instead of silently dropping the job."""
+    payload = {"jobs": [{"title": "No url"}]}
+    async with make_client(lambda r: httpx.Response(200, json=payload)) as client:
+        with pytest.raises(ValueError, match="no absolute_url"):
+            await greenhouse.discover({"board_url": "x", "metadata": {"token": "tok-1"}}, client)
 
 
 async def test_greenhouse_404_is_board_gone(make_client):

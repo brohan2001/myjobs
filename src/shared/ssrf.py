@@ -16,10 +16,12 @@ The guard is implemented at the **httpx transport layer**:
      169.254/16, ::1/128, fc00::/7) plus the IETF-reserved ranges that
      are equally dangerous (unspecified, multicast, CGNAT, link-local
      v6, IPv4-mapped v6, metadata).
-  2. :func:`resolve_host_or_raise` — runs ``socket.getaddrinfo`` for
-     the host once, rejects when *any* returned address is private.
-     Returns the chosen address so the caller can short-circuit a
-     second resolution.
+  2. :func:`resolve_host_or_raise` — runs ``socket.getaddrinfo`` and rejects
+     when *any* returned address is private. The sole exception is an
+     unscoped IPv6 link-local DNS answer alongside a public address: without
+     an interface scope it is not a routable destination. The async transport
+     retries only temporary ``EAI_AGAIN`` resolver failures with a bounded
+     backoff; every successful answer is still validated fail-closed.
   3. :func:`is_internal_host_allowed` — opt-in exemption list, sourced
      from ``INTERNAL_HOSTS_ALLOW`` env (comma-separated host[:port]
      entries) plus the proxy / Typesense / Postgres / Redis hosts the
@@ -35,7 +37,7 @@ Threat model:
   - Untrusted board URL points to a private IP directly        → blocked
   - Untrusted host resolves to a private IP (rebinding)        → blocked
   - Permitted host that 30x-redirects to ``http://127.0.0.1/`` → blocked
-  - Proxy URL on the private network (Webshare / Decodo / etc) → NOT blocked
+  - Webshare proxy URL on the private network → NOT blocked
     (the proxy URL is supplied via httpx's ``proxy=`` kwarg, not the
     request URL, so it never reaches :meth:`handle_async_request` as
     the URL to validate)
@@ -56,6 +58,7 @@ testing; it is not required for the live deployment.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import os
 import socket
@@ -69,6 +72,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 log = structlog.get_logger()
+
+DNS_RETRY_BACKOFF_SECONDS = (0.05, 0.1)
 
 
 class SSRFError(Exception):
@@ -175,7 +180,8 @@ def _gather_internal_hosts() -> frozenset[str]:
       1. ``INTERNAL_HOSTS_ALLOW`` env — comma-separated ``host[:port]``.
          Operator-facing override; required for a board URL that
          genuinely points at an internal service.
-      2. The proxy URLs (``WEBSHARE_PROXY_URL`` / ``DECODO_PROXY_URL``).
+      2. The Webshare proxy URLs (``WEBSHARE_PROXY_URLS`` /
+         ``WEBSHARE_PROXY_URL``).
          Defence-in-depth only: the proxy URL is supplied via httpx's
          ``proxy=`` kwarg and isn't the request URL, so it can't
          actually trip the guard — but if a future caller ever passes
@@ -223,13 +229,14 @@ def _gather_internal_hosts() -> frozenset[str]:
     if _settings is None:
         return frozenset(out)
 
-    for url in (
+    deployment_urls = [
+        *getattr(_settings, "webshare_proxy_urls", []),
         getattr(_settings, "webshare_proxy_url", ""),
-        getattr(_settings, "decodo_proxy_url", ""),
         getattr(_settings, "local_database_url", ""),
         getattr(_settings, "database_url", ""),
         getattr(_settings, "redis_url", ""),
-    ):
+    ]
+    for url in deployment_urls:
         host = _extract_host(url)
         if host:
             out.add(host)
@@ -251,14 +258,75 @@ def is_internal_host_allowed(host: str) -> bool:
     return h in _gather_internal_hosts()
 
 
+def _public_address_from_infos(
+    url: str,
+    host: str,
+    infos: Iterable[tuple[Any, ...]],
+) -> str:
+    """Validate one resolver answer and choose its first public address."""
+    chosen: str | None = None
+    unscoped_link_local: str | None = None
+    for family, _socktype, _proto, _canonname, sockaddr in infos:
+        has_textual_scope = False
+        if family == socket.AF_INET:
+            addr = sockaddr[0]
+        elif family == socket.AF_INET6:
+            addr = sockaddr[0]
+            # Strip the zone-id suffix some IPv6 link-local entries
+            # carry (``fe80::1%en0``) before classifying.
+            has_textual_scope = "%" in addr
+            addr = addr.split("%", 1)[0]
+        else:
+            continue
+        if is_private_ip(addr):
+            ip = ipaddress.ip_address(addr)
+            scope_id = sockaddr[3] if family == socket.AF_INET6 and len(sockaddr) > 3 else 0
+            if (
+                isinstance(ip, ipaddress.IPv6Address)
+                and ip.is_link_local
+                and not scope_id
+                and not has_textual_scope
+            ):
+                # A DNS AAAA record cannot supply the interface scope required
+                # to route an IPv6 link-local destination. Linux rejects a
+                # connect to this sockaddr with EINVAL. Some public sites
+                # nevertheless publish such broken AAAA records alongside a
+                # valid A record, so defer this one unreachable answer and use
+                # the public address when available. Scoped link-local answers
+                # remain blocked because they identify a reachable interface.
+                unscoped_link_local = addr
+                continue
+            raise SSRFError(
+                url,
+                f"resolves_to_private_ip:{addr}",
+                host=host,
+            )
+        if chosen is None:
+            chosen = addr
+
+    if chosen is None and unscoped_link_local is not None:
+        raise SSRFError(
+            url,
+            f"resolves_to_private_ip:{unscoped_link_local}",
+            host=host,
+        )
+    if chosen is None:
+        raise SSRFError(url, "no_address_record", host=host)
+    return chosen
+
+
+def _raise_dns_failure(url: str, host: str, exc: socket.gaierror) -> None:
+    raise SSRFError(url, f"dns_failed: {exc}", host=host) from exc
+
+
 def resolve_host_or_raise(url: str, host: str) -> str:
-    """Resolve ``host`` and reject when any returned address is private.
+    """Synchronously resolve ``host`` and reject private answer records.
 
     Returns the first resolved address. The ``url`` is only used for
     error reporting / log context.
 
-    DNS-rebinding posture: we resolve *once* and inspect *every*
-    address in the answer. An attacker who flips the authoritative
+    DNS-rebinding posture: we inspect *every* address in each successful
+    answer. An attacker who flips the authoritative
     DNS between this call and the eventual socket connect can still
     swing the answer — Python's stdlib has no zero-cost way to pin
     httpx's underlying ``httpcore.AsyncHTTPConnection`` to a captured
@@ -274,31 +342,60 @@ def resolve_host_or_raise(url: str, host: str) -> str:
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
-        raise SSRFError(url, f"dns_failed: {exc}", host=host) from exc
+        _raise_dns_failure(url, host, exc)
+    return _public_address_from_infos(url, host, infos)
 
-    chosen: str | None = None
-    for family, _socktype, _proto, _canonname, sockaddr in infos:
-        if family == socket.AF_INET:
-            addr = sockaddr[0]
-        elif family == socket.AF_INET6:
-            addr = sockaddr[0]
-            # Strip the zone-id suffix some IPv6 link-local entries
-            # carry (``fe80::1%en0``) before classifying.
-            addr = addr.split("%", 1)[0]
-        else:
-            continue
-        if is_private_ip(addr):
-            raise SSRFError(
-                url,
-                f"resolves_to_private_ip:{addr}",
+
+async def _resolve_host_or_raise_with_retry(url: str, host: str) -> str:
+    """Resolve off-loop and retry only temporary resolver unavailability."""
+    max_attempts = len(DNS_RETRY_BACKOFF_SECONDS) + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        except socket.gaierror as exc:
+            if exc.errno != socket.EAI_AGAIN or attempt == max_attempts:
+                _raise_dns_failure(url, host, exc)
+            log.warning(
+                "ssrf.dns.retry",
                 host=host,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error_type=type(exc).__name__,
             )
-        if chosen is None:
-            chosen = addr
+            await asyncio.sleep(DNS_RETRY_BACKOFF_SECONDS[attempt - 1])
+            continue
+        return _public_address_from_infos(url, host, infos)
+    raise AssertionError("bounded DNS retry loop exhausted without a result")
 
-    if chosen is None:
-        raise SSRFError(url, "no_address_record", host=host)
-    return chosen
+
+def _host_requiring_dns_validation(url: str | httpx.URL) -> tuple[str, str] | None:
+    """Validate URL shape/literals and return a hostname that needs DNS."""
+    url_str = str(url)
+    try:
+        parsed = urlparse(url_str)
+    except ValueError as exc:
+        raise SSRFError(url_str, f"parse_failed: {exc}") from exc
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise SSRFError(url_str, f"scheme_not_allowed:{scheme or 'empty'}")
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise SSRFError(url_str, "host_missing")
+
+    if is_internal_host_allowed(host):
+        return None
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return url_str, host
+
+    reason = _ip_in_blocklist(ip)
+    if reason is not None:
+        raise SSRFError(url_str, f"private_ip_literal:{reason}", host=host)
+    return None
 
 
 def validate_request_url(url: str | httpx.URL) -> None:
@@ -308,39 +405,15 @@ def validate_request_url(url: str | httpx.URL) -> None:
     httpx dispatches (including each redirect hop). Also exported for
     callers that want to fail-fast before queuing work.
     """
-    url_str = str(url)
-    try:
-        parsed = urlparse(url_str)
-    except ValueError as exc:
-        raise SSRFError(url_str, f"parse_failed: {exc}") from exc
+    target = _host_requiring_dns_validation(url)
+    if target is not None:
+        resolve_host_or_raise(*target)
 
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in ("http", "https"):
-        # ``file://``, ``gopher://``, ``data://`` etc. — none of these
-        # are legitimate board URLs. ``http(s)`` is the only egress.
-        raise SSRFError(url_str, f"scheme_not_allowed:{scheme or 'empty'}")
 
-    host = (parsed.hostname or "").lower()
-    if not host:
-        raise SSRFError(url_str, "host_missing")
-
-    # Internal-by-design hosts skip the IP check. The deployment routes
-    # to Typesense / Postgres / Redis over the private network and the
-    # proxy URL may also live there.
-    if is_internal_host_allowed(host):
-        return
-
-    # IP literals: classify directly, no DNS needed.
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        # Hostname path — go through getaddrinfo.
-        resolve_host_or_raise(url_str, host)
-        return
-
-    if _ip_in_blocklist(ip) is not None:
-        reason = _ip_in_blocklist(ip)
-        raise SSRFError(url_str, f"private_ip_literal:{reason}", host=host)
+async def _validate_request_url_with_dns_retry(url: str | httpx.URL) -> None:
+    target = _host_requiring_dns_validation(url)
+    if target is not None:
+        await _resolve_host_or_raise_with_retry(*target)
 
 
 class SSRFGuardedTransport(httpx.AsyncBaseTransport):
@@ -362,7 +435,7 @@ class SSRFGuardedTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         try:
-            validate_request_url(request.url)
+            await _validate_request_url_with_dns_retry(request.url)
         except SSRFError as exc:
             log.warning(
                 "ssrf.guard.blocked",

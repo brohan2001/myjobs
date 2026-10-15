@@ -1270,8 +1270,6 @@ async def _process_one_board_streaming(
                 if empty_gone_count:
                     _emit_gone_counter(empty_gone_count)
                     board_log.warning("batch.monitor.board_gone", gone=empty_gone_count)
-                    with contextlib.suppress(Exception):
-                        await _batch.get_redis().delete("cache:platform-stats")
             return True, elapsed
 
         # Mark as gone any active posting not seen during this monitor run.
@@ -1352,8 +1350,6 @@ async def _process_one_board_streaming(
             board_log.warning("batch.monitor.slow", duration_s=round(elapsed, 2))
 
         if total_new or gone_count:
-            with contextlib.suppress(Exception):
-                await _batch.get_redis().delete("cache:platform-stats")
 
         return True, elapsed
 
@@ -1418,8 +1414,6 @@ async def _process_one_board_streaming(
         else:
             if board_gone_count:
                 _emit_gone_counter(board_gone_count)
-                with contextlib.suppress(Exception):
-                    await _batch.get_redis().delete("cache:platform-stats")
         # Re-raise so the worker can drop the Redis task instead of
         # rescheduling — otherwise the dead board keeps cycling.
         raise
@@ -1458,8 +1452,6 @@ async def _process_one_board_streaming(
         else:
             if failure_gone_count:
                 _emit_gone_counter(failure_gone_count)
-                with contextlib.suppress(Exception):
-                    await _batch.get_redis().delete("cache:platform-stats")
         return False, elapsed
     finally:
         if pw and pw_owned:

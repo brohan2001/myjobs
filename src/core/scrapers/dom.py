@@ -6,9 +6,17 @@ structured fields from the HTML.
 By default (``render: false``), fetches the page via static HTTP.  Set
 ``render: true`` to render with Playwright for JS-heavy sites.
 
-Config uses ``steps`` (same format as ``walk_steps``) plus optional browser
-lifecycle keys (``wait``, ``timeout``, ``user_agent``, ``headless``, ``actions``)
-which are only used when rendering.
+Config normally uses ``steps`` (same format as ``walk_steps``); supported
+shared templates may instead use a runtime ``preset``. An optional ``scope``
+CSS selector limits extraction to one content container, and optional
+``include_document_title`` / ``include_document_description`` flags when a
+scoped layout keeps useful metadata in ``<head>``. ``include_header_content``
+supports job templates that misuse semantic ``<header>`` elements for the
+posting body; navigation and footer noise remain excluded.
+Static requests may set allowlisted public ``request_headers`` for origins
+that require explicit content negotiation or crawler identification.
+Browser lifecycle keys (``wait``, ``timeout``, ``user_agent``, ``headless``,
+``actions``) are only used when rendering.
 
 Optional ``gone_url_pattern`` is a regex matched against the FINAL URL after
 all redirects. When the upstream site redirects archived/removed postings to
@@ -24,20 +32,125 @@ Requires playwright when ``render`` is true:
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import json
 import re
+from html import escape
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
+from selectolax.lexbor import LexborHTMLParser
 
+from src.core.monitors.dom import BotChallengeError, _raise_if_bot_challenge
 from src.core.scrapers import JobContent, register
 from src.shared.browser import BROWSER_KEYS, navigate, open_page, run_actions, safe_content
 from src.shared.extract import flatten, walk_steps
+from src.shared.fetch_url import transformed_fetch_url
+from src.shared.http import is_avature_job_detail_url
+from src.shared.http_retry import fetch_response_with_status_retries
+from src.shared.public_request_headers import public_get, validated_public_request_headers
 
 log = structlog.get_logger()
+
+_RENDER_CHALLENGE_RETRIES = 1
+_LINKED_DESCRIPTION_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_LINKED_DESCRIPTION_REDIRECTS = 10
+
+_LUCCA_SCRAPER_CONFIG = {
+    "scope": ".jobOffer-article",
+    "steps": [
+        {
+            "tag": "h1",
+            "attr": "data-testid=job-offer-title",
+            "field": "title",
+        },
+        {
+            "tag": "h2",
+            "text": "Job description",
+            "offset": 1,
+            "field": "description",
+            "html": True,
+            "stop_attr": "data-testid=job-offer-publication-date",
+        },
+    ],
+}
+
+_AFAS_INSITE_MARKERS = ('"ProfitVersion":"AFAS Profit', "WebFormLocationEventUrl")
+_AFAS_INSITE_DESCRIPTION_START_RE = (
+    r"^(?:ARE YOU THE ONE AND ONLY\?|JOIN THE RIDE CALLED ONLY & SONS!)$"
+)
+_AFAS_INSITE_LOCATION_RE = (
+    r"(?i)\bstores?\s+in\s+(?:(?:de\s+)?regio\s+)?(.+?)"
+    r"(?=\s+zijn\b|,\s*zijn\b|[.!?]\s*$)"
+)
+
+
+def _scope_html(html: str, config: dict) -> str:
+    """Limit extraction to one configured container before flattening.
+
+    Branded career pages often wrap the ATS fragment in malformed or enormous
+    navigation markup. Scoping is generic DOM-scraper behavior: it makes
+    selectors deterministic and prevents surrounding site chrome from
+    shadowing job fields without introducing provider-specific parsing.
+    """
+
+    include_document_title = config.get("include_document_title", False)
+    include_document_description = config.get("include_document_description", False)
+    if not isinstance(include_document_title, bool):
+        raise ValueError("DOM scraper include_document_title must be a boolean")
+    if not isinstance(include_document_description, bool):
+        raise ValueError("DOM scraper include_document_description must be a boolean")
+
+    scope = config.get("scope")
+    if scope is None:
+        if include_document_title or include_document_description:
+            raise ValueError("DOM scraper document metadata options require scope")
+        return html
+    if not isinstance(scope, str) or not scope.strip() or len(scope) > 256 or "\x00" in scope:
+        raise ValueError("DOM scraper scope must be a non-empty CSS selector up to 256 chars")
+    try:
+        document = LexborHTMLParser(html)
+        node = document.css_first(scope)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"DOM scraper scope is not a valid CSS selector: {scope!r}") from exc
+    if node is None:
+        raise ValueError(f"DOM scraper scope did not match the page: {scope!r}")
+    prefixes: list[str] = []
+    if include_document_title:
+        title = document.css_first("title")
+        if title is not None:
+            prefixes.append(title.html)
+    if include_document_description:
+        description = document.css_first('meta[name="description"]')
+        content = description.attributes.get("content") if description is not None else None
+        if content:
+            prefixes.append(f'<p data-document-description="true">{escape(content)}</p>')
+        # A visible sentinel gives range steps a stable boundary between
+        # injected document metadata and scoped content. Consumers match its
+        # attribute and use offset=1, so it never enters extracted output.
+        prefixes.append('<p data-document-scope-start="true">scope</p>')
+    # HTML parsers intentionally treat noscript descendants as raw text when
+    # scripting is enabled.  Re-wrapping a scoped noscript node therefore
+    # makes its semantic fallback markup inert on the second parse below.
+    # Return the inner markup for that element so job pages which publish an
+    # accessible no-JavaScript fallback remain extractable.
+    scoped_html = node.inner_html if node.tag == "noscript" else node.html
+    return "".join(prefixes) + scoped_html
+
+
+def _flatten_html(html: str, config: dict) -> list[dict]:
+    """Flatten a detail document with explicitly enabled structural content."""
+
+    include_header_content = config.get("include_header_content", False)
+    if not isinstance(include_header_content, bool):
+        raise ValueError("DOM scraper include_header_content must be a boolean")
+    return flatten(
+        _scope_html(html, config),
+        include_header_content=include_header_content,
+    )
 
 
 def _check_gone_redirect(final_url: str, pattern: str | None, source_url: str) -> None:
@@ -82,6 +195,27 @@ def _check_gone_redirect(final_url: str, pattern: str | None, source_url: str) -
     )
 
 
+def _status_retry_limits(config: dict, url: str) -> dict[int, int]:
+    """Return validated static-fetch status retries from scraper config."""
+
+    limits = {406: 2} if is_avature_job_detail_url(url) else {}
+    configured = config.get("retry_statuses")
+    if configured is None:
+        return limits
+    if not isinstance(configured, dict):
+        raise ValueError("DOM scraper retry_statuses must be an object")
+    for raw_status, raw_limit in configured.items():
+        try:
+            status = int(raw_status)
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("DOM scraper retry_statuses entries must be integers") from exc
+        if not 400 <= status <= 599 or not 0 <= limit <= 5:
+            raise ValueError("DOM scraper retry_statuses requires HTTP 400-599 and 0-5 retries")
+        limits[status] = max(limits.get(status, 0), limit)
+    return limits
+
+
 # ── Heuristic stop markers ────────────────────────────────────────────
 
 _STOP_MARKERS = [
@@ -95,35 +229,837 @@ _STOP_MARKERS = [
     "Related",
 ]
 
+_KONTACT_MARKER = "kontactintelligence.com"
+_WORKLOAD_RE = re.compile(r"^\s*\d{1,3}(?:\s*[-–]\s*\d{1,3})?\s*%\s*$")
+_DOCUMENT_TITLE_SEPARATORS = (" | ", " - ", " – ", " — ", " : ", " · ")
+_LOCATION_LABELS = (
+    "job location",
+    "location",
+    "workplace",
+    "lieu de travail",
+    "lieu",
+    "arbeitsort",
+    "arbeitsplatz",
+    "munkavégzés helye",
+    "luogo di lavoro",
+)
+_LOCATION_VALUE_PREFIXES = (
+    # Czech career pages commonly expose the current branch as a navigation
+    # item whose accessible text is "pracovní pozice <city>" ("job
+    # positions <city>").  The value precedes the role heading, so it cannot
+    # be captured by the normal post-title label/value heuristic.
+    "pracovní pozice",
+)
+
+
+def _matches_document_title(heading: str, document_title: str) -> bool:
+    """Return whether a heading is a delimited title segment.
+
+    Job sites commonly prefix or suffix the role with their brand or a generic
+    careers label in ``<title>``. Requiring a separator boundary avoids fuzzy
+    substring matches while still distinguishing the real role heading from a
+    repeated page-level ``<h1>`` such as "Jobs".
+    """
+
+    heading = " ".join(heading.split()).casefold()
+    document_title = " ".join(document_title.split()).casefold()
+    if not heading:
+        return False
+    if heading == document_title:
+        return True
+    return any(
+        document_title.startswith(f"{heading}{separator}")
+        or document_title.endswith(f"{separator}{heading}")
+        for separator in _DOCUMENT_TITLE_SEPARATORS
+    )
+
+
+def _title_heading(elements: list[dict]) -> tuple[int, str] | None:
+    """Find the page's job-title heading without guessing from site chrome.
+
+    ``h1`` remains the preferred semantic signal when it agrees with the
+    document title. Some CMS job templates keep a generic careers-page ``h1``
+    above the role, however. In that case, accept an ``h2``-``h4`` only when it
+    is a separator-delimited prefix or suffix of the document title. This keeps
+    the fallback useful without treating an arbitrary section heading as the
+    job title.
+    """
+
+    document_title = next(
+        (element["text"] for element in elements if element["tag"] == "title"),
+        None,
+    )
+    if document_title:
+        for tag in ("h1", "h2", "h3", "h4"):
+            for i, element in enumerate(elements):
+                if element["tag"] == tag and _matches_document_title(
+                    element["text"], document_title
+                ):
+                    return i, tag
+
+    for i, element in enumerate(elements):
+        if element["tag"] == "h1":
+            return i, "h1"
+    return None
+
+
+def _talentsoft_config(htmls: list[str]) -> dict | None:
+    """Build locale-independent extraction steps for Talentsoft details."""
+
+    matches = sum(
+        "ts-offer-page__body" in html and "fldlocation_location_geographicalareacollection" in html
+        for html in htmls
+    )
+    if not matches or matches < len(htmls) / 2:
+        return None
+    return {
+        "steps": [
+            {
+                "tag": "h1",
+                "attr": "class=ts-offer-page__title",
+                "field": "title",
+            },
+            {
+                "tag": "h2",
+                "attr": "class=JobDescription",
+                "field": "description",
+                "html": True,
+                "stop_tag": "h2",
+            },
+            {
+                "attr": "id=fldjobdescription_contract",
+                "field": "employment_type",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "attr": "id=fldlocation_location_geographicalareacollection",
+                "field": "locations",
+                "from": 0,
+            },
+            {
+                "tag": "h2",
+                "attr": "class=ApplicantCriteria",
+                "field": "qualifications",
+                "html": True,
+                "stop_tag": "h2",
+                "from": 0,
+                "optional": True,
+            },
+        ]
+    }
+
+
+_ELVIUM_MARKERS = (
+    "career-page job-posting-layout",
+    "job-posting-widget",
+    "contact-info-widget",
+)
+
+_TRIBEPAD_SELECTORS = (
+    "#content.job_page",
+    "h1.job_title",
+    "#job_main",
+    "table.details",
+    '.powered_by a[href*="tribepad.com"]',
+)
+_STADT_ZUERICH_MARKERS = (
+    "job-detailseite.",
+    "career_job_req_id=",
+    "<stzh-pagetitle",
+)
+_SWISS_CANTON_CODES = (
+    "AG|AI|AR|BE|BL|BS|FR|GE|GL|GR|JU|LU|NE|NW|OW|SG|SH|SO|SZ|TG|TI|UR|VD|VS|ZG|ZH"
+)
+_CLINCH_CLASS_MARKERS = (
+    "job-description-container",
+    "job-title",
+    "job-description",
+    "job-component-location",
+)
+_CMSMASTERS_CAREERS_SCOPE = 'div[data-elementor-type="single-post"]'
+_ELEMENTOR_JOB_POST_SCOPE = 'div[data-elementor-type="wp-post"]'
+_ELEMENTOR_CAREERS_PRESET = "elementor-careers"
+_ADVORTO_SCOPE = ".vacancy-information-fields"
+_ADVORTO_LIST_SELECTOR = f"{_ADVORTO_SCOPE} dl.advorto-definition-list"
+_SOLIQUE_HOST_MARKER = "solique.ch/"
+_SOLIQUE_CLASS_MARKERS = ("job-title", "tasks-profile-wrapper")
+_REXX_PORTAL7_MARKERS = ("rexx recruitment - portal7", "jobtplcontainer")
+_LIEPIN_JOB_CONFIG_RE = re.compile(
+    r"var\s+\$CONFIG\s*=\s*\{[^{}]*[\"']jobId[\"']\s*:\s*[1-9]\d{0,15}",
+    re.IGNORECASE,
+)
+
+
+def _has_html_class(html: str, class_name: str) -> bool:
+    """Return whether raw HTML contains *class_name* as a class token."""
+
+    return bool(
+        re.search(
+            rf"\bclass\s*=\s*(['\"])[^'\"]*(?<![^\s'\"]){re.escape(class_name)}"
+            rf"(?![^\s'\"])\s*[^'\"]*\1",
+            html,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _stadt_zuerich_config(htmls: list[str]) -> dict | None:
+    """Build extraction steps for City of Zurich's AEM job template.
+
+    The public detail pages expose stable title, employment type, department,
+    and description elements, but deliberately omit a location field. City
+    roles are based in Zurich by default. The shared inventory also contains a
+    small number of municipal-service roles outside the city; those postings
+    identify their canton or Graubunden region in the title, so preserve that
+    explicit value before applying the board-wide fallback.
+    """
+
+    matches = sum(all(marker in html for marker in _STADT_ZUERICH_MARKERS) for html in htmls)
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    canton_location = rf"(?i)\bStandort\s+([^,()]+?\s+(?:{_SWISS_CANTON_CODES}))\b"
+    regional_location = r"(?i)\b(Mittelbünden|Graubünden)\b"
+    return {
+        "defaults": {"locations": ["Zurich, Switzerland"]},
+        "steps": [
+            {"tag": "stzh-heading", "field": "title"},
+            {
+                "tag": "stzh-text",
+                "attr": "slot=lead",
+                "field": "employment_type",
+            },
+            {
+                "tag": "stzh-text",
+                "attr": "slot=lead",
+                "field": "metadata.department",
+            },
+            {
+                "tag": "stzh-heading",
+                "match_regex": canton_location,
+                "field": "locations",
+                "regex": canton_location,
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "tag": "stzh-heading",
+                "match_regex": regional_location,
+                "field": "locations",
+                "regex": regional_location,
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "tag": "p",
+                "field": "description",
+                "html": True,
+                "stop": "Arbeiten bei der Stadt",
+            },
+        ],
+    }
+
+
+def _rexx_portal7_config(htmls: list[str]) -> dict | None:
+    """Build a static config for legacy Rexx Portal7 detail pages.
+
+    Portal7 keeps the role body in ``#jobTplContainer``, the title in the
+    document title, and the location at the end of the meta description.
+    Listing URLs often carry an expiring ``sid``; the DOM monitor removes that
+    token before these pages reach the scraper.
+    """
+
+    matches = sum(
+        all(marker in html.casefold() for marker in _REXX_PORTAL7_MARKERS) for html in htmls
+    )
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": "#jobTplContainer",
+        "include_document_title": True,
+        "include_document_description": True,
+        "steps": [
+            {
+                "tag": "title",
+                "field": "title",
+                "regex": r"^(?:Stellenangebot|Job offer)\s+(.+?)\s+(?:bei|at)\s+",
+                "from": 0,
+            },
+            {
+                "attr": "data-document-description=true",
+                "field": "locations",
+                "regex": r"(?s)^.*\bin\s+(.+?)\s*$",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "attr": "data-document-scope-start=true",
+                "offset": 1,
+                "field": "description",
+                "html": True,
+                "to_end": True,
+                "from": 0,
+            },
+        ],
+    }
+
+
+def _liepin_config(htmls: list[str]) -> dict | None:
+    """Extract Liepin role metadata when the visible body is an inactive shell.
+
+    Liepin preserves the canonical bilingual role title and a concise role
+    summary in document metadata even when its body switches to the explicit
+    paused-job view. The first-party employer listing remains responsible for
+    currentness; this preset only makes any future active links scrapeable.
+    """
+    matches = 0
+    for html in htmls:
+        tree = LexborHTMLParser(html)
+        title = tree.css_first("title")
+        description = tree.css_first('meta[name="description"]')
+        title_text = title.text(strip=True) if title is not None else ""
+        description_text = (
+            description.attributes.get("content", "") if description is not None else ""
+        )
+        if (
+            _LIEPIN_JOB_CONFIG_RE.search(html)
+            and title_text.startswith("【")
+            and "招聘】-" in title_text
+            and title_text.endswith("猎聘")
+            and description_text.strip()
+        ):
+            matches += 1
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": "body",
+        "include_document_title": True,
+        "include_document_description": True,
+        "steps": [
+            {
+                "tag": "title",
+                "field": "title",
+                "regex": r"^【[^】\s]+\s+(.+?)招聘】-",
+            },
+            {
+                "tag": "title",
+                "field": "locations",
+                "regex": r"^【([^】\s]+)\s+",
+                "from": 0,
+            },
+            {
+                "attr": "data-document-description=true",
+                "field": "description",
+                "from": 0,
+            },
+        ],
+    }
+
+
+def _solique_config(htmls: list[str]) -> dict | None:
+    """Build a static extraction config for Solique publication pages.
+
+    Solique puts the visible job title in a ``div`` inside ``header`` rather
+    than an ``h1``. The generic flattener intentionally excludes header
+    chrome, so the normal h1 heuristic cannot identify these otherwise fully
+    static pages. Their content classes are stable across branded tenants and
+    languages, making them a safer detection signal than translated headings.
+    """
+
+    matches = sum(
+        _SOLIQUE_HOST_MARKER in html.casefold()
+        and all(_has_html_class(html, marker) for marker in _SOLIQUE_CLASS_MARKERS)
+        for html in htmls
+    )
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "steps": [
+            {
+                "tag": "title",
+                "field": "title",
+                "regex": r"^(.*?)(?:\s+-\s+\d{1,3}(?:\s*-\s*\d{1,3})?%)?$",
+                "from": 0,
+            },
+            {
+                "attr": "class=intro",
+                "field": "description",
+                "stop_attr": "class=contact-title",
+                "html": True,
+                "from": 0,
+            },
+            {
+                "tag": "div",
+                "attr": "class=location",
+                "field": "location",
+                "from": 0,
+            },
+        ]
+    }
+
+
+def _kontact_config(htmls: list[str]) -> dict | None:
+    """Build the stable extraction config used by KontactIntelligence pages."""
+
+    matches = sum(_KONTACT_MARKER in html.casefold() for html in htmls)
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": "#content",
+        "steps": [
+            {
+                "text": "Location:",
+                "offset": 1,
+                "field": "location",
+                "from": 0,
+            },
+            {
+                "tag": "h1",
+                "field": "title",
+                "optional": True,
+                "from": 0,
+            },
+            {
+                "tag": "h2",
+                "attr": "class=opportunityTitle",
+                "field": "title",
+                "optional": True,
+                "from": 0,
+            },
+            {
+                "text": "Overview",
+                "offset": 1,
+                "field": "description",
+                "stop": "Print Opportunity",
+                "html": True,
+                "from": 0,
+            },
+        ],
+    }
+
+
+def _elvium_config(htmls: list[str]) -> dict | None:
+    """Build a resilient DOM preset for Elvium job-detail pages.
+
+    Elvium pages do not publish ``JobPosting`` JSON-LD and their visible title
+    is commonly a styled ``<p>`` rather than a heading.  The generic DOM
+    heuristic therefore cannot identify them.  Their stable job layout does,
+    however, expose a dedicated content section followed by a contact-address
+    widget.  Scope extraction to that layout and retry Elvium's bursty 429
+    responses so a board can use the existing DOM monitor/scraper pair.
+    """
+
+    matches = sum(all(marker in html for marker in _ELVIUM_MARKERS) for html in htmls)
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": "section.job-posting-layout",
+        "include_document_title": True,
+        "retry_statuses": {"429": 3},
+        "steps": [
+            {
+                "tag": "title",
+                "field": "title",
+                "regex": r"^(.*?)\s+at\s+.+$",
+            },
+            {
+                "tag": "p",
+                "field": "description",
+                "html": True,
+                "stop": "Kontakt Info",
+            },
+            {"tag": "p", "field": "locations"},
+        ],
+    }
+
+
+def _clinch_config(htmls: list[str]) -> dict | None:
+    """Build a rendered DOM config for PageUp Clinch job pages.
+
+    Clinch career sites use stable job-component classes but commonly put a
+    marketing slogan in ``h1`` and the actual job title in ``h3.job-title``.
+    The generic heading heuristic therefore extracts the wrong title.  Some
+    tenants also challenge static HTTP requests while serving the complete
+    page to Chromium, so the rendered probe adds the browser flags separately.
+    """
+
+    matches = sum(
+        all(_has_html_class(html, marker) for marker in _CLINCH_CLASS_MARKERS) for html in htmls
+    )
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": ".job-description-container",
+        "steps": [
+            {"tag": "h3", "attr": "class=job-title", "field": "title"},
+            {
+                "tag": "li",
+                "attr": "class=job-component-workplace-type",
+                "field": "job_location_type",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "tag": "li",
+                "attr": "class=job-component-location",
+                "field": "locations",
+                "from": 0,
+            },
+            {
+                "tag": "li",
+                "attr": "class=job-component-department",
+                "field": "metadata.department",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "tag": "li",
+                "attr": "class=job-component-employment-type",
+                "field": "employment_type",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "tag": "div",
+                "attr": "class=job-description-controls",
+                "optional": True,
+                "from": 0,
+            },
+            {"field": "description", "html": True, "stop_count": 200},
+        ],
+    }
+
+
+def _cmsmasters_careers_config(htmls: list[str]) -> dict | None:
+    """Build stable steps for CMSMasters/Elementor career-detail pages.
+
+    Several first-party WordPress career sites publish jobs through a cloned
+    CMSMasters single-post template.  The generic heuristic stops at the first
+    ``Requirements`` heading and treats ``Location: In-person`` as a geographic
+    location.  Scope extraction to the career post, retain the complete role
+    body through the application boundary, and classify the labeled modality
+    separately.  Boards whose posts omit a geographic place can supply a
+    verified regional ``defaults.locations`` value in their scraper config.
+    """
+
+    matches = 0
+    for html in htmls:
+        tree = LexborHTMLParser(html)
+        post = tree.css_first(_CMSMASTERS_CAREERS_SCOPE)
+        if post is None:
+            continue
+        classes = set(post.attributes.get("class", "").split())
+        if not (
+            "type-careers" in classes or "category-careers" in classes or "tag-careers" in classes
+        ):
+            continue
+        if (
+            post.css_first("h1.elementor-heading-title") is not None
+            and post.css_first(".elementor-widget-theme-post-content") is not None
+        ):
+            matches += 1
+
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": _CMSMASTERS_CAREERS_SCOPE,
+        "steps": [
+            {
+                "tag": "h1",
+                "attr": "class=elementor-heading-title",
+                "field": "title",
+            },
+            {
+                "field": "description",
+                "html": True,
+                "stop_regex": r"(?i)^\s*Apply(?:\s+for(?:\s+this)?\s+Job|\s+Now)(?:\s*:.*)?\s*$",
+            },
+            {
+                "match_regex": (
+                    r"(?i)^\s*Location\s*:\s*"
+                    r"(?:In[- ]?person|On[- ]?site|Remote|Hybrid)\s*$"
+                ),
+                "field": "job_location_type",
+                "regex": r"(?i)^\s*Location\s*:\s*(In[- ]?person|On[- ]?site|Remote|Hybrid)\s*$",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "match_regex": r"^\s*.+?,\s*[A-Z]{2}\s*\(",
+                "field": "locations",
+                "regex": r"^\s*(?:.*\|\s*)?([^|]+?,\s*[A-Z]{2})\s*\(",
+                "from": 0,
+                "optional": True,
+            },
+        ],
+    }
+
+
+def _elementor_job_post_config(htmls: list[str]) -> dict | None:
+    """Build steps for standalone Elementor job posts with application forms."""
+
+    matches = 0
+    for html in htmls:
+        tree = LexborHTMLParser(html)
+        post = tree.css_first(_ELEMENTOR_JOB_POST_SCOPE)
+        title = tree.css_first("title")
+        if post is None or title is None or post.css_first(".elementor-widget-form") is None:
+            continue
+        text = post.text(separator=" ", strip=True).casefold()
+        if any(marker in text for marker in ("job title:", "currently hiring", "what you'll do")):
+            matches += 1
+
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "scope": _ELEMENTOR_JOB_POST_SCOPE,
+        "include_document_title": True,
+        "steps": [
+            {
+                "tag": "title",
+                "field": "title",
+                "regex": r"^(.*)\s+-\s+[^-]+$",
+            },
+            {
+                "field": "description",
+                "html": True,
+                "stop_regex": r"(?i)^\s*Apply\s*$",
+            },
+            {
+                "match_regex": r"(?i)^\s*Employment Type\s*:\s*\S",
+                "field": "employment_type",
+                "regex": r"(?i)^\s*Employment Type\s*:\s*(\S.*)\s*$",
+                "from": 0,
+                "optional": True,
+            },
+            {
+                "match_regex": (
+                    r"(?i)^\s*Location\s*:\s*"
+                    r"(?:In[- ]?person|On[- ]?site|Remote|Hybrid)\s*$"
+                ),
+                "field": "job_location_type",
+                "regex": r"(?i)^\s*Location\s*:\s*(In[- ]?person|On[- ]?site|Remote|Hybrid)\s*$",
+                "from": 0,
+                "optional": True,
+            },
+        ],
+    }
+
+
+def _elementor_careers_preset_config(htmls: list[str]) -> dict | None:
+    """Select a runtime preset when every sample uses a supported job template."""
+
+    if not htmls:
+        return None
+    for html in htmls:
+        if (
+            _cmsmasters_careers_config([html]) is None
+            and _elementor_job_post_config([html]) is None
+        ):
+            return None
+    return {"preset": _ELEMENTOR_CAREERS_PRESET}
+
+
+def _runtime_config(html: str, config: dict) -> dict:
+    """Resolve dynamic DOM presets against the fetched detail document."""
+
+    preset = config.get("preset")
+    if preset is None:
+        return config
+    if preset != _ELEMENTOR_CAREERS_PRESET:
+        raise ValueError(f"unknown DOM scraper preset: {preset!r}")
+
+    detected = _cmsmasters_careers_config([html]) or _elementor_job_post_config([html])
+    if detected is None:
+        raise ValueError("Elementor careers preset did not match the detail page")
+    return {**detected, **config}
+
+
+def _advorto_config(htmls: list[str]) -> dict | None:
+    """Build stable extraction steps for Kallidus Recruit/Advorto details.
+
+    These pages render a short title/location header before their share
+    controls, then repeat the authoritative fields in an Advorto definition
+    list.  The generic heuristic stops at the earlier ``Share`` marker and
+    consequently mistakes the location header for the description.  Scope to
+    the labeled vacancy fields and inject the document title because some
+    postings do not repeat their title inside the description body.
+    """
+
+    matches = 0
+    for html in htmls:
+        tree = LexborHTMLParser(html)
+        field_list = tree.css_first(_ADVORTO_LIST_SELECTOR)
+        title = tree.css_first("title")
+        if field_list is None or title is None or not title.text(strip=True):
+            continue
+        labels = {node.text(strip=True).casefold() for node in field_list.css("dt")}
+        if {"location", "description"}.issubset(labels):
+            matches += 1
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    label = {
+        "tag": "dt",
+        "offset": 1,
+        "from": 0,
+    }
+    return {
+        "scope": _ADVORTO_SCOPE,
+        "include_document_title": True,
+        "steps": [
+            {"tag": "title", "field": "title"},
+            {
+                **label,
+                "match_regex": r"^\s*Description\s*$",
+                "field": "description",
+                "html": True,
+                "to_end": True,
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Location\s*$",
+                "field": "locations",
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Salary\s*$",
+                "field": "metadata.salary",
+                "optional": True,
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Closing date\s*$",
+                "field": "valid_through",
+                "date_input_format": "%d/%m/%Y",
+                "optional": True,
+            },
+        ],
+    }
+
+
+def _tribepad_config(htmls: list[str]) -> dict | None:
+    """Build stable extraction steps for Tribepad job-detail pages.
+
+    Tribepad publishes the role body in ``#job_main`` and authoritative job
+    metadata in ``table.details``.  The generic DOM heuristic starts from the
+    page title and can consequently absorb the map, sharing controls, related
+    jobs, and footer into the description.  Anchor the description at the
+    provider's ``Job Introduction`` section and stop before attachments or the
+    apply control, while resetting the cursor for each labeled metadata row.
+    """
+
+    matches = 0
+    for html in htmls:
+        tree = LexborHTMLParser(html)
+        if all(tree.css_first(selector) is not None for selector in _TRIBEPAD_SELECTORS):
+            matches += 1
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    label = {
+        "tag": "td",
+        "attr": "class=label",
+        "offset": 1,
+        "from": 0,
+        "optional": True,
+    }
+    return {
+        "steps": [
+            {"tag": "h1", "attr": "class=job_title", "field": "title"},
+            {"tag": "h3", "text": "Job Introduction"},
+            {
+                "field": "description",
+                "html": True,
+                "stop_regex": r"^(?:Attached documents|Apply)$",
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Location\s*$",
+                "field": "locations",
+                "optional": False,
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Contract Type\s*$",
+                "field": "employment_type",
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Posted on\s*$",
+                "field": "date_posted",
+                "date_input_format": "%d %B, %Y",
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Closing Date\s*$",
+                "field": "valid_through",
+                "date_input_format": "%d %B, %Y",
+            },
+            {
+                **label,
+                "match_regex": r"^\s*Salary\s*$",
+                "field": "metadata.salary",
+            },
+        ]
+    }
+
 
 def _heuristic_steps(elements: list[dict]) -> list[dict] | None:
     """Generate heuristic extraction steps from flattened elements."""
     if not elements:
         return None
 
-    # Find first h1 — title
-    h1_idx = None
-    for i, el in enumerate(elements):
-        if el["tag"] == "h1":
-            h1_idx = i
+    title_heading = _title_heading(elements)
+    if title_heading is None:
+        return None
+    title_idx, title_tag = title_heading
+
+    steps: list[dict] = [{"tag": title_tag, "field": "title"}]
+
+    # A common compact job header is ``title, location, workload`` where the
+    # latter two values are adjacent list items (for example ``Sion`` and
+    # ``80-100%``). Capture the location and advance past the workload before
+    # collecting the description. The percentage check prevents an ordinary
+    # content list from being mistaken for job metadata.
+    workload_location = False
+    for i in range(title_idx + 1, min(title_idx + 6, len(elements) - 1)):
+        if (
+            elements[i]["tag"] == "li"
+            and elements[i + 1]["tag"] == "li"
+            and _WORKLOAD_RE.fullmatch(elements[i + 1]["text"])
+            and not any(element["tag"] == "li" for element in elements[title_idx + 1 : i])
+        ):
+            steps.extend(
+                [
+                    {"tag": "li", "field": "location", "optional": True},
+                    {"tag": "li"},
+                ]
+            )
+            workload_location = True
             break
 
-    if h1_idx is None:
-        return None
-
-    steps: list[dict] = [{"tag": "h1", "field": "title"}]
-
-    # Description: content after h1, stop at known marker
+    # Description: continue from the cursor immediately after the title
+    # heading (and compact metadata, when detected).
+    # Leaving the selector empty intentionally matches the current element;
+    # re-seeking the h1 would either miss it or escape a URL-fragment anchor.
     desc_step: dict = {
-        "tag": "h1",
-        "offset": 1,
         "field": "description",
         "html": True,
         "optional": True,
     }
 
-    # Look for a stop marker in elements after h1
-    for i in range(h1_idx + 1, len(elements)):
+    # Look for a stop marker in elements after the title.
+    for i in range(title_idx + 1, len(elements)):
         text = elements[i]["text"]
         for marker in _STOP_MARKERS:
             if marker.lower() in text.lower() and len(text) < 60:
@@ -134,27 +1070,156 @@ def _heuristic_steps(elements: list[dict]) -> list[dict] | None:
 
     # If no stop marker found, use stop_count based on remaining content
     if "stop" not in desc_step:
-        remaining = len(elements) - h1_idx - 1
+        remaining = len(elements) - title_idx - 1
         desc_step["stop_count"] = min(remaining, 50)
 
     steps.append(desc_step)
 
-    # Location: look for an element with "location" in its text
-    for el in elements:
-        text_lower = el["text"].lower()
-        if "location" in text_lower and len(el["text"]) < 40:
-            steps.append(
-                {
-                    "text": "Location",
-                    "offset": 1,
-                    "field": "location",
-                    "optional": True,
-                    "from": 0,
-                }
+    # Location: support both a standalone label followed by its value and
+    # compact locale-specific ``Label: value`` elements. The latter is common
+    # on otherwise static European job pages and must not advance to the next
+    # metadata row (for example a start date).
+    if not workload_location:
+        for el in elements:
+            text = el["text"]
+            text_lower = text.strip().casefold()
+            label = next(
+                (
+                    candidate
+                    for candidate in _LOCATION_LABELS
+                    if text_lower == candidate
+                    or re.match(rf"^{re.escape(candidate)}\s*[:：]", text_lower)
+                ),
+                None,
             )
+            if label is None or len(text) >= 120:
+                continue
+
+            inline_pattern = rf"(?i)^\s*{re.escape(label)}\s*[:：]\s*(\S.*)\s*$"
+            inline_value = re.match(inline_pattern, text)
+            if inline_value:
+                steps.append(
+                    {
+                        "text": label,
+                        "match_regex": inline_pattern,
+                        "field": "location",
+                        "regex": inline_pattern,
+                        "optional": True,
+                        "from": 0,
+                    }
+                )
+            elif len(text) < 40:
+                steps.append(
+                    {
+                        "text": label,
+                        "match_regex": rf"(?i)^\s*{re.escape(label)}\s*(?:[:：]\s*)?$",
+                        "offset": 1,
+                        "field": "location",
+                        "optional": True,
+                        "from": 0,
+                    }
+                )
             break
 
+        if not any(step.get("field") in {"location", "locations"} for step in steps):
+            for prefix in _LOCATION_VALUE_PREFIXES:
+                pattern = rf"(?i)^\s*{re.escape(prefix)}\s+(\S.*?)\s*$"
+                if any(
+                    element["tag"] in {"a", "li"}
+                    and len(element["text"]) < 120
+                    and re.fullmatch(pattern, element["text"])
+                    for element in elements[:title_idx]
+                ):
+                    steps.append(
+                        {
+                            "match_regex": pattern,
+                            "field": "location",
+                            "regex": pattern,
+                            "from": 0,
+                            "optional": True,
+                        }
+                    )
+                    break
+
     return steps
+
+
+def _lucca_config(htmls: list[str]) -> dict | None:
+    """Return the stable DOM detail preset for Lucca/Poplee postings."""
+
+    matches = 0
+    for html in htmls:
+        tree = LexborHTMLParser(html)
+        if (
+            tree.css_first("article.jobOffer-article") is not None
+            and tree.css_first('[data-testid="job-offer-title"]') is not None
+            and tree.css_first('[data-testid="job-offer-location"]') is not None
+            and tree.css_first(".jobOffer-article-content") is not None
+        ):
+            matches += 1
+    if not matches or matches < len(htmls) / 2:
+        return None
+    return {
+        "scope": _LUCCA_SCRAPER_CONFIG["scope"],
+        "steps": [dict(step) for step in _LUCCA_SCRAPER_CONFIG["steps"]],
+    }
+
+
+def _afas_insite_config(htmls: list[str]) -> dict | None:
+    """Return extraction steps for public AFAS InSite vacancy pages.
+
+    AFAS pages expose the vacancy content in static HTML but commonly omit a
+    semantic job-title heading. The role is authoritative in the document
+    title, while the branded body starts at a stable campaign heading and
+    states the store location in its opening paragraph.
+    """
+
+    matches = 0
+    for html in htmls:
+        if not all(marker in html for marker in _AFAS_INSITE_MARKERS):
+            continue
+        elements = flatten(html)
+        if (
+            any(
+                element["tag"] == "title"
+                and re.match(r"^Vacature\s+.+?\s+-", element["text"], re.IGNORECASE)
+                for element in elements
+            )
+            and any(
+                element["tag"] == "h2"
+                and re.fullmatch(_AFAS_INSITE_DESCRIPTION_START_RE, element["text"])
+                for element in elements
+            )
+            and any(re.search(_AFAS_INSITE_LOCATION_RE, element["text"]) for element in elements)
+        ):
+            matches += 1
+    if not matches or matches < len(htmls) / 2:
+        return None
+
+    return {
+        "steps": [
+            {
+                "tag": "title",
+                "field": "title",
+                "regex": r"(?i)^Vacature\s+(.+?)\s+-",
+            },
+            {
+                "match_regex": _AFAS_INSITE_LOCATION_RE,
+                "field": "locations",
+                "regex": _AFAS_INSITE_LOCATION_RE,
+                "from": 0,
+            },
+            {
+                "tag": "h2",
+                "match_regex": _AFAS_INSITE_DESCRIPTION_START_RE,
+                "offset": 1,
+                "field": "description",
+                "html": True,
+                "stop_regex": r"(?i)^Solliciteer\b",
+                "from": 0,
+            },
+        ]
+    }
 
 
 def can_handle(htmls: list[str]) -> dict | None:
@@ -164,6 +1229,58 @@ def can_handle(htmls: list[str]) -> dict | None:
     Uses the first page's structure to generate steps, then validates
     that the title step (h1) matches on other pages too.
     """
+    advorto = _advorto_config(htmls)
+    if advorto is not None:
+        return advorto
+
+    lucca = _lucca_config(htmls)
+    if lucca is not None:
+        return lucca
+
+    afas_insite = _afas_insite_config(htmls)
+    if afas_insite is not None:
+        return afas_insite
+
+    stadt_zuerich = _stadt_zuerich_config(htmls)
+    if stadt_zuerich is not None:
+        return stadt_zuerich
+
+    rexx_portal7 = _rexx_portal7_config(htmls)
+    if rexx_portal7 is not None:
+        return rexx_portal7
+
+    liepin = _liepin_config(htmls)
+    if liepin is not None:
+        return liepin
+
+    solique = _solique_config(htmls)
+    if solique is not None:
+        return solique
+
+    kontact = _kontact_config(htmls)
+    if kontact is not None:
+        return kontact
+
+    talentsoft = _talentsoft_config(htmls)
+    if talentsoft is not None:
+        return talentsoft
+
+    elvium = _elvium_config(htmls)
+    if elvium is not None:
+        return elvium
+
+    clinch = _clinch_config(htmls)
+    if clinch is not None:
+        return clinch
+
+    elementor_careers = _elementor_careers_preset_config(htmls)
+    if elementor_careers is not None:
+        return elementor_careers
+
+    tribepad = _tribepad_config(htmls)
+    if tribepad is not None:
+        return tribepad
+
     # Try each page until we get usable steps
     best_steps = None
 
@@ -179,27 +1296,117 @@ def can_handle(htmls: list[str]) -> dict | None:
     if not best_steps:
         return None
 
-    # Validate h1 exists on other pages too (title step consistency)
-    h1_found = 0
+    # Probes intentionally sample several postings. The first usable page can
+    # be a legitimate location-less role even when the board normally exposes
+    # a stable location label. Borrow only that optional step from a later
+    # sample so the generated config reflects the board layout without making
+    # the first posting fail extraction.
+    if not any(step.get("field") in {"location", "locations"} for step in best_steps):
+        for html in htmls[1:]:
+            candidate_steps = _heuristic_steps(flatten(html)) or []
+            location_step = next(
+                (
+                    step
+                    for step in candidate_steps
+                    if step.get("field") in {"location", "locations"}
+                ),
+                None,
+            )
+            if location_step is not None:
+                best_steps.append(location_step)
+                break
+
+    # Validate a trustworthy title heading exists on other pages too.
+    expected_title_tag = best_steps[0].get("tag")
+    title_found = 0
     for html in htmls:
         elements = flatten(html)
-        if any(el["tag"] == "h1" for el in elements):
-            h1_found += 1
+        heading = _title_heading(elements)
+        if heading is not None and heading[1] == expected_title_tag:
+            title_found += 1
 
-    # Require h1 on at least half the pages
-    if h1_found < len(htmls) / 2:
+    # Require a title heading on at least half the pages.
+    if title_found < len(htmls) / 2:
         return None
 
     return {"steps": best_steps}
 
 
+async def probe_pw(urls: list[str], pw) -> tuple[dict | None, str]:
+    """Render samples when static scraper probing is blocked or shell-only.
+
+    This is a bounded setup-time fallback.  Runtime scraping still happens
+    only when the returned config is selected for a board.
+    """
+
+    htmls: list[str] = []
+    browser_config = {
+        "wait": "domcontentloaded",
+        "timeout": 30_000,
+        "stealth": True,
+    }
+    for url in urls[:3]:
+        try:
+            async with open_page(pw, browser_config, target_url=url) as page:
+                await navigate(page, url, browser_config)
+                # Turbo/Stimulus career sites may commit the document before
+                # their server-rendered job block is attached.  Keep this
+                # setup-only fallback short and bounded.
+                await page.wait_for_timeout(2_000)
+                html = await safe_content(page)
+                _raise_if_bot_challenge(page.url or url, html)
+                htmls.append(html)
+        except Exception:
+            log.debug("dom.probe_pw.fetch_failed", url=url, exc_info=True)
+
+    if not htmls:
+        return None, "Rendered fetch failed"
+
+    detected = can_handle(htmls)
+    if detected is None:
+        return None, "Rendered DOM not detected"
+
+    config = {**browser_config, "render": True, **detected}
+    contents = [parse_html(html, config) for html in htmls]
+    titles = sum(content.title is not None for content in contents)
+    descriptions = sum(content.description is not None for content in contents)
+    locations = sum(content.locations is not None for content in contents)
+    total = len(contents)
+    metadata = {
+        "config": config,
+        "total": total,
+        "titles": titles,
+        "descriptions": descriptions,
+        "locations": locations,
+        "fields": {
+            name: count
+            for name, count in {
+                "title": titles,
+                "description": descriptions,
+                "locations": locations,
+            }.items()
+            if count
+        },
+    }
+    return metadata, (
+        f"Rendered: {titles}/{total} titles, {descriptions}/{total} desc, "
+        f"{locations}/{total} locations"
+    )
+
+
 def parse_html(html: str, config: dict) -> JobContent:
     """Extract job data from pre-fetched HTML using step-based extraction."""
+    from src.runtime import dom_go_parse
+
+    if dom_go_parse.enabled():
+        return dom_go_parse.parse_html(html, config)
+    config = _runtime_config(html, config)
     steps = config.get("steps")
     if not steps:
         return JobContent()
-    elements = flatten(html)
+    elements = _flatten_html(html, config)
     raw, _ = walk_steps(elements, steps)
+    raw = _apply_defaults(raw, config)
     return _map_to_job_content(raw)
 
 
@@ -253,7 +1460,311 @@ def _map_to_job_content(raw: dict[str, str | list[str] | None]) -> JobContent:
     return JobContent(**kwargs)
 
 
-async def scrape(
+def _apply_defaults(raw: dict, config: dict, *, url: str | None = None) -> dict:
+    """Fill fields extraction missed from conditional, board, and URL defaults.
+
+    ``defaults_by_regex`` is intentionally narrow: rules inspect one already
+    extracted string field and the first match supplies defaults.  This lets a
+    board distinguish explicit remote/hybrid roles from its ordinary location
+    without turning free-form prose into an inferred location.  Extracted
+    values always win, followed by URL-specific, conditional, and board-wide
+    defaults.
+    """
+    defaults = config.get("defaults")
+    if defaults is not None and not isinstance(defaults, dict):
+        raise ValueError("DOM scraper defaults must be an object")
+
+    defaults_by_regex = config.get("defaults_by_regex")
+    if defaults_by_regex is not None and (
+        not isinstance(defaults_by_regex, list) or not 1 <= len(defaults_by_regex) <= 20
+    ):
+        raise ValueError("DOM scraper defaults_by_regex must contain 1-20 rules")
+
+    compiled_rules: list[tuple[str, re.Pattern[str], dict]] = []
+    for rule in defaults_by_regex or []:
+        if not isinstance(rule, dict) or set(rule) != {"field", "pattern", "defaults"}:
+            raise ValueError(
+                "DOM scraper defaults_by_regex rules require field, pattern, and defaults"
+            )
+        field = rule["field"]
+        pattern = rule["pattern"]
+        rule_defaults = rule["defaults"]
+        if not isinstance(field, str) or not field or len(field) > 128:
+            raise ValueError("DOM scraper defaults_by_regex field must be a short string")
+        if not isinstance(pattern, str) or not pattern or len(pattern) > 512 or "\x00" in pattern:
+            raise ValueError("DOM scraper defaults_by_regex pattern must be 1-512 characters")
+        if not isinstance(rule_defaults, dict) or not rule_defaults:
+            raise ValueError("DOM scraper defaults_by_regex defaults must be a non-empty object")
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError("DOM scraper defaults_by_regex pattern is invalid") from exc
+        compiled_rules.append((field, compiled, rule_defaults))
+
+    defaults_by_url = config.get("defaults_by_url")
+    if defaults_by_url is not None and not isinstance(defaults_by_url, dict):
+        raise ValueError("DOM scraper defaults_by_url must be an object")
+
+    posting_defaults: dict = {}
+    if defaults_by_url is not None:
+        for posting_url, values in defaults_by_url.items():
+            if not isinstance(posting_url, str) or not isinstance(values, dict):
+                raise ValueError("DOM scraper defaults_by_url must map URL strings to objects")
+        if url is not None:
+            posting_defaults = defaults_by_url.get(url) or {}
+
+    conditional_defaults: dict = {}
+    for field, pattern, rule_defaults in compiled_rules:
+        value = raw.get(field)
+        if isinstance(value, str) and pattern.search(value):
+            conditional_defaults = rule_defaults
+            break
+
+    if defaults is None and not conditional_defaults and not posting_defaults:
+        return raw
+
+    merged = dict(raw)
+    effective_defaults = {
+        **(defaults or {}),
+        **conditional_defaults,
+        **posting_defaults,
+    }
+    for field, value in effective_defaults.items():
+        if merged.get(field) in (None, "", []):
+            merged[field] = value
+    return merged
+
+
+def _document_fallback_config(config: dict) -> dict | None:
+    """Validate the optional per-format static document fallback config."""
+    value = config.get("document_fallback")
+    if value is None or value is False:
+        return None
+    if not isinstance(value, dict) or set(value) - {"doc", "pdf", "docx"}:
+        raise ValueError("DOM scraper document_fallback must contain only doc/pdf/docx configs")
+    for kind, kind_config in value.items():
+        if not isinstance(kind_config, dict):
+            raise ValueError(f"DOM scraper document_fallback.{kind} must be an object")
+    return value
+
+
+def _linked_description_config(config: dict) -> dict | None:
+    """Validate a bounded fallback to one explicitly linked description page."""
+
+    value = config.get("linked_description")
+    if value is None:
+        return None
+    allowed_keys = {
+        "selector",
+        "allowed_host_suffixes",
+        "min_chars",
+        "scope",
+        "steps",
+        "include_header_content",
+    }
+    if not isinstance(value, dict) or set(value) - allowed_keys:
+        raise ValueError("DOM scraper linked_description has unsupported keys")
+    selector = value.get("selector")
+    if not isinstance(selector, str) or not selector or len(selector) > 256:
+        raise ValueError("DOM scraper linked_description selector must be 1-256 characters")
+    suffixes = value.get("allowed_host_suffixes")
+    if (
+        not isinstance(suffixes, list)
+        or not 1 <= len(suffixes) <= 4
+        or any(
+            not isinstance(suffix, str)
+            or not suffix.startswith(".")
+            or len(suffix) > 253
+            or "/" in suffix
+            for suffix in suffixes
+        )
+    ):
+        raise ValueError(
+            "DOM scraper linked_description allowed_host_suffixes must contain "
+            "1-4 dotted DNS suffixes"
+        )
+    min_chars = value.get("min_chars", 200)
+    if not isinstance(min_chars, int) or isinstance(min_chars, bool) or not 50 <= min_chars <= 5000:
+        raise ValueError("DOM scraper linked_description min_chars must be 50-5000")
+    steps = value.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("DOM scraper linked_description steps must be a non-empty list")
+    linked_config = {
+        key: item
+        for key, item in value.items()
+        if key in {"scope", "steps", "include_header_content"}
+    }
+    return {
+        "selector": selector,
+        "allowed_host_suffixes": [suffix.casefold() for suffix in suffixes],
+        "min_chars": min_chars,
+        "parse_config": linked_config,
+    }
+
+
+def _description_text_length(description: str | None) -> int:
+    if not description:
+        return 0
+    return len(LexborHTMLParser(description).text(separator=" ", strip=True))
+
+
+def _validated_linked_description_target(
+    url: str,
+    config: dict,
+    *,
+    redirect: bool,
+) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme.casefold() != "https" or not any(
+        host == suffix.removeprefix(".") or host.endswith(suffix)
+        for suffix in config["allowed_host_suffixes"]
+    ):
+        target = "redirect left allowed hosts" if redirect else "URL is outside allowed HTTPS hosts"
+        raise ValueError(f"DOM scraper linked_description {target}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("DOM scraper linked_description URL must not contain credentials")
+    try:
+        _port = parsed.port
+    except ValueError as exc:
+        raise ValueError("DOM scraper linked_description URL has an invalid port") from exc
+    return url
+
+
+def _linked_description_url(html: str, source_url: str, config: dict) -> str:
+    try:
+        links = LexborHTMLParser(html).css(config["selector"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("DOM scraper linked_description selector is invalid") from exc
+    if len(links) != 1:
+        raise ValueError(
+            "DOM scraper linked_description selector must match exactly one link "
+            f"(matched {len(links)})"
+        )
+    href = links[0].attributes.get("href")
+    if not href:
+        raise ValueError("DOM scraper linked_description link has no href")
+    return _validated_linked_description_target(
+        urljoin(source_url, href),
+        config,
+        redirect=False,
+    )
+
+
+async def _fetch_linked_description(
+    http: httpx.AsyncClient,
+    url: str,
+    config: dict,
+) -> httpx.Response:
+    """Fetch an allowlisted page without issuing an unvalidated redirect hop."""
+
+    current_url = url
+    visited = {url}
+    for redirects_followed in range(_MAX_LINKED_DESCRIPTION_REDIRECTS + 1):
+        _validated_linked_description_target(current_url, config, redirect=True)
+        response = await fetch_response_with_status_retries(
+            http,
+            current_url,
+            retry_limits={429: 2, 500: 2, 502: 2, 503: 2, 504: 2},
+            follow_redirects=False,
+            log_event="dom.linked_description.retry_status",
+        )
+        status = response.status_code
+        if not 300 <= status < 400:
+            return response
+        if status not in _LINKED_DESCRIPTION_REDIRECT_STATUSES:
+            await response.aclose()
+            raise ValueError(
+                f"DOM scraper linked_description received unsupported redirect status {status}"
+            )
+        locations = response.headers.get_list("location")
+        if len(locations) != 1 or not locations[0].strip():
+            await response.aclose()
+            raise ValueError(
+                "DOM scraper linked_description redirect must have exactly one Location"
+            )
+        next_url = urljoin(str(response.url), locations[0].strip())
+        await response.aclose()
+        _validated_linked_description_target(next_url, config, redirect=True)
+        if next_url in visited:
+            raise ValueError("DOM scraper linked_description redirect loop detected")
+        if redirects_followed == _MAX_LINKED_DESCRIPTION_REDIRECTS:
+            raise ValueError("DOM scraper linked_description redirect limit exceeded")
+        visited.add(next_url)
+        current_url = next_url
+
+    raise AssertionError("unreachable")
+
+
+async def _fill_linked_description(
+    content: JobContent,
+    html: str,
+    source_url: str,
+    config: dict | None,
+    http: httpx.AsyncClient,
+) -> JobContent:
+    """Replace a short pointer-only description from one allowlisted linked page."""
+
+    if config is None or _description_text_length(content.description) >= config["min_chars"]:
+        return content
+    linked_url = _linked_description_url(html, source_url, config)
+    response = await _fetch_linked_description(http, linked_url, config)
+    response.raise_for_status()
+    from src.shared.tdm import check_response as check_tdm_response
+
+    check_tdm_response(response, body_excerpt=response.text[:64_000])
+    linked_content = parse_html(response.text, config["parse_config"])
+    if _description_text_length(linked_content.description) < config["min_chars"]:
+        raise ValueError("DOM scraper linked_description did not produce a complete description")
+    content.description = linked_content.description
+    return content
+
+
+async def _parse_static_document(
+    content: bytes,
+    url: str,
+    fallback: dict,
+) -> tuple[JobContent, str] | None:
+    """Return parsed PDF/DOCX content, or ``None`` for an HTML response."""
+    if content.lstrip().startswith(b"%PDF-"):
+        from src.core.scrapers.pdf import parse_bytes
+
+        parsed = await parse_bytes(content, url, fallback.get("pdf") or {})
+        return parsed, "pdf"
+
+    if content.startswith(b"PK\x03\x04"):
+        from src.core.scrapers.adp import docx_to_html
+        from src.core.scrapers.pdf import _extract_pattern, _title_from_text
+
+        description = docx_to_html(content)
+        if description is None:
+            raise ValueError("DOM scraper document_fallback received an invalid DOCX archive")
+        docx_config = fallback.get("docx") or {}
+        text = LexborHTMLParser(description).text(separator="\n", strip=True)
+        title = _extract_pattern(text, docx_config.get("title_pattern"))
+        if not title and docx_config.get("title_source") == "text":
+            title = _title_from_text(text)
+        location = _extract_pattern(text, docx_config.get("location_pattern"))
+        raw = _apply_defaults(
+            {
+                "title": title,
+                "description": description,
+                "locations": [location] if location else None,
+            },
+            docx_config,
+        )
+        return _map_to_job_content(raw), "docx"
+
+    if content.startswith(bytes.fromhex("d0cf11e0a1b11ae1")):
+        from src.core.scrapers.legacy_doc import parse_bytes
+
+        parsed = await parse_bytes(content, url, fallback.get("doc") or {})
+        return parsed, "doc"
+
+    return None
+
+
+async def _scrape_once(
     url: str,
     config: dict,
     http: httpx.AsyncClient,
@@ -264,13 +1775,33 @@ async def scrape(
 
     When ``render`` is false (default), fetches via static HTTP.
     When ``render`` is true, renders the page with Playwright.
+    ``fetch_url_transform`` may rewrite only the URL used for that read; the
+    caller's canonical posting URL remains the source identity.
     """
-    steps = config.get("steps")
-    if not steps:
+    preset = config.get("preset")
+    if preset is not None and preset != _ELEMENTOR_CAREERS_PRESET:
+        raise ValueError(f"unknown DOM scraper preset: {preset!r}")
+    if not config.get("steps") and preset is None:
         log.warning("dom.no_steps", url=url)
         return JobContent()
 
     render = config.get("render", False)
+    request_headers = validated_public_request_headers(
+        config.get("request_headers"), owner="DOM scraper"
+    )
+    fetch_url = transformed_fetch_url(
+        url,
+        config.get("fetch_url_transform"),
+        owner="DOM scraper",
+    )
+    same_origin_redirects = config.get("same_origin_redirects", False)
+    if not isinstance(same_origin_redirects, bool):
+        raise ValueError("DOM scraper same_origin_redirects must be a boolean")
+    document_fallback = _document_fallback_config(config)
+    linked_description = _linked_description_config(config)
+    request_headers = validated_public_request_headers(
+        config.get("request_headers"), owner="DOM scraper"
+    )
 
     if not render and config.get("actions"):
         log.warning(
@@ -280,6 +1811,14 @@ async def scrape(
         )
         render = True
 
+    if render and document_fallback is not None:
+        raise ValueError("DOM scraper document_fallback requires render=false")
+    if render and request_headers:
+        raise ValueError("DOM scraper request_headers are supported only when render=false")
+
+    if render and same_origin_redirects:
+        raise ValueError("DOM scraper same_origin_redirects requires render=false")
+
     gone_pattern = config.get("gone_url_pattern")
 
     if render:
@@ -287,8 +1826,13 @@ async def scrape(
         use_proxy = bool(config.get("proxy"))
 
         async def _render_page(p):
-            async with open_page(p, browser_config, use_proxy=use_proxy) as page:
-                await navigate(page, url, browser_config)
+            async with open_page(
+                p,
+                browser_config,
+                use_proxy=use_proxy,
+                target_url=fetch_url,
+            ) as page:
+                await navigate(page, fetch_url, browser_config)
                 # Read final URL BEFORE running actions/extraction so a
                 # redirect-to-gone page doesn't burn the (potentially
                 # paid-proxy) action pipeline against a known dead page.
@@ -297,10 +1841,34 @@ async def scrape(
                     final_url = page.url or ""
                 _check_gone_redirect(final_url, gone_pattern, url)
                 await run_actions(page, browser_config.get("actions", []))
-                return await safe_content(page)
+                html = await safe_content(page)
+                _raise_if_bot_challenge(final_url or fetch_url, html)
+                return html
+
+        async def _render_with_challenge_retry(p):
+            # Preserve the legacy fresh-context retry for existing proxied
+            # scrapers.  Only configs which explicitly opt into the shared
+            # transport retry delegate challenge rotation to the outer loop.
+            challenge_retries = (
+                0
+                if config.get("proxy") and "transport_attempts" in config
+                else _RENDER_CHALLENGE_RETRIES
+            )
+            for attempt in range(challenge_retries + 1):
+                try:
+                    return await _render_page(p)
+                except BotChallengeError:
+                    if attempt == challenge_retries:
+                        raise
+                    log.info(
+                        "dom.render.retry_bot_challenge",
+                        url=url,
+                        attempt=attempt + 1,
+                    )
+            raise AssertionError("unreachable")
 
         if pw is not None:
-            html = await _render_page(pw)
+            html = await _render_with_challenge_retry(pw)
         else:
             try:
                 from playwright.async_api import async_playwright
@@ -311,18 +1879,73 @@ async def scrape(
                 ) from err
 
             async with async_playwright() as p:
-                html = await _render_page(p)
+                html = await _render_with_challenge_retry(p)
     else:
-        resp = await http.get(url, follow_redirects=True)
+        retry_limits = _status_retry_limits(config, url)
+        from src.runtime import dom_go_http
+
+        if dom_go_http.eligible(fetch_url, config, http):
+            resp = await dom_go_http.fetch_response(
+                fetch_url,
+                headers=request_headers,
+                retry_limits=retry_limits,
+                same_origin_redirects=same_origin_redirects,
+            )
+        elif request_headers:
+            resp = await public_get(http, fetch_url, headers=request_headers)
+        else:
+            resp = await fetch_response_with_status_retries(
+                http,
+                fetch_url,
+                retry_limits=retry_limits,
+                same_origin_redirects=same_origin_redirects,
+                log_event="dom.fetch.retry_status",
+            )
         # Detect redirect-to-gone BEFORE raise_for_status so the error page's
         # 200 doesn't shadow the actual archived signal. The redirect chain
         # may end on a 200 (rendered "this posting was removed" page), so
         # status alone never reveals gone-ness on these hosts.
         _check_gone_redirect(str(resp.url), gone_pattern, url)
         resp.raise_for_status()
+        if document_fallback is not None:
+            document = await _parse_static_document(resp.content, url, document_fallback)
+            if document is not None:
+                content, extension = document
+                if artifact_dir is not None:
+                    with contextlib.suppress(Exception):
+                        (artifact_dir / f"source.{extension}").write_bytes(resp.content)
+                log.debug("dom.document_fallback", url=url, document_type=extension)
+                return content
+        encoding = config.get("encoding")
+        if encoding is not None:
+            if not isinstance(encoding, str) or not encoding:
+                raise ValueError("DOM scraper encoding must be a non-empty codec name")
+            codecs.lookup(encoding)
+            resp.encoding = encoding
         html = resp.text
+        _raise_if_bot_challenge(str(resp.url), html)
 
-    elements = flatten(html)
+    source_html = html
+    from src.runtime import dom_go_parse
+
+    if dom_go_parse.enabled():
+        content = await dom_go_parse.parse_fetched_html(source_html, config, url)
+        if artifact_dir is not None:
+            with contextlib.suppress(Exception):
+                # Debug artifacts retain the reference flat representation.
+                elements = _flatten_html(source_html, _runtime_config(source_html, config))
+                (artifact_dir / "flat.json").write_text(
+                    json.dumps(elements, indent=2, ensure_ascii=False),
+                )
+        return await _fill_linked_description(content, source_html, url, linked_description, http)
+
+    config = _runtime_config(html, config)
+    steps = config["steps"]
+    html = _scope_html(html, config)
+    include_header_content = config.get("include_header_content", False)
+    if not isinstance(include_header_content, bool):
+        raise ValueError("DOM scraper include_header_content must be a boolean")
+    elements = flatten(html, include_header_content=include_header_content)
 
     if artifact_dir is not None:
         with contextlib.suppress(Exception):
@@ -332,10 +1955,46 @@ async def scrape(
 
     start = _fragment_start(url, elements)
     raw, _ = walk_steps(elements, steps, start=start)
+    raw = _apply_defaults(raw, config, url=url)
     content = _map_to_job_content(raw)
+    content = await _fill_linked_description(
+        content,
+        source_html,
+        url,
+        linked_description,
+        http,
+    )
 
     log.debug("dom.extracted", url=url, fields=[k for k, v in raw.items() if v is not None])
     return content
 
 
-register("dom", scrape, can_handle=can_handle, parse_html=parse_html)
+async def scrape(
+    url: str,
+    config: dict,
+    http: httpx.AsyncClient,
+    pw=None,
+    artifact_dir: Path | None = None,
+) -> JobContent:
+    """Extract a job, rotating proxy exits after typed rendered blocks."""
+
+    rendered = bool(config.get("render") or config.get("actions"))
+    if not (rendered and config.get("proxy")):
+        return await _scrape_once(url, config, http, pw=pw, artifact_dir=artifact_dir)
+
+    from src.shared.browser import retry_proxy_origin_blocks
+
+    return await retry_proxy_origin_blocks(
+        lambda: _scrape_once(url, config, http, pw=pw, artifact_dir=artifact_dir),
+        config,
+        event="dom.scraper.origin_block_retry",
+    )
+
+
+register(
+    "dom",
+    scrape,
+    can_handle=can_handle,
+    parse_html=parse_html,
+    probe_pw=probe_pw,
+)

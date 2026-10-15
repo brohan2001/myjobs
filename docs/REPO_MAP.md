@@ -26,11 +26,12 @@ Infra: `docker-compose.yml` (Postgres 16, Redis 7). Migrations: `alembic upgrade
 | `src/processing/scrape.py`, `r2_stage.py` | Scrape a posting; description change detection and storage (the "r2" name is historical) | jobseek |
 | `src/processing/cpu.py` | Enrichment: location, salary, seniority, occupation, technology | jobseek, adapted |
 | `src/queries/*.py` | SQL for monitor/scrape/lookups | jobseek |
-| `src/core/monitors/`, `src/core/scrapers/` | Board readers and job-page readers | jobseek |
+| `src/core/monitors/`, `src/core/scrapers/` | Board readers and job-page readers (vendored, see `UPSTREAM.md`) | jobseek |
 | `src/core/static_registry.py` | Monitor/scraper classification without importing the core | jobseek |
 | `src/core/*_resolve.py`, `*_extract.py`, `salary_inr.py`, `hashing.py` | Enrichment extractors | jobseek + myjobs |
 | `src/shared/` | HTTP client (SSRF guard, UA), retries, browser, robots.txt, TDM | jobseek + myjobs |
-| `src/metrics.py` | Prometheus counters (to be removed with the core re-sync, D26) | jobseek |
+| `src/metrics.py`, `src/runtime/` | No-op stand-ins for jobseek's metrics and Go fast paths | myjobs |
+| `src/core/tech_gate.py` | Tech-adjacent title check (D27) | myjobs |
 | `src/api/` | FastAPI app, feed SQL, GeoNames index, rate limiter | myjobs |
 | `src/discovery/` | Candidate → careers page → ATS → validation → registry or review | myjobs (+ jobseek career-page finder) |
 | `src/company_type.py`, `src/health.py` | Company-type taxonomy (D21), health alerts (D23) | myjobs |
@@ -49,4 +50,4 @@ Infra: `docker-compose.yml` (Postgres 16, Redis 7). Migrations: `alembic upgrade
 - `web/src/lib/*.test.ts`: frontend (vitest).
 
 ## Docs
-`REVAMP_PLAN.md` (status and next work), `DECISIONS.md`, `DEPLOY.md`, `HANDOFF.md`, `JSEEK_INTEGRATION.md`, `research/`.
+`REVAMP_PLAN.md` (status and next work), `DECISIONS.md`, `UPSTREAM.md`, `DEPLOY.md`, `HANDOFF.md`, `JSEEK_INTEGRATION.md`, `research/`.

@@ -74,19 +74,18 @@ async def test_workday_pagination_two_pages_then_stop(make_client):
     assert f"{WD_PREFIX}/job/R24" in urls
 
 
-async def test_workday_pagination_stops_on_empty_page_even_if_total_larger(make_client):
-    offsets = []
+async def test_workday_short_pagination_fails_the_check(make_client):
+    """Fewer jobs than advertised fails the check (upstream, re-sync 2026-10-15), so a partial list
+    can never delist the jobs it missed."""
 
     def handler(req):
         body = json.loads(req.content)
-        offsets.append(body["offset"])
         postings = _wd_postings(0, 20) if body["offset"] == 0 else []
         return httpx.Response(200, json={"total": 100, "jobPostings": postings})
 
     async with make_client(handler) as client:
-        urls = await workday.discover(WD_BOARD, client)
-    assert offsets == [0, 20]
-    assert len(urls) == 20
+        with pytest.raises(RuntimeError, match="20 of 100"):
+            await workday.discover(WD_BOARD, client)
 
 
 async def test_workday_retry_then_success(make_client, sleeps):
@@ -145,11 +144,9 @@ async def test_workday_multi_site_all_sites_failing_raises(make_client, sleeps):
             await workday.discover(board, client)
 
 
-async def test_workday_multi_site_partial_failure_is_marked_truncated(make_client, sleeps):
-    """One site fails, one succeeds: the URLs come back flagged as partial so the
-    pipeline doesn't delist the failed site's postings as gone."""
-    from src.core.monitor import MonitorResult
-
+async def test_workday_multi_site_partial_failure_fails_the_check(make_client, sleeps):
+    """One site fails: the whole check fails (upstream, re-sync 2026-10-15), so the failed site's
+    postings are not delisted as gone."""
     robots = (
         "Sitemap: https://acme.wd5.myworkdayjobs.com/SiteA/siteMap.xml\n"
         "Sitemap: https://acme.wd5.myworkdayjobs.com/SiteB/siteMap.xml\n"
@@ -164,10 +161,8 @@ async def test_workday_multi_site_partial_failure_is_marked_truncated(make_clien
 
     board = {"board_url": "https://acme.wd5.myworkdayjobs.com/SiteA"}
     async with make_client(handler) as client:
-        result = await workday.discover(board, client)
-    assert isinstance(result, MonitorResult)
-    assert result.truncated is True
-    assert result.urls == {"https://acme.wd5.myworkdayjobs.com/SiteA/job/R0"}
+        with pytest.raises(PaginationFetchError):
+            await workday.discover(board, client)
 
 
 async def test_workday_multi_site_discovers_sites_from_robots(make_client):
@@ -212,6 +207,13 @@ async def test_smartrecruiters_synthetic_fixture(fixture_json, make_client):
         "https://jobs.smartrecruiters.com/Acme/743999000002",
         "https://jobs.smartrecruiters.com/Acme/743999000003",
     }
+
+
+async def test_smartrecruiters_posting_without_id_fails_the_check(make_client):
+    payload = {"totalFound": 1, "content": [{"name": "Missing id"}]}
+    async with make_client(lambda r: httpx.Response(200, json=payload)) as client:
+        with pytest.raises(ValueError, match="valid id"):
+            await smartrecruiters.discover({"board_url": "https://jobs.smartrecruiters.com/Acme"}, client)
 
 
 async def test_smartrecruiters_pagination_two_pages(make_client):

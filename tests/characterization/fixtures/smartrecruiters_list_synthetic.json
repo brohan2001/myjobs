@@ -1,6 +1,5 @@
 {"offset": 0, "limit": 100, "totalFound": 3, "content": [
   {"id": "743999000001", "name": "Data Engineer", "location": {"city": "Raleigh"}},
   {"id": "743999000002", "name": "ML Engineer", "location": {"city": "Austin"}},
-  {"id": 743999000003, "name": "Analyst"},
-  {"name": "Missing id"}
+  {"id": 743999000003, "name": "Analyst"}
 ]}

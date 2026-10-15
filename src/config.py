@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # ``monitor_config`` / ``scraper_config`` (``data/boards.csv``).
     proxy_provider: str = "none"  # none | webshare | decodo
     webshare_proxy_url: str = ""
+    webshare_proxy_urls: list[str] = []
+    webshare_proxy_canary_slot: int | None = None
     decodo_proxy_url: str = ""
 
     # SSRF guard
@@ -43,7 +45,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     worker_id_prefix: str = ""
     crawler_db_pool_max: int = 20
-    metrics_port: int = 9091
 
     # Pipeline concurrency (per-instance)
     discovery_concurrency: int = 40

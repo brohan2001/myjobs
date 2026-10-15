@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import structlog
 
 from src.core.monitors import register
+from src.core.monitors.raw import save_text_response
 
 log = structlog.get_logger()
 
 MAX_URLS = 50_000
+# The sitemap protocol permits a single uncompressed file up to 50 MB. The
+# shared retry helper defaults to 500k characters, which truncates otherwise
+# valid large child sitemaps before XML parsing (for example Foot Locker's
+# ~537k-character global jobs sitemap).
+_MAX_SITEMAP_CHARS = 50 * 1024 * 1024
+_MAX_XML_ATTEMPTS = 5
+_XML_RETRY_DELAY = 0.25
+_CHILD_XML_ATTEMPTS = 3
 NS = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 # Some generators emit https:// instead of http:// in the namespace declaration.
 NS_HTTPS = "{https://www.sitemaps.org/schemas/sitemap/0.9}"
@@ -153,13 +164,18 @@ async def _try_fetch_xml(url: str, client: httpx.AsyncClient) -> ET.Element | No
         return None
 
 
-async def _fetch_child_xml(url: str, client: httpx.AsyncClient) -> ET.Element | None:
+async def _fetch_child_xml(
+    url: str,
+    client: httpx.AsyncClient,
+    *,
+    attempts: int = _CHILD_XML_ATTEMPTS,
+) -> ET.Element | None:
     """Strict XML fetch for child sitemaps inside a sitemap index.
 
     Returns the parsed root on 200 + parseable XML, or ``None`` on
     legitimate not-found (404/410) and on non-parseable bodies. **Raises**
     :exc:`PaginationFetchError` when transient errors (5xx, 429, 401,
-    403, timeout, network) persist past the retry budget.
+    403, 202, timeout, network) persist past the retry budget.
 
     The 2026-04-26 NHS spike (#2722) showed why this distinction
     matters: a multi-shard sitemap (e.g. ``sitemap-jobs-1.xml`` …
@@ -182,10 +198,25 @@ async def _fetch_child_xml(url: str, client: httpx.AsyncClient) -> ET.Element | 
     thousands of URLs. ``transient_403=True`` retries 401/403 through
     the budget and raises ``PaginationFetchError`` on exhaustion —
     same propagation path as the 5xx fix from #2722 / #2974.
+
+    Some AWS WAF-protected sitemap endpoints (notably the IBM and Pfizer
+    DEJobs feeds from #6110) intermittently return HTTP 202 instead of the
+    XML response. A sitemap GET has no useful asynchronous-acceptance
+    contract, so 202 is also transient on this strict path. Retrying it
+    prevents a one-off challenge response from becoming ``cache_miss`` and
+    the misleading terminal error ``No sitemap found``.
     """
     from src.shared.http_retry import fetch_with_retry
 
-    text = await fetch_with_retry(client, url, headers=_SITEMAP_HEADERS, transient_403=True)
+    text = await fetch_with_retry(
+        client,
+        url,
+        retries=attempts,
+        headers=_SITEMAP_HEADERS,
+        transient_403=True,
+        retryable_statuses={202},
+        max_chars=_MAX_SITEMAP_CHARS,
+    )
     if text is None:
         # 404 / 410 / non-retryable 4xx — child sitemap is gone or
         # the URL is wrong. Caller's ``continue`` is appropriate: a
@@ -209,6 +240,47 @@ async def _fetch_child_xml(url: str, client: httpx.AsyncClient) -> ET.Element | 
         log.warning("sitemap.child_xml.unexpected_root", url=url, tag=root.tag)
         return None
     return root
+
+
+async def _fetch_configured_xml(
+    url: str,
+    client: httpx.AsyncClient,
+    *,
+    attempts: int,
+) -> ET.Element | None:
+    """Retry an explicitly configured sitemap that returns invalid content.
+
+    Status and transport retries already happen inside ``_fetch_child_xml``.
+    This separate, opt-in budget covers provider/CDN responses that redirect
+    a sitemap request to an HTTP-200 HTML error page. With a proxy-backed
+    client, each fresh request selects another pool exit.
+    """
+    for attempt in range(1, attempts + 1):
+        root = await _fetch_child_xml(
+            url,
+            client,
+            attempts=max(_CHILD_XML_ATTEMPTS, attempts),
+        )
+        if root is not None:
+            return root
+        if attempt < attempts:
+            log.warning(
+                "sitemap.configured_xml_retry",
+                url=url,
+                attempt=attempt,
+                attempts=attempts,
+            )
+            await asyncio.sleep(_XML_RETRY_DELAY * attempt)
+    return None
+
+
+def _configured_xml_attempts(metadata: dict) -> int:
+    attempts = metadata.get("xml_attempts", 1)
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        raise ValueError("sitemap xml_attempts must be an integer")
+    if not 1 <= attempts <= _MAX_XML_ATTEMPTS:
+        raise ValueError(f"sitemap xml_attempts must be between 1 and {_MAX_XML_ATTEMPTS}")
+    return attempts
 
 
 def _walk_up_candidates(board_url: str) -> list[str]:
@@ -291,6 +363,7 @@ async def _resolve_sitemap_index(
     client: httpx.AsyncClient,
     *,
     seen: set[str] | None = None,
+    attempts: int = _CHILD_XML_ATTEMPTS,
 ) -> list[ET.Element]:
     """Fetch all child sitemaps from a sitemap index.
 
@@ -299,6 +372,14 @@ async def _resolve_sitemap_index(
     """
     children = _extract_child_sitemaps(root)
     if not children:
+        log.warning(
+            "sitemap.index_no_usable_children",
+            total_children=0,
+            selected_children=0,
+            missing_or_invalid=0,
+            nested_empty=0,
+            cycle_skipped=0,
+        )
         return []
     job_children = [u for u in children if _is_job_related(u)]
     targets = job_children if job_children else children
@@ -306,8 +387,12 @@ async def _resolve_sitemap_index(
     if seen is None:
         seen = set()
     results: list[ET.Element] = []
+    missing_or_invalid = 0
+    nested_empty = 0
+    cycle_skipped = 0
     for target in targets:
         if target in seen:
+            cycle_skipped += 1
             log.debug("sitemap.index_cycle_skipped", target=target)
             continue
         seen.add(target)
@@ -315,14 +400,32 @@ async def _resolve_sitemap_index(
         # rather than returning None. A silent skip on a 503 child
         # would drop that shard's URLs and trigger the 2026-04-26
         # NHS-style truncation tombstoning (#2722).
-        child_root = await _fetch_child_xml(target, client)
+        child_root = await _fetch_child_xml(target, client, attempts=attempts)
         if child_root is None:
             # 404 / non-XML body — genuinely missing shard, skip.
+            missing_or_invalid += 1
             continue
         if _is_sitemap_index(child_root):
-            results.extend(await _resolve_sitemap_index(child_root, client, seen=seen))
+            nested_results = await _resolve_sitemap_index(
+                child_root,
+                client,
+                seen=seen,
+                attempts=attempts,
+            )
+            if not nested_results:
+                nested_empty += 1
+            results.extend(nested_results)
         else:
             results.append(child_root)
+    if not results:
+        log.warning(
+            "sitemap.index_no_usable_children",
+            total_children=len(children),
+            selected_children=len(targets),
+            missing_or_invalid=missing_or_invalid,
+            nested_empty=nested_empty,
+            cycle_skipped=cycle_skipped,
+        )
     return results
 
 
@@ -369,19 +472,51 @@ async def discover(
     metadata = board.get("metadata") or {}
     cached_sitemap = metadata.get("sitemap_url")
     new_sitemap_url: str | None = None
+    configured_xml_attempts = _configured_xml_attempts(metadata)
 
     if cached_sitemap:
-        root = await _try_fetch_xml(cached_sitemap, client)
+        # A configured/cached sitemap is authoritative enough to use the
+        # strict fetch path.  In particular, do not turn a persistent WAF
+        # response (429/403) into a benign cache miss: falling through to
+        # auto-discovery hides the transport problem behind ``No sitemap
+        # found`` and encourages operators to select an incomplete fallback
+        # monitor.  Strict fetching retries transient responses and then
+        # fails closed.  A genuine 404/410 still returns ``None`` and retains
+        # the existing rediscovery behaviour.
+        root = await _fetch_configured_xml(
+            cached_sitemap,
+            client,
+            attempts=configured_xml_attempts,
+        )
         if root is None:
             log.warning("sitemap.cache_miss", cached=cached_sitemap)
             sitemap_url, roots = await _discover_sitemap(board["board_url"], client)
             new_sitemap_url = sitemap_url
         else:
             if _is_sitemap_index(root):
-                roots = await _resolve_sitemap_index(root, client)
+                roots = await _resolve_sitemap_index(
+                    root,
+                    client,
+                    attempts=max(_CHILD_XML_ATTEMPTS, configured_xml_attempts),
+                )
                 if not roots:
-                    raise SitemapParseError(
-                        f"Sitemap index at {cached_sitemap} has no usable children"
+                    log.warning(
+                        "sitemap.cache_index_unusable",
+                        cached=cached_sitemap,
+                        board_url=board["board_url"],
+                    )
+                    try:
+                        sitemap_url, roots = await _discover_sitemap(board["board_url"], client)
+                    except SitemapDiscoveryError as exc:
+                        raise SitemapParseError(
+                            f"Cached sitemap index at {cached_sitemap} has no usable children "
+                            "and rediscovery found no replacement"
+                        ) from exc
+                    new_sitemap_url = sitemap_url
+                    log.info(
+                        "sitemap.cache_recovered",
+                        cached=cached_sitemap,
+                        sitemap_url=sitemap_url,
                     )
             else:
                 roots = [root]
@@ -411,4 +546,22 @@ async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None)
         return None
 
 
-register("sitemap", discover, cost=50, can_handle=can_handle)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    sitemap_url = metadata.get("sitemap_url")
+    if not sitemap_url:
+        return
+    await save_text_response(
+        artifact_dir,
+        client,
+        sitemap_url,
+        filename="sitemap.xml",
+        headers=_SITEMAP_HEADERS,
+    )
+
+
+register("sitemap", discover, cost=50, can_handle=can_handle, save_raw=save_raw)

@@ -15,11 +15,16 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+from src.shared.navigation_errors import BrowserNavigationHTTPStatusError
 
 try:
     from src import metrics
@@ -50,7 +55,7 @@ log = structlog.get_logger()
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/133.0.0.0 Safari/537.36"
+    "Chrome/151.0.0.0 Safari/537.36"
 )
 DEFAULT_WAIT = "networkidle"
 # Default fallback for ``navigate()``: when the primary ``page.goto`` times out
@@ -62,9 +67,132 @@ DEFAULT_WAIT = "networkidle"
 # status quo, and sites that do settle under ``networkidle`` are untouched.
 DEFAULT_WAIT_FALLBACK = "domcontentloaded"
 DEFAULT_TIMEOUT = 30_000
+FALLBACK_WAIT_TIMEOUT = 5_000
 CONTEXT_TIMEOUT = 120_000  # hard cap: no single Playwright operation exceeds 2 minutes
-CLOSE_TIMEOUT_S = 10  # a wedged browser must not hang cleanup (and with it, task cancellation)
+BROWSER_CLOSE_TIMEOUT_SECONDS = 15.0
+NAVIGATION_NETWORK_RETRY_DELAY_SECONDS = 0.5
+PROXY_ORIGIN_BLOCK_RETRY_DELAY_SECONDS = 1.0
+MAX_PROXY_ORIGIN_BLOCK_ATTEMPTS = 5
 VALID_WAIT_STRATEGIES = frozenset({"load", "domcontentloaded", "networkidle", "commit"})
+VALID_RESOURCE_POLICIES = frozenset({"auto", "none", "lean", "aggressive"})
+VALID_BLOCK_RESOURCE_TYPES = frozenset(
+    {
+        "document",
+        "stylesheet",
+        "image",
+        "media",
+        "font",
+        "script",
+        "texttrack",
+        "xhr",
+        "fetch",
+        "eventsource",
+        "websocket",
+        "manifest",
+        "other",
+    }
+)
+
+
+def is_proxy_origin_block_error(exc: BaseException) -> bool:
+    """Return whether an in-proxy browser failure proves an origin block."""
+
+    if getattr(exc, "proxy_failure_reason", None) == "origin_block":
+        return True
+    return isinstance(exc, BrowserNavigationHTTPStatusError) and exc.status in {
+        401,
+        403,
+        429,
+    }
+
+
+async def retry_proxy_origin_blocks[T](
+    operation: Callable[[], Awaitable[T]],
+    config: dict,
+    *,
+    event: str,
+) -> T:
+    """Retry a proxy-backed browser operation on a fresh healthy endpoint.
+
+    ``open_page`` records and quarantines the failed origin/slot pair before
+    the exception reaches this helper.  A retry therefore selects a different
+    usable endpoint.  Direct egress is never used, and missing/exhausted proxy
+    capacity still fails closed.
+    """
+
+    if not config.get("proxy"):
+        return await operation()
+
+    attempts = min(
+        MAX_PROXY_ORIGIN_BLOCK_ATTEMPTS,
+        max(1, int(config.get("transport_attempts", 1))),
+    )
+    last_origin_block: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await operation()
+        except Exception as exc:
+            from src.shared.proxy import ProxyPoolExhaustedError
+
+            if isinstance(exc, ProxyPoolExhaustedError):
+                if last_origin_block is None:
+                    raise
+                log.warning(
+                    event,
+                    attempt=attempt,
+                    attempts=attempts,
+                    retrying=False,
+                    reason="pool_exhausted_after_origin_block",
+                )
+                raise last_origin_block from exc
+            if not is_proxy_origin_block_error(exc):
+                raise
+            last_origin_block = exc
+            retrying = attempt < attempts
+            log.warning(
+                event,
+                attempt=attempt,
+                attempts=attempts,
+                retrying=retrying,
+                reason="origin_block",
+            )
+            if not retrying:
+                raise
+            await asyncio.sleep(PROXY_ORIGIN_BLOCK_RETRY_DELAY_SECONDS * attempt)
+
+    raise AssertionError("unreachable")
+
+
+# These resource classes consume bandwidth but are not needed for ordinary
+# DOM/job-data extraction. They are blocked only when board recon explicitly
+# opts in after a board-specific canary.
+LEAN_BLOCK_RESOURCE_TYPES = frozenset({"font", "media"})
+AGGRESSIVE_BLOCK_RESOURCE_TYPES = LEAN_BLOCK_RESOURCE_TYPES | {"image"}
+# The explicit aggressive policy also aborts video and telemetry hosts that
+# repeatedly dominated provider activity.
+# Match by hostname suffix so regional/CDN subdomains are covered without
+# blocking broad providers such as google.com or jsdelivr.net, which can host
+# application code required to render a job page.
+AGGRESSIVE_BLOCK_HOSTS = frozenset(
+    {
+        "youtube.com",
+        "youtube-nocookie.com",
+        "ytimg.com",
+        "google-analytics.com",
+        "googletagmanager.com",
+        "doubleclick.net",
+        "googlesyndication.com",
+        "connect.facebook.net",
+        "newrelic.com",
+        "nr-data.net",
+        "bat.bing.com",
+    }
+)
+_RETRYABLE_NAVIGATION_NETWORK_ERRORS = {
+    "ERR_CONNECTION_RESET": "connection_reset",
+    "ERR_NETWORK_CHANGED": "network_changed",
+    "ERR_SOCKET_NOT_CONNECTED": "socket_not_connected",
+}
 OVERLAY_SELECTORS = (
     '[class*="cookie-banner"]',
     '[class*="cookie-consent"]',
@@ -76,8 +204,10 @@ OVERLAY_SELECTORS = (
     '[role="dialog"][class*="consent"]',
 )
 
-# Browser config keys recognised by open_page / navigate / run_actions.
-# Used by scrapers and monitors to separate browser keys from other config.
+# Browser config keys retained when scrapers and monitors project serialized
+# board config into the browser layer.  Most are consumed by open_page /
+# navigate / run_actions; bounded recovery controls are consumed by the
+# render-aware adapter around those operations.
 BROWSER_KEYS = frozenset(
     {
         "wait",
@@ -95,6 +225,20 @@ BROWSER_KEYS = frozenset(
         "viewport",
         "locale",
         "skip_ssl",
+        "resource_policy",
+        "bot_protection",
+        "block_resource_types",
+        "block_hosts",
+        # Scrapers project their config through BROWSER_KEYS before calling
+        # render(). Without this entry a board-level proxy opt-in is silently
+        # discarded and the browser launches from direct egress.
+        "proxy",
+        # Optional, bounded transport recovery controls consumed by rendered
+        # scrapers.  ``open_page`` ignores them, but retaining them here keeps
+        # scraper config projection from silently dropping the explicit
+        # recovery policy before ``render`` is called.
+        "transport_attempts",
+        "direct_fallback_on_origin_block",
     }
 )
 
@@ -116,6 +260,164 @@ DEFAULT_LOCALE = "en-US"
 # ``user_agent``, ``cookies``, etc.) on boards that set them.
 NAVIGATE_KEYS = frozenset({"wait", "wait_fallback", "timeout", "actions"})
 
+# Playwright raises ``TargetClosedError`` (a public ``Error`` subclass) when
+# Chromium loses the page, context, or browser while an operation is in
+# flight.  The concrete subclass is not exported from ``playwright.async_api``,
+# but the message is stable and intentionally identifies all three resources.
+# Keep the classification here so callers do not import Playwright's private
+# ``_impl`` package.
+_TARGET_CLOSED_MARKER = "Target page, context or browser has been closed"
+
+
+class BrowserActionNoMatchError(RuntimeError):
+    """A required click action had no matching element."""
+
+
+class BrowserActionUnknownError(RuntimeError):
+    """A configured browser action type is not supported."""
+
+
+class BrowserBackend:
+    """Python-only lifecycle and page-allocation boundary.
+
+    This seam keeps local browser allocation out of worker orchestration while
+    the Python crawler still exists. It deliberately exposes Playwright
+    ``Page`` behavior and is therefore not the Go/Lightpanda wire boundary.
+    Go uses the typed browser plan/result contract tracked by #7937 and #7961.
+    """
+
+    implementation = "unknown"
+
+    async def start(self) -> BrowserBackend:
+        raise NotImplementedError
+
+    @asynccontextmanager
+    async def open_page(
+        self,
+        config: dict | None = None,
+        *,
+        use_proxy: bool = False,
+        target_url: str | None = None,
+    ) -> AsyncIterator[Any]:
+        raise NotImplementedError
+        yield  # pragma: no cover - makes this an async context manager
+
+    async def stop(self) -> None:
+        raise NotImplementedError
+
+
+class ChromiumBrowserBackend(BrowserBackend):
+    """Existing local Playwright/Chromium implementation of BrowserBackend."""
+
+    implementation = "chromium"
+
+    def __init__(self) -> None:
+        self._owner: object | None = None
+        self._playwright: Any | None = None
+
+    async def start(self) -> ChromiumBrowserBackend:
+        from playwright.async_api import async_playwright
+
+        if self._playwright is not None:
+            return self
+        owner = async_playwright()
+        try:
+            playwright = await owner.start()
+        except BaseException:
+            metrics.browser_backend_lifecycle_total.labels(
+                backend=self.implementation,
+                event="start",
+                outcome="error",
+            ).inc()
+            raise
+        self._owner = owner
+        self._playwright = playwright
+        metrics.browser_backend_lifecycle_total.labels(
+            backend=self.implementation,
+            event="start",
+            outcome="success",
+        ).inc()
+        return self
+
+    @asynccontextmanager
+    async def open_page(
+        self,
+        config: dict | None = None,
+        *,
+        use_proxy: bool = False,
+        target_url: str | None = None,
+    ) -> AsyncIterator[Any]:
+        if self._playwright is None:
+            raise RuntimeError("browser backend has not been started")
+        async with _open_page_playwright(
+            self._playwright,
+            config,
+            use_proxy=use_proxy,
+            target_url=target_url,
+        ) as page:
+            yield page
+
+    async def stop(self) -> None:
+        playwright = self._playwright
+        if playwright is None:
+            return
+        try:
+            await playwright.stop()
+        except BaseException:
+            metrics.browser_backend_lifecycle_total.labels(
+                backend=self.implementation,
+                event="stop",
+                outcome="error",
+            ).inc()
+            raise
+        finally:
+            self._playwright = None
+            self._owner = None
+        metrics.browser_backend_lifecycle_total.labels(
+            backend=self.implementation,
+            event="stop",
+            outcome="success",
+        ).inc()
+
+
+def is_target_closed_error(exc: BaseException) -> bool:
+    """Return whether *exc* is Playwright's lost-target failure class."""
+    return isinstance(exc, PlaywrightError) and _TARGET_CLOSED_MARKER in str(exc)
+
+
+def _retryable_navigation_network_error(exc: BaseException) -> str | None:
+    """Classify transient Chromium transport failures safe for one retry."""
+    if not isinstance(exc, PlaywrightError):
+        return None
+    message = str(exc)
+    for marker, reason in _RETRYABLE_NAVIGATION_NETWORK_ERRORS.items():
+        if marker in message:
+            return reason
+    return None
+
+
+async def _close_browser_resource(resource, resource_name: str) -> None:
+    """Close a Playwright resource without replacing the completed page task."""
+    try:
+        await asyncio.wait_for(resource.close(), timeout=BROWSER_CLOSE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        metrics.browser_cleanup_failures_total.labels(
+            resource=resource_name,
+            outcome="timeout",
+        ).inc()
+        log.warning(
+            "browser.cleanup.timeout",
+            resource=resource_name,
+            timeout_seconds=BROWSER_CLOSE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        metrics.browser_cleanup_failures_total.labels(
+            resource=resource_name,
+            outcome="error",
+        ).inc()
+        log.warning("browser.cleanup.error", resource=resource_name, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Config placeholders
 # ---------------------------------------------------------------------------
@@ -130,6 +432,148 @@ def _resolve_placeholders(cookies: list[dict]) -> list[dict]:
             cookie = {**cookie, "value": value.replace("{uuid}", uuid.uuid4().hex)}
         resolved.append(cookie)
     return resolved
+
+
+def _resolve_resource_blocking(
+    config: dict,
+    *,
+    use_proxy: bool = False,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return resource types and host suffixes to abort for this context.
+
+    ``none`` is the default, so an unconfigured board keeps native browser
+    networking. ``auto`` is an opt-in recon result: it uses ``lean`` only when
+    recon explicitly recorded ``bot_protection: false`` and the browser config
+    has no anti-bot-shaped transport/profile settings. Unknown or protected
+    boards remain ``none``. Boards can also select a fixed policy and extend
+    it with board-specific types/hosts after a same-egress canary.
+    """
+
+    raw_policy = config.get("resource_policy")
+    if raw_policy is None:
+        policy = "none"
+    elif not isinstance(raw_policy, str):
+        raise ValueError("resource_policy must be a string when provided")
+    else:
+        policy = raw_policy
+    if policy not in VALID_RESOURCE_POLICIES:
+        raise ValueError(
+            f"Invalid resource_policy {policy!r}, must be one of {sorted(VALID_RESOURCE_POLICIES)}"
+        )
+
+    if "bot_protection" in config and not isinstance(config["bot_protection"], bool):
+        raise ValueError("bot_protection must be a boolean when provided")
+
+    # Validate additive syntax even when the off switch ignores valid lists,
+    # so malformed agent output is still rejected by ``ws validate``.
+    raw_resource_types = config.get("block_resource_types", [])
+    if not isinstance(raw_resource_types, list) or not all(
+        isinstance(value, str) and value in VALID_BLOCK_RESOURCE_TYPES
+        for value in raw_resource_types
+    ):
+        raise ValueError(
+            "block_resource_types must be a list containing only "
+            f"{sorted(VALID_BLOCK_RESOURCE_TYPES)}"
+        )
+
+    raw_hosts = config.get("block_hosts", [])
+    if not isinstance(raw_hosts, list):
+        raise ValueError("block_hosts must be a list of hostname suffixes")
+    additive_hosts: set[str] = set()
+    for value in raw_hosts:
+        if not isinstance(value, str):
+            raise ValueError("block_hosts must be a list of hostname suffixes")
+        host = value.strip().lower()
+        if host.startswith("*."):
+            host = host[2:]
+        host = host.lstrip(".")
+        if not host or "://" in host or "/" in host or ":" in host:
+            raise ValueError(f"Invalid block_hosts hostname suffix: {value!r}")
+        additive_hosts.add(host)
+
+    # ``none`` is the absolute fail-safe and rollback switch. Ignore stale
+    # additive lists rather than leaving a route installed after an operator
+    # changes only the policy (or omits it to return to the default).
+    if policy == "none":
+        return frozenset(), frozenset()
+
+    if policy == "auto":
+        if raw_resource_types or raw_hosts:
+            raise ValueError("resource_policy 'auto' cannot be combined with additive block lists")
+        anti_bot_shaped = bool(
+            use_proxy
+            or config.get("proxy")
+            or config.get("persistent_context")
+            or config.get("stealth")
+            or config.get("headless") is False
+            or config.get("channel")
+            or config.get("warmup_url")
+            or config.get("cookies")
+            or config.get("user_agent")
+            or config.get("disable_http2")
+        )
+        recon_cleared = config.get("bot_protection") is False
+        policy = "lean" if recon_cleared and not anti_bot_shaped else "none"
+
+    if policy == "aggressive":
+        resource_types = set(AGGRESSIVE_BLOCK_RESOURCE_TYPES)
+        hosts = set(AGGRESSIVE_BLOCK_HOSTS)
+    elif policy == "lean":
+        resource_types = set(LEAN_BLOCK_RESOURCE_TYPES)
+        hosts = set()
+    else:
+        resource_types = set()
+        hosts = set()
+
+    resource_types.update(raw_resource_types)
+    hosts.update(additive_hosts)
+
+    return frozenset(resource_types), frozenset(hosts)
+
+
+def _host_matches_suffix(hostname: str | None, suffixes: frozenset[str]) -> bool:
+    """Return whether *hostname* is exactly or below a blocked suffix."""
+
+    if not hostname:
+        return False
+    hostname = hostname.lower().rstrip(".")
+    return any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in suffixes)
+
+
+async def _install_resource_blocking(
+    context,
+    resource_types: frozenset[str],
+    host_suffixes: frozenset[str],
+) -> None:
+    """Install one context-wide route before any warmup/navigation occurs."""
+
+    if not resource_types and not host_suffixes:
+        return
+
+    async def _route(route, request) -> None:
+        resource_type = request.resource_type
+        try:
+            hostname = urlsplit(request.url).hostname
+        except (TypeError, ValueError):
+            hostname = None
+
+        reason: str | None = None
+        if resource_type in resource_types:
+            reason = "resource_type"
+        elif _host_matches_suffix(hostname, host_suffixes):
+            reason = "host"
+
+        if reason is None:
+            await route.continue_()
+            return
+
+        metrics.browser_resource_blocked_total.labels(
+            reason=reason,
+            resource_type=resource_type,
+        ).inc()
+        await route.abort()
+
+    await context.route("**/*", _route)
 
 
 def _x_server_alive(display: str) -> bool:
@@ -230,19 +674,6 @@ def _resolve_headless(requested_headless: bool) -> tuple[bool, bool]:
     return False, False
 
 
-async def _close_quietly(closing) -> None:
-    """Await a Playwright ``close()`` with a time limit, ignoring errors.
-
-    Runs in ``finally`` blocks, often while a cancellation is unwinding. An
-    unbounded close on a wedged browser blocks that cancellation forever, so
-    ``asyncio.wait_for`` timeouts upstream never fire.
-    """
-    try:
-        await asyncio.wait_for(closing, timeout=CLOSE_TIMEOUT_S)
-    except Exception:  # noqa: BLE001 - includes TimeoutError
-        log.warning("browser.close_failed", timeout_s=CLOSE_TIMEOUT_S)
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -250,10 +681,140 @@ async def _close_quietly(closing) -> None:
 
 @asynccontextmanager
 async def open_page(
-    pw,  # AsyncPlaywright
+    pw,  # BrowserBackend or legacy AsyncPlaywright
     config: dict | None = None,
     *,
     use_proxy: bool = False,
+    target_url: str | None = None,
+) -> AsyncIterator:
+    """Allocate a page through the configured browser backend.
+
+    The legacy ``AsyncPlaywright`` input remains accepted for workspace and
+    focused test callers. Production Python workers pass a
+    :class:`BrowserBackend`; Go/Lightpanda uses the separate typed
+    BrowserExecutor contract.
+    """
+
+    if isinstance(pw, BrowserBackend):
+        async with pw.open_page(
+            config,
+            use_proxy=use_proxy,
+            target_url=target_url,
+        ) as page:
+            yield page
+        return
+
+    async with _open_page_playwright(
+        pw,
+        config,
+        use_proxy=use_proxy,
+        target_url=target_url,
+    ) as page:
+        yield page
+
+
+@asynccontextmanager
+async def _open_page_playwright(
+    pw,
+    config: dict | None = None,
+    *,
+    use_proxy: bool = False,
+    target_url: str | None = None,
+) -> AsyncIterator:
+    """Select one affine Webshare endpoint and account for its outcome."""
+
+    from src.shared.proxy import (
+        abandon_proxy_selection,
+        playwright_proxy_selection_for,
+        report_proxy_failure,
+        report_proxy_success,
+    )
+
+    config = config or {}
+    selection_origin = None
+    selection_url = target_url or config.get("warmup_url")
+    if isinstance(selection_url, str):
+        with contextlib.suppress(ValueError):
+            selection_origin = (urlsplit(selection_url).hostname or "").lower() or None
+    pw_proxy, selection = playwright_proxy_selection_for(
+        use_proxy=use_proxy,
+        origin=selection_origin,
+    )
+
+    try:
+        async with _open_page_playwright_session(
+            pw,
+            config,
+            use_proxy=use_proxy,
+            pw_proxy=pw_proxy,
+        ) as page:
+            yield page
+    except BaseException as exc:
+        if selection is not None:
+            proxy_failure_reason = getattr(exc, "proxy_failure_reason", None)
+            if proxy_failure_reason == "origin_block":
+                # Some bot managers return a challenge shell with HTTP 200,
+                # so status-based accounting cannot identify the blocked
+                # endpoint. Callers raise a typed challenge error carrying
+                # this protocol attribute after inspecting the response body.
+                report_proxy_failure(
+                    selection,
+                    origin=selection_origin,
+                    reason="origin_block",
+                )
+            elif isinstance(exc, BrowserNavigationHTTPStatusError):
+                failure_origin = selection_origin
+                with contextlib.suppress(ValueError):
+                    failure_origin = (
+                        urlsplit(exc.response_url).hostname
+                        or urlsplit(exc.requested_url).hostname
+                        or selection_origin
+                    )
+                failure_origin = failure_origin.lower() if failure_origin else None
+                if exc.status in {401, 403, 429}:
+                    report_proxy_failure(
+                        selection,
+                        origin=failure_origin,
+                        reason="origin_block",
+                    )
+                else:
+                    # A concrete target response proves the proxy tunnel is
+                    # usable even though navigation correctly propagates the
+                    # target's HTTP error to the caller.
+                    report_proxy_success(selection, origin=selection_origin)
+            elif isinstance(exc, PlaywrightError):
+                message = str(exc).upper()
+                if "407" in message and ("PROXY" in message or "TUNNEL" in message):
+                    report_proxy_failure(selection, reason="proxy_auth")
+                elif (
+                    "ERR_PROXY_" in message
+                    or "ERR_TUNNEL_" in message
+                    or "ERR_NO_SUPPORTED_PROXIES" in message
+                ):
+                    report_proxy_failure(selection, reason="proxy_transport")
+                elif any(marker in message for marker in _RETRYABLE_NAVIGATION_NETWORK_ERRORS):
+                    report_proxy_failure(
+                        selection,
+                        origin=selection_origin,
+                        reason="origin_transport",
+                    )
+                else:
+                    abandon_proxy_selection(selection, origin=selection_origin)
+            else:
+                abandon_proxy_selection(selection, origin=selection_origin)
+        raise
+    else:
+        if selection is not None:
+            report_proxy_success(selection, origin=selection_origin)
+
+
+@asynccontextmanager
+async def _open_page_playwright_session(
+    pw,
+    config: dict | None = None,
+    *,
+    use_proxy: bool = False,
+    pw_proxy: dict[str, str] | None = None,
 ) -> AsyncIterator:
     """Create browser → context → page.  Yields a Playwright *Page*.
 
@@ -283,6 +844,10 @@ async def open_page(
     Playwright's bundled Chromium).
     """
     config = config or {}
+    blocked_resource_types, blocked_host_suffixes = _resolve_resource_blocking(
+        config,
+        use_proxy=use_proxy,
+    )
     requested_headless = bool(config.get("headless", True))
     # Boards that need Akamai/PerimeterX bypass set ``headless: false`` and
     # rely on the ``browser-1`` container's xvfb entrypoint to provide an
@@ -330,12 +895,6 @@ async def open_page(
         # stealth init-script has a chance to mask the JS property.
         extra_args.append("--disable-blink-features=AutomationControlled")
 
-    pw_proxy = None
-    if use_proxy:
-        from src.shared.proxy import playwright_proxy_for
-
-        pw_proxy = playwright_proxy_for(use_proxy=True)
-
     if persistent:
         async with _open_persistent_page(
             pw,
@@ -349,6 +908,8 @@ async def open_page(
             cookies=cookies,
             warmup_url=warmup_url,
             skip_ssl=bool(config.get("skip_ssl")),
+            blocked_resource_types=blocked_resource_types,
+            blocked_host_suffixes=blocked_host_suffixes,
         ) as page:
             yield page
         return
@@ -371,6 +932,11 @@ async def open_page(
             ctx_kwargs["ignore_https_errors"] = True
         context = await browser.new_context(**ctx_kwargs)
         context.set_default_timeout(CONTEXT_TIMEOUT)
+        await _install_resource_blocking(
+            context,
+            blocked_resource_types,
+            blocked_host_suffixes,
+        )
         if cookies:
             await context.add_cookies(_resolve_placeholders(cookies))
         page = await context.new_page()
@@ -379,9 +945,16 @@ async def open_page(
             await page.goto(warmup_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
         yield page
     finally:
-        if context:
-            await _close_quietly(context.close())
-        await _close_quietly(browser.close())
+        # A context close can fail when Chromium was killed or its transport
+        # disappeared. The nested finally is deliberate: the old straight-line
+        # cleanup skipped browser.close() in exactly that case, leaving the
+        # outer Playwright driver to retain a surviving child until container
+        # restart (#5488).
+        try:
+            if context:
+                await _close_browser_resource(context, "context")
+        finally:
+            await _close_browser_resource(browser, "browser")
 
 
 @asynccontextmanager
@@ -392,12 +965,14 @@ async def _open_persistent_page(
     channel: str | None,
     extra_args: list[str],
     pw_proxy: dict | None,
-    user_agent: str,
+    user_agent: str | None,
     viewport: dict | None,
     locale: str | None,
     cookies: list[dict] | None,
     warmup_url: str | None,
     skip_ssl: bool = False,
+    blocked_resource_types: frozenset[str] = frozenset(),
+    blocked_host_suffixes: frozenset[str] = frozenset(),
 ) -> AsyncIterator:
     """``launch_persistent_context`` variant of :func:`open_page`.
 
@@ -426,10 +1001,14 @@ async def _open_persistent_page(
         launch_kwargs["locale"] = locale
     if skip_ssl:
         launch_kwargs["ignore_https_errors"] = True
-
     context = await pw.chromium.launch_persistent_context(user_data_dir, **launch_kwargs)
     try:
         context.set_default_timeout(CONTEXT_TIMEOUT)
+        await _install_resource_blocking(
+            context,
+            blocked_resource_types,
+            blocked_host_suffixes,
+        )
         if cookies:
             await context.add_cookies(_resolve_placeholders(cookies))
         # launch_persistent_context always opens one blank page; reuse
@@ -441,8 +1020,36 @@ async def _open_persistent_page(
             await page.goto(warmup_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
         yield page
     finally:
-        await _close_quietly(context.close())
+        with contextlib.suppress(Exception):
+            await _close_browser_resource(context, "persistent_context")
         shutil.rmtree(user_data_dir, ignore_errors=True)
+
+
+def _raise_for_navigation_http_status(response, requested_url: str, phase: str) -> None:
+    """Reject a concrete HTTP(S) main-document error response."""
+    if response is None:
+        return
+
+    response_url = getattr(response, "url", "")
+    if not isinstance(response_url, str):
+        # Keep compatibility with custom Page implementations and loose test
+        # doubles that return a response-like object without a concrete URL.
+        return
+    try:
+        scheme = urlsplit(response_url).scheme.lower()
+    except (TypeError, ValueError):
+        return
+    if scheme not in {"http", "https"}:
+        return
+
+    status = getattr(response, "status", None)
+    if isinstance(status, int) and 400 <= status <= 599:
+        raise BrowserNavigationHTTPStatusError(
+            requested_url=requested_url,
+            response_url=response_url,
+            status=status,
+            phase=phase,
+        )
 
 
 async def navigate(
@@ -455,15 +1062,17 @@ async def navigate(
     Config keys:
         ``wait``           Primary wait strategy (default ``"networkidle"``).
         ``timeout``        Navigation timeout in ms (default ``30000``).
-        ``wait_fallback``  Fallback wait strategy retried once when the primary
-                           ``page.goto`` raises Playwright's ``TimeoutError``
-                           (non-timeout errors propagate unchanged). Defaults
-                           to ``DEFAULT_WAIT_FALLBACK`` ("domcontentloaded")
-                           so SPA sites that never reach ``networkidle`` still
-                           produce usable HTML. Set to ``None`` in config to
-                           opt out; set to the same value as ``wait`` for an
-                           effective no-op. The fallback reuses the original
-                           timeout, so worst-case wall-clock is ``2 * timeout``.
+        ``wait_fallback``  Fallback load state checked on the current document
+                           when the primary ``page.goto`` raises Playwright's
+                           ``TimeoutError``. Transient Chromium transport
+                           failures are retried once before they propagate.
+                           Defaults to ``DEFAULT_WAIT_FALLBACK``
+                           ("domcontentloaded") so SPA sites that never reach
+                           ``networkidle`` still produce usable HTML. Set to
+                           ``None`` in config to opt out; set to the same value
+                           as ``wait`` for an effective no-op. The fallback is
+                           capped at ``FALLBACK_WAIT_TIMEOUT`` and never starts
+                           a duplicate navigation.
     """
     config = config or {}
     wait_strategy = config.get("wait", DEFAULT_WAIT)
@@ -485,43 +1094,125 @@ async def navigate(
             f"must be one of {sorted(VALID_WAIT_STRATEGIES)}"
         )
 
+    fallback_response = None
+
+    def _capture_main_navigation_response(response) -> None:
+        nonlocal fallback_response
+        try:
+            is_main_navigation = (
+                response.frame == page.main_frame and response.request.is_navigation_request()
+            )
+        except (AttributeError, TypeError):
+            return
+        if is_main_navigation:
+            # Redirects emit one response per hop. Retaining the latest one
+            # gives the final committed document when goto times out while
+            # waiting for a stricter state such as networkidle.
+            fallback_response = response
+
+    page.on("response", _capture_main_navigation_response)
     try:
-        await page.goto(url, wait_until=wait_strategy, timeout=timeout)
-        return
-    except PlaywrightTimeoutError:
-        if not fallback_strategy:
-            # Board opted out via wait_fallback=None. Record separately from
-            # the match-primary case so operators can tell why the retry was
-            # skipped.
-            metrics.browser_navigate_fallback_total.labels(
-                primary=wait_strategy, fallback="none", outcome="disabled"
+        network_retry_reason: str | None = None
+        network_retry_finished = False
+
+        def _finish_network_retry(outcome: str) -> None:
+            """Record exactly one terminal outcome for an initiated retry."""
+            nonlocal network_retry_finished
+            if network_retry_reason is None or network_retry_finished:
+                return
+            metrics.browser_navigation_network_retry_total.labels(
+                reason=network_retry_reason,
+                outcome=outcome,
             ).inc()
-            raise
-        if fallback_strategy == wait_strategy:
-            # Fallback equals primary — nothing to gain from a second attempt.
+            network_retry_finished = True
+
+        for attempt in range(2):
+            try:
+                response = await page.goto(url, wait_until=wait_strategy, timeout=timeout)
+            except PlaywrightTimeoutError:
+                if not fallback_strategy:
+                    # Board opted out via wait_fallback=None. Record separately from
+                    # the match-primary case so operators can tell why the retry was
+                    # skipped.
+                    metrics.browser_navigate_fallback_total.labels(
+                        primary=wait_strategy, fallback="none", outcome="disabled"
+                    ).inc()
+                    _finish_network_retry("exhausted")
+                    raise
+                if fallback_strategy == wait_strategy:
+                    # Fallback equals primary — nothing to gain from another attempt.
+                    metrics.browser_navigate_fallback_total.labels(
+                        primary=wait_strategy, fallback=fallback_strategy, outcome="match"
+                    ).inc()
+                    _finish_network_retry("exhausted")
+                    raise
+                break
+            except PlaywrightError as exc:
+                reason = _retryable_navigation_network_error(exc)
+                if reason is None:
+                    _finish_network_retry("exhausted")
+                    raise
+                if attempt == 1:
+                    _finish_network_retry("exhausted")
+                    raise
+                network_retry_reason = reason
+                metrics.browser_navigation_network_retry_total.labels(
+                    reason=reason,
+                    outcome="retry",
+                ).inc()
+                log.info(
+                    "browser.navigate.network_retry",
+                    url=url,
+                    reason=reason,
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(NAVIGATION_NETWORK_RETRY_DELAY_SECONDS)
+            else:
+                try:
+                    _raise_for_navigation_http_status(response, url, "primary")
+                except BrowserNavigationHTTPStatusError:
+                    _finish_network_retry("exhausted")
+                    raise
+                _finish_network_retry("recovered")
+                return
+
+        fallback_timeout = min(timeout, FALLBACK_WAIT_TIMEOUT)
+        log.info(
+            "browser.navigate.fallback_wait",
+            url=url,
+            primary=wait_strategy,
+            fallback=fallback_strategy,
+            timeout_ms=fallback_timeout,
+        )
+        try:
+            # A wait-strategy timeout does not imply that navigation failed. In
+            # the common networkidle case the document is already committed and
+            # DOMContentLoaded has fired; reissuing goto discards that usable page,
+            # doubles origin traffic, and can turn a recoverable wait into another
+            # timeout. Check the current document's state instead (#5708).
+            await page.wait_for_load_state(fallback_strategy, timeout=fallback_timeout)
+        except Exception:
             metrics.browser_navigate_fallback_total.labels(
-                primary=wait_strategy, fallback=fallback_strategy, outcome="match"
+                primary=wait_strategy, fallback=fallback_strategy, outcome="failed"
             ).inc()
+            _finish_network_retry("exhausted")
             raise
 
-    log.info(
-        "browser.navigate.fallback",
-        url=url,
-        primary=wait_strategy,
-        fallback=fallback_strategy,
-        timeout_ms=timeout,
-    )
-    try:
-        await page.goto(url, wait_until=fallback_strategy, timeout=timeout)
-    except Exception:
-        metrics.browser_navigate_fallback_total.labels(
-            primary=wait_strategy, fallback=fallback_strategy, outcome="failed"
-        ).inc()
-        raise
-    else:
+        try:
+            _raise_for_navigation_http_status(fallback_response, url, "fallback")
+        except BrowserNavigationHTTPStatusError:
+            metrics.browser_navigate_fallback_total.labels(
+                primary=wait_strategy, fallback=fallback_strategy, outcome="http_error"
+            ).inc()
+            _finish_network_retry("exhausted")
+            raise
+        _finish_network_retry("recovered")
         metrics.browser_navigate_fallback_total.labels(
             primary=wait_strategy, fallback=fallback_strategy, outcome="success"
         ).inc()
+    finally:
+        with contextlib.suppress(Exception):
+            page.remove_listener("response", _capture_main_navigation_response)
 
 
 ACTION_TIMEOUT = 10.0  # seconds
@@ -533,20 +1224,49 @@ async def run_actions(page, actions: list[dict]) -> None:
 
     Each action is wrapped in a timeout (default 10s, configurable per-action
     via a ``"timeout"`` key).  On failure or timeout an individual action logs
-    a warning and execution continues with the next action.
+    a warning and execution continues with the next action unless it opts into
+    fail-closed behavior with ``"required": true``. ``paginate_collect`` is
+    always required because accepting its partial URL set is unsafe.
     """
     for action in actions:
         kind = action.get("action")
+        required = bool(action.get("required")) or kind == "paginate_collect"
         default_timeout = (
             _REPEAT_TIMEOUT if kind in ("repeat", "paginate_collect") else ACTION_TIMEOUT
         )
         timeout = action.get("timeout", default_timeout)
         try:
             await asyncio.wait_for(_execute_action(page, action, kind), timeout=timeout)
+        except BrowserActionNoMatchError:
+            log.warning(
+                "browser.action.click_no_match",
+                selector=action.get("selector"),
+                required=required,
+            )
+            if required:
+                raise
+        except BrowserActionUnknownError:
+            log.warning("browser.action.unknown", action=kind, required=required)
+            if required:
+                raise
         except TimeoutError:
-            log.warning("browser.action.timeout", action=kind, timeout=timeout)
+            log.warning(
+                "browser.action.timeout",
+                action=kind,
+                timeout=timeout,
+                required=required,
+            )
+            if required:
+                raise
         except Exception:
-            log.warning("browser.action.failed", action=kind, exc_info=True)
+            log.warning(
+                "browser.action.failed",
+                action=kind,
+                required=required,
+                exc_info=True,
+            )
+            if required:
+                raise
 
 
 async def _execute_action(page, action: dict, kind: str | None) -> None:
@@ -563,7 +1283,16 @@ async def _execute_action(page, action: dict, kind: str | None) -> None:
         if await loc.count() > 0:
             await loc.click()
         else:
-            log.warning("browser.action.click_no_match", selector=selector)
+            raise BrowserActionNoMatchError(
+                f"browser click action matched no elements: {selector!r}"
+            )
+    elif kind == "wait_for":
+        selector = action["selector"]
+        state = action.get("state", "visible")
+        # The outer asyncio timeout is the action pipeline's single source of
+        # truth. Disable Playwright's independent 30-second default so a
+        # configured longer action is not cut short inside the locator call.
+        await page.locator(selector).first.wait_for(state=state, timeout=0)
     elif kind == "wait":
         ms = action.get("ms", 1000)
         await asyncio.sleep(ms / 1000)
@@ -577,7 +1306,7 @@ async def _execute_action(page, action: dict, kind: str | None) -> None:
     elif kind == "paginate_collect":
         await _execute_paginate_collect(page, action)
     else:
-        log.warning("browser.action.unknown", action=kind)
+        raise BrowserActionUnknownError(f"unknown browser action: {kind!r}")
 
 
 def _resolve_frame(page, frame_selector: str | None):
@@ -681,60 +1410,76 @@ async def _execute_paginate_collect(page, action: dict) -> None:
         page_size (int|str): Value to set on the page-size dropdown.
         wait_ms (int): Delay in ms after each navigation (default 5000).
         max_pages (int): Safety cap on pagination clicks (default 50).
+        force (bool): Use Playwright's force-click behavior when consent
+            overlays or other non-semantic elements intercept the control.
+        stop_when_hidden (bool): Treat a matching but hidden next-page control
+            as the terminal state. Some portals keep the final control in the
+            DOM instead of removing or disabling it.
     """
     next_sel = action.get("next_selector", "li.next:not(.next_disabled) a")
     ps_selector = action.get("page_size_selector", "")
     page_size = action.get("page_size", "")
     wait_ms = action.get("wait_ms", 5000)
     max_pages = action.get("max_pages", 50)
+    force = action.get("force", False)
+    stop_when_hidden = action.get("stop_when_hidden", False)
 
-    total = await page.evaluate(
-        """async ([nextSel, psSel, pageSize, waitMs, maxPages]) => {
-            const delay = ms => new Promise(r => setTimeout(r, ms));
+    if ps_selector and page_size:
+        await page.evaluate(
+            """([selector, value]) => {
+                const sel = document.querySelector(selector);
+                if (!sel) return;
+                sel.value = value;
+                sel.dispatchEvent(new Event('change'));
+                // SuccessFactors uses the juic event bus.
+                if (typeof juic !== 'undefined' && sel.id)
+                    juic.fire(sel.id, '_onChange', new Event('change'));
+            }""",
+            [ps_selector, str(page_size)],
+        )
+        await asyncio.sleep(wait_ms / 1000)
 
-            const getAllLinks = () => Array.from(document.querySelectorAll('a[href]'))
-                .filter(a => a.href.startsWith('http'))
-                .map(a => a.href);
+    collect_js = """() => Array.from(document.querySelectorAll('a[href]'))
+        .map(a => a.href)
+        .filter(href => href.startsWith('http'))"""
+    all_links = set(await page.evaluate(collect_js))
 
-            // Optionally change items-per-page.
-            if (psSel && pageSize) {
-                const sel = document.querySelector(psSel);
-                if (sel) {
-                    sel.value = String(pageSize);
-                    sel.dispatchEvent(new Event('change'));
-                    // SuccessFactors uses juic event bus
-                    if (typeof juic !== 'undefined' && sel.id)
-                        juic.fire(sel.id, '_onChange', new Event('change'));
-                    await delay(waitMs);
-                }
-            }
+    # Keep the controller outside the document. A normal anchor click replaces
+    # the page's JavaScript execution context, so a loop inside one evaluate()
+    # call dies on the first navigation. Locator clicks return only after the
+    # initiated navigation settles, letting each iteration resume against the
+    # newly loaded document; SPA pagination continues to work the same way.
+    for _ in range(max_pages):
+        next_el = page.locator(next_sel).first
+        if await next_el.count() == 0:
+            break
+        if stop_when_hidden and not await next_el.is_visible():
+            log.info("browser.paginate_collect.next_hidden")
+            break
+        await next_el.click(force=force)
+        await asyncio.sleep(wait_ms / 1000)
+        page_links = set(await page.evaluate(collect_js))
+        if not page_links - all_links:
+            raise RuntimeError("paginate_collect made no progress after clicking next page")
+        all_links.update(page_links)
+    else:
+        if await page.locator(next_sel).first.count() > 0:
+            raise RuntimeError(f"paginate_collect reached max_pages={max_pages} before the end")
 
-            // Collect links from all pages.
-            const allLinks = new Set(getAllLinks());
-
-            for (let p = 0; p < maxPages; p++) {
-                const nextEl = document.querySelector(nextSel);
-                if (!nextEl) break;
-                nextEl.click();
-                await delay(waitMs);
-                getAllLinks().forEach(l => allLinks.add(l));
-            }
-
-            // Inject collected links as hidden <a> tags for the dom extractor.
+    await page.evaluate(
+        """urls => {
             const container = document.createElement('div');
             container.style.display = 'none';
-            allLinks.forEach(href => {
+            urls.forEach(href => {
                 const a = document.createElement('a');
                 a.href = href;
                 container.appendChild(a);
             });
             document.body.appendChild(container);
-
-            return allLinks.size;
         }""",
-        [next_sel, ps_selector, str(page_size), wait_ms, max_pages],
+        sorted(all_links),
     )
-    log.info("browser.paginate_collect.done", total=total)
+    log.info("browser.paginate_collect.done", total=len(all_links))
 
 
 async def dismiss_overlays(page) -> None:
@@ -793,7 +1538,13 @@ async def safe_content(page) -> str:
     raise last_exc
 
 
-async def render(url: str, config: dict | None = None, pw=None) -> str:
+async def render(
+    url: str,
+    config: dict | None = None,
+    pw=None,
+    *,
+    content_guard: Callable[[str, str, str], None] | None = None,
+) -> str:
     """All-in-one: launch browser → navigate → run actions → return HTML.
 
     Convenience wrapper for consumers that just need rendered page content.
@@ -803,18 +1554,24 @@ async def render(url: str, config: dict | None = None, pw=None) -> str:
     """
     config = config or {}
 
-    if pw is not None:
-        async with open_page(pw, config, use_proxy=bool(config.get("proxy"))) as page:
+    async def _render(playwright) -> str:
+        async with open_page(
+            playwright,
+            config,
+            use_proxy=bool(config.get("proxy")),
+            target_url=url,
+        ) as page:
             await navigate(page, url, config)
             await run_actions(page, config.get("actions", []))
-            return await safe_content(page)
+            html = await safe_content(page)
+            if content_guard is not None:
+                content_guard(url, page.url or url, html)
+            return html
+
+    if pw is not None:
+        return await _render(pw)
 
     from playwright.async_api import async_playwright
 
-    async with (
-        async_playwright() as _pw,
-        open_page(_pw, config, use_proxy=bool(config.get("proxy"))) as page,
-    ):
-        await navigate(page, url, config)
-        await run_actions(page, config.get("actions", []))
-        return await safe_content(page)
+    async with async_playwright() as _pw:
+        return await _render(_pw)
