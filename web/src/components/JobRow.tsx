@@ -77,13 +77,14 @@ export function JobRow({
       <div className="body">
         <a
           className="title"
+          title={job.title}
           href={job.url}
           target="_blank"
           rel="noopener noreferrer"
         >
           {job.title}
         </a>
-        <p className="where">
+        <p className="where" title={`${job.company.name} in ${locationText}`}>
           <b>{job.company.name}</b> in {locationText}
         </p>
         <p className="tags">
