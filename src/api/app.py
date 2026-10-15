@@ -90,7 +90,6 @@ def serialize_job(row, index: LocationIndex) -> dict:
             if row.get("experience_min") is not None or row.get("experience_max") is not None
             else None
         ),
-        "notice_max_days": row.get("notice_max_days"),
         "salary": salary,
         "ats": row["ats"],
         "first_seen_at": _iso(row["first_seen_at"]),
@@ -193,7 +192,6 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
         seniority: str | None = Query(None, max_length=50),
         occupation: str | None = Query(None, max_length=80),
         max_years: int | None = Query(None, ge=0, le=40, description="Minimum experience required is at most this many years"),
-        notice_days: int | None = Query(None, ge=0, le=180, description="Your notice period in days; hides jobs that want a shorter one"),
         company_type: str | None = Query(None, max_length=80, description="Comma-separated: " + ", ".join(queries.COMPANY_TYPES)),
         cursor: str | None = Query(None, max_length=200),
         limit: int = Query(50, ge=1, le=queries.MAX_LIMIT),
@@ -217,7 +215,6 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
                 seniority=seniority,
                 occupation=occupation,
                 max_years=max_years,
-                notice_days=notice_days,
                 company_types=tuple(t.strip() for t in company_type.split(",") if t.strip()) if company_type else None,
                 cursor=queries.decode_cursor(cursor),
                 limit=limit,

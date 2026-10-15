@@ -16,7 +16,7 @@ import asyncpg
 import httpx
 import structlog
 
-from src.core.description_store import content_hash
+from src.core.hashing import content_hash
 from src.core.enum_normalize import normalize_employment_type
 from src.core.monitors import BoardGoneError, api_monitor_types
 from src.core.scrapers import enrich_description

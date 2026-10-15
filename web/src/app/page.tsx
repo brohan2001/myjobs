@@ -46,7 +46,6 @@ export default async function FeedPage({ searchParams }: PageProps) {
         work_mode: rawWorkMode,
         company_type: str("company_type"),
         max_years: str("max_years"),
-        notice_days: str("notice_days"),
         company: rawCompany,
         since: rawSince,
         q: rawQ,

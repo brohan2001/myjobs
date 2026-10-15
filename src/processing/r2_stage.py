@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from src.core.description_store import content_hash
+from src.core.hashing import content_hash
 from src.processing.cpu import _coerce_datetime
 
 # Fields that are volatile across cycles and should be excluded from the
