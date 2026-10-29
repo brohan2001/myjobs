@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import sys
 import time
@@ -34,6 +35,8 @@ from src.shared.http import HONEST_USER_AGENT  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 JSEEK = "https://jseek.co/api/v1"
+SAMPLE = ROOT / "output" / "parity-jseek.json"  # reused by later runs; --refresh fetches a new one
+API_PAUSE_S = 0.5  # stays under the API's default 120 requests per minute
 CITIES = ["india", "bengaluru", "hyderabad", "pune", "chennai", "gurugram", "noida", "mumbai"]
 OCCUPATIONS = [
     "software-engineer", "backend-developer", "frontend-developer", "fullstack-developer", "mobile-developer",
@@ -75,7 +78,13 @@ def registry_slugs() -> set[str]:
 
 def find(api: httpx.Client, posting: dict) -> bool:
     """Is there an active job at this company with the same title (normalised)?"""
-    resp = api.get("/api/v1/jobs", params={"company": posting["company"], "q": posting["title"][:80], "limit": 50})
+    params = {"company": posting["company"], "q": posting["title"][:80], "limit": 50}
+    while True:
+        resp = api.get("/api/v1/jobs", params=params)
+        if resp.status_code != 429:  # our API's per-IP rate limit
+            break
+        time.sleep(float(resp.headers.get("Retry-After", 5)))
+    time.sleep(API_PAUSE_S)
     resp.raise_for_status()
     want = _norm(posting["title"])
     return any(_norm(j["title"]) == want for j in resp.json()["jobs"])
@@ -86,12 +95,18 @@ def main() -> None:
     ap.add_argument("--api", default="http://127.0.0.1:8090")
     ap.add_argument("--cities", default=",".join(CITIES))
     ap.add_argument("--occupations", default=",".join(OCCUPATIONS))
+    ap.add_argument("--refresh", action="store_true", help="sample jseek.co again instead of reusing the last sample")
     args = ap.parse_args()
     unknown = set(args.occupations.split(",")) - tech_occupations()
     if unknown:
         sys.exit(f"not tech occupations (D27): {', '.join(sorted(unknown))}")
 
-    postings = collect(args.cities.split(","), args.occupations.split(","))
+    if args.refresh or not SAMPLE.exists():
+        postings = collect(args.cities.split(","), args.occupations.split(","))
+        SAMPLE.parent.mkdir(exist_ok=True)
+        SAMPLE.write_text(json.dumps(postings))
+    else:
+        postings = json.loads(SAMPLE.read_text())
     ours = registry_slugs()
     with httpx.Client(base_url=args.api, timeout=30) as api:
         for p in postings:
