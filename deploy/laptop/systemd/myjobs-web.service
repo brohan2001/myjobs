@@ -1,0 +1,13 @@
+[Unit]
+Description=myjobs web feed (:3000, home network)
+After=myjobs-api.service
+
+[Service]
+WorkingDirectory=%h/myjobs/web
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm start -- --port 3000 --hostname 0.0.0.0
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
