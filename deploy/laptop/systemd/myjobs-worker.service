@@ -1,0 +1,14 @@
+[Unit]
+Description=myjobs crawler
+
+[Service]
+WorkingDirectory=%h/myjobs
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/myjobs/.venv/bin/myjobs worker
+# The worker drains in-flight work, then force-exits after 60 s
+TimeoutStopSec=90
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

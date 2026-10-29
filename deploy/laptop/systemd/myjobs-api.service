@@ -1,0 +1,12 @@
+[Unit]
+Description=myjobs public API (127.0.0.1:8090)
+
+[Service]
+WorkingDirectory=%h/myjobs
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/myjobs/.venv/bin/myjobs serve --port 8090
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
