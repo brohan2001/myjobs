@@ -46,4 +46,5 @@ systemctl --user daemon-reload
 systemctl --user enable --now myjobs-api myjobs-worker myjobs-web myjobs-backup.timer
 systemctl --user restart myjobs-api myjobs-worker myjobs-web
 
-say "Feed: http://$(hostname).local:3000  (or http://$(hostname -I | awk '{print $1}'):3000)"
+grep -q '^ADMIN_TOKEN=.' .env || echo "Note: set ADMIN_TOKEN in .env to enable /admin"
+say "Feed: http://$(hostname).local:3000  (public: $(tailscale funnel status 2>/dev/null | grep -om1 'https://[^ ]*' || echo 'run root-setup.sh for Tailscale Funnel'))"
