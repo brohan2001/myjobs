@@ -1277,7 +1277,7 @@ async def _process_one_board_streaming(
             try:
                 async with pool.acquire() as conn, conn.transaction():
                     rows = await conn.fetch(_RECORD_EMPTY_CHECK, board_id)
-                    if rows and rows[0]["board_status"] == "gone":
+                    if rows and rows[0]["delist"]:
                         empty_gone_count = await _delist_board_postings(conn, board_id)
             except (asyncpg.PostgresError, ConnectionError):
                 board_log.exception("batch.monitor.empty_check_failed")
@@ -1286,7 +1286,7 @@ async def _process_one_board_streaming(
                 # see ``_delist_board_postings`` docstring.
                 if empty_gone_count:
                     _emit_gone_counter(empty_gone_count)
-                    board_log.warning("batch.monitor.board_gone", gone=empty_gone_count)
+                    board_log.warning("batch.monitor.empty_board_delisted", delisted=empty_gone_count)
             return True, elapsed
 
         # Mark as gone any active posting not seen during this monitor run.
