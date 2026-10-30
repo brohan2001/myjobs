@@ -83,4 +83,29 @@ Every in-scope jseek.co job should appear here too. The registry comes from jobs
 ## D29: Hosted on the user's home laptop for ₹0 (User, 2026-10-30)
 The user won't pay for hosting. Everything runs on their old laptop (Ubuntu 26.04, 16 GB RAM, 450 GB disk), not a cloud VM.
 Postgres and Redis run in Docker on 127.0.0.1. The API, worker and web app run as systemd user services with linger, so root
-is needed only once. The worker is capped at 10 GB because it runs a Chromium per browser board. See `docs/DEPLOY.md`.
+is needed only once. Resource limits are in D30. See `docs/DEPLOY.md`.
+
+## D30: myjobs gets 4 of the laptop's 8 threads and 6 GB (User, 2026-10-30)
+Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 °C. Its ~20 Chromiums also crashed on launch.
+- **Budget:** `myjobs.slice` gives api, web and worker 300% CPU and 5 GB together. Postgres and Redis get 1 CPU and about
+  1.25 GB in `docker-compose.yml`.
+- **Priorities inside the slice:** the worker has a lower CPU and IO weight and its own 4.3 GB ceiling, so under pressure it
+  slows down or restarts and the feed stays up.
+- **Why a quota and not pinning:** a quota (`CPUQuota`) still lets the scheduler spread the load across every core.
+  Pinning (`AllowedCPUs`) would keep 4 cores pegged and hot.
+- **Browser pipeline:** `browser_monitor_concurrency` (6) caps both its coroutines, each of which owns a Playwright driver,
+  and its Chromiums.
+- **GPU:** the iGPU stays idle because nothing in myjobs can use it.
+
+## D31: The admin side is behind one shared token (Default, 2026-10-30)
+- **Pages:** `/admin` uses HTTP Basic auth (user `admin`, password `ADMIN_TOKEN` from `.env`), checked in a Next middleware.
+- **API:** the pages call `/api/admin/*` from the server with `Authorization: Bearer $ADMIN_TOKEN`, so the token never
+  reaches a browser.
+- **No token:** without `ADMIN_TOKEN` set, both the pages and the API return 404.
+- **Why the public `/api/v1` stays open:** it serves no user data.
+- **Why not real accounts:** there is one operator, so one token is enough.
+
+## D32: Public URL through Tailscale Funnel (User, 2026-10-30)
+Funnel serves `https://<host>.<tailnet>.ts.net` from :3000. It's free, needs no domain and no open router port. Only the web
+app is exposed; the API, Postgres and Redis stay on 127.0.0.1. A domain on a Cloudflare Tunnel is the upgrade path if the
+user buys one.
