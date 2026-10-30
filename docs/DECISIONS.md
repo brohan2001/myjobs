@@ -162,3 +162,11 @@ Every in-scope jseek.co job should also appear here. Coverage comes from importi
 (`apps/crawler/data/{companies,boards}.csv`, MIT) and porting its monitors. A parity script samples jseek.co's public
 `/api/v1/search` and reports misses by cause.
 
+
+## D29: Run on the user's home laptop, not Oracle (User, 2026-10-30; replaces D24's Oracle VM)
+The user moved hosting to their old laptop (Ubuntu 26.04, x86_64, 8 cores, 16 GB RAM, 450 GB disk). It still costs ₹0, needs no
+cloud account or card, and has more disk than the Always Free VM. Postgres and Redis run in Docker, bound to 127.0.0.1. The
+API, worker and web app run as systemd **user** services with linger, so root is needed only once (`deploy/laptop/root-setup.sh`).
+The feed is open on :3000 to the home network only; public access (Cloudflare Tunnel, DuckDNS) is a later step. The laptop never
+sleeps (lid ignored, sleep targets masked). The worker is capped at 10 GB because it runs one Chromium per browser board.
+Backups are nightly `pg_dump`s to `~/backups` on the same disk, so an off-machine copy is still open.

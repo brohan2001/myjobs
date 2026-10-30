@@ -1,7 +1,7 @@
 # Plan
 
 Goal: a public feed of the latest **tech** jobs (D27), worldwide and strongest for India, with at least jseek.co's coverage
-(D28), hosted for ₹0 (D24). Per-user profiles come later (D10).
+(D28), hosted for ₹0 on the user's laptop (D24, D29). Per-user profiles come later (D10).
 
 ## Done
 | Phase | What |
