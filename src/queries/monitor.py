@@ -116,6 +116,8 @@ SET consecutive_failures = 0,
 WHERE id = $1
 """
 
+# An empty board stays enabled (D34): after 6 empty checks its postings are delisted, but it keeps being checked
+# and turns active again when jobs come back. Only a 404/410 (_RECORD_BOARD_GONE) disables a board.
 _RECORD_EMPTY_CHECK = """
 UPDATE job_board
 SET consecutive_failures = 0,
@@ -124,28 +126,16 @@ SET consecutive_failures = 0,
     next_check_at = now() + (check_interval_minutes || ' minutes')::interval,
     empty_check_count = empty_check_count + 1,
     board_status = CASE
-        WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 6
-        THEN 'gone'
         WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 3
         THEN 'suspect'
         ELSE board_status
-    END,
-    gone_at = CASE
-        WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 6
-        THEN now()
-        ELSE gone_at
-    END,
-    is_enabled = CASE
-        WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 6
-        THEN false
-        ELSE is_enabled
     END,
     lease_owner = NULL,
     leased_until = NULL,
     last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
-RETURNING board_status
+RETURNING (last_non_empty_at IS NOT NULL AND empty_check_count >= 6) AS delist
 """
 
 # RETURNING ``last_success_at`` + the post-update ``is_enabled`` lets
