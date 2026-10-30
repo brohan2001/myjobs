@@ -5,7 +5,7 @@
 Large parts of this repository are derived from jobseek
 (https://github.com/colophon-group/jobseek), used under the MIT License:
 
-- `src/core/`, `src/shared/`, `src/discovery/career_pages.py`, `src/discovery/job_links.py`, `src/lua/`, `src/processing/`,
+- `src/core/`, `src/shared/`, `src/lua/`, `src/processing/`,
   `src/queries/`, `src/redis_queue.py`, `src/migrations/versions/0001`–`0005`
 - Board rows in `data/boards.csv` and company rows in `data/companies.csv`
   taken from jobseek's crawler data (`apps/crawler/data/`)

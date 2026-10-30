@@ -1,5 +1,0 @@
-status,reason,board_url,monitor_type,monitor_config,jobs_found,scraper_type,name,website,careers_url,hq_city,category,source,country,slug
-accepted,verified,https://jobs.smartrecruiters.com/rebelfoods,smartrecruiters,"{""token"": ""rebelfoods"", ""jobs"": 1}",1,,Rebel Foods,https://www.rebelfoods.com,https://www.rebelfoods.com/careers,Mumbai,unicorn,Inc42 unicorn list 2025,IN,
-accepted,verified via JobPosting JSON-LD,https://routemobile.com/careers,sitemap,"{""sitemap_url"": ""https://routemobile.com/careers/sitemap.xml"", ""urls"": 167}",167,json-ld,Route Mobile,https://routemobile.com,https://routemobile.com/careers,Mumbai,listed_product,NSE IT index,IN,
-accepted,verified,https://jobs.metlife.com,lever,"{""token"": ""metlife"", ""jobs"": 39}",39,,MetLife Global Operations India,https://www.metlife.com,https://jobs.metlife.com,Noida,mnc_gcc,NASSCOM GCC report,IN,
-accepted,verified via JobPosting JSON-LD,https://careers.moodys.com,sitemap,"{""sitemap_url"": ""https://careers.moodys.com/sitemap.xml"", ""urls"": 630}",630,json-ld,Moody's India,https://www.moodys.com,https://careers.moodys.com,Bengaluru,mnc_gcc,NASSCOM GCC report,IN,
