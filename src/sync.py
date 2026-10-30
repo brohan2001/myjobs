@@ -158,6 +158,14 @@ def _int_or(val: str | None, default: int) -> int:
         return default
 
 
+# Slow board types (browser, HTML, sitemap crawls) are checked less often so the D30 budget keeps up (D33).
+_SLOW_MONITORS = {"dom", "sitemap", "icims", "workday", "api_sniffer"}
+
+
+def _check_interval(monitor_type: str, browser: bool) -> str:
+    return "180" if browser or monitor_type in _SLOW_MONITORS else "60"
+
+
 def _compute_throttle_key(monitor_type: str, board_url: str) -> str:
     if monitor_type in _API_MONITOR_TYPES:
         return monitor_type
@@ -294,7 +302,7 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
         crawler_types.append(mon_type)
         metadatas.append(json.dumps(metadata_obj) if metadata_obj else "{}")
         metadata_objs.append(metadata_obj)
-        check_intervals.append("60")
+        check_intervals.append(_check_interval(mon_type, mon_browser))
         scrape_intervals.append("24")
         throttle_keys.append(_compute_throttle_key(mon_type, row["board_url"]))
         monitor_browser_flags.append("1" if mon_browser else "0")
