@@ -473,14 +473,6 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"Amazon Jobs API \u2014 {jobs} jobs"
         return "Amazon Jobs API"
-    if name == "bite":
-        key = metadata.get("key", "?")
-        customer = metadata.get("customer")
-        jobs = metadata.get("jobs")
-        label = f"customer: {customer}" if customer else f"key: {key[:12]}..."
-        if jobs is not None:
-            return f"BITE API \u2014 {label}, {jobs} jobs"
-        return f"BITE API \u2014 {label}"
     if name == "brassring":
         partner_id = metadata.get("partner_id", "?")
         site_id = metadata.get("site_id", "?")
@@ -583,12 +575,6 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"iCIMS static listing \u2014 host: {host}, {jobs} jobs"
         return f"iCIMS static listing \u2014 host: {host}"
-    if name == "herp":
-        slug = metadata.get("slug", "?")
-        jobs = metadata.get("jobs")
-        if jobs is not None:
-            return f"HERP static listing \u2014 slug: {slug}, {jobs} jobs"
-        return f"HERP static listing \u2014 slug: {slug}"
     if name == "hrmos":
         tenant = metadata.get("tenant", "?")
         jobs = metadata.get("jobs")
@@ -776,12 +762,6 @@ def _build_comment(name: str, metadata: dict) -> str:
         if urls is not None:
             return f"DOM \u2014 {urls} job links found (static)"
         return "DOM \u2014 link extraction"
-    if name == "dvinci":
-        slug = metadata.get("slug", "?")
-        jobs = metadata.get("jobs")
-        if jobs is not None:
-            return f"d.vinci API \u2014 slug: {slug}, {jobs} jobs"
-        return f"d.vinci API \u2014 slug: {slug}"
     if name == "smartrecruiters":
         token = metadata.get("token", "?")
         jobs = metadata.get("jobs")
@@ -869,12 +849,6 @@ def _build_comment(name: str, metadata: dict) -> str:
         if jobs is not None:
             return f"Woowa careers API \u2014 {variant}, {jobs} jobs"
         return f"Woowa careers API \u2014 {variant}"
-    if name == "hireology":
-        slug = metadata.get("slug", "?")
-        jobs = metadata.get("jobs")
-        if jobs is not None:
-            return f"Hireology API \u2014 slug: {slug}, {jobs} jobs"
-        return f"Hireology API \u2014 slug: {slug}"
     if name == "turbohire":
         org_id = metadata.get("org_id", "?")
         jobs = metadata.get("jobs")
@@ -1055,7 +1029,6 @@ from src.core.monitors import (  # noqa: E402
     bamboohr,  # noqa: F401
     beehire,  # noqa: F401
     beisen,  # noqa: F401
-    bite,  # noqa: F401
     brassring,  # noqa: F401
     breezy,  # noqa: F401
     bytedance,  # noqa: F401
@@ -1070,19 +1043,15 @@ from src.core.monitors import (  # noqa: E402
     dayforce,  # noqa: F401
     deel,  # noqa: F401
     dom,  # noqa: F401
-    dvinci,  # noqa: F401
     earcu,  # noqa: F401
     eightfold,  # noqa: F401
     fenbi,  # noqa: F401
     gem,  # noqa: F401
     greenhouse,  # noqa: F401
-    greythr,  # noqa: F401  (myjobs)
     gupy,  # noqa: F401
     headhunter,  # noqa: F401
-    herp,  # noqa: F401
     hibob,  # noqa: F401
     hirehive,  # noqa: F401
-    hireology,  # noqa: F401
     hrmos,  # noqa: F401
     icims,  # noqa: F401
     infoniqa,  # noqa: F401
@@ -1152,5 +1121,4 @@ from src.core.monitors import (  # noqa: E402
     workable,  # noqa: F401
     workday,  # noqa: F401
     ycombinator,  # noqa: F401
-    zoho_recruit,  # noqa: F401  (myjobs)
 )
