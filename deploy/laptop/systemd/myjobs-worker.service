@@ -7,6 +7,9 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/myjobs/.venv/bin/myjobs worker
 # The worker drains in-flight work, then force-exits after 60 s
 TimeoutStopSec=90
+# One Chromium per browser board (up to ~20 at once): squeeze it before it can starve the desktop, Postgres or the API
+MemoryHigh=8G
+MemoryMax=10G
 Restart=always
 RestartSec=30
 
