@@ -95,6 +95,7 @@ UPDATE job_board
 SET board_status = 'gone', gone_at = now(),
     is_enabled = false,
     lease_owner = NULL, leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
 """
@@ -110,6 +111,7 @@ SET consecutive_failures = 0,
     last_non_empty_at = now(),
     lease_owner = NULL,
     leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
 """
@@ -140,6 +142,7 @@ SET consecutive_failures = 0,
     END,
     lease_owner = NULL,
     leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
 RETURNING board_status
@@ -169,6 +172,7 @@ SET consecutive_failures = consecutive_failures + 1,
     board_status = CASE WHEN consecutive_failures + 1 >= 5 THEN 'disabled' ELSE board_status END,
     lease_owner = NULL,
     leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
 RETURNING is_enabled, last_success_at
