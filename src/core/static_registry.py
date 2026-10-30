@@ -56,8 +56,6 @@ def _icims_query_is_unscoped(query: str) -> bool:
 
 _RICH_MONITORS: frozenset[str] = frozenset(
     {
-        "greythr",  # myjobs
-        "zoho_recruit",  # myjobs
         "accenture",
         "adp",
         "almacareer",
@@ -76,7 +74,6 @@ _RICH_MONITORS: frozenset[str] = frozenset(
         "darwinbox",
         "dayforce",
         "deel",
-        "dvinci",
         "earcu",
         "fenbi",
         "gem",
@@ -84,7 +81,6 @@ _RICH_MONITORS: frozenset[str] = frozenset(
         "headhunter",
         "hibob",
         "hirehive",
-        "hireology",
         "turbohire",
         "inline",
         "inploi",
@@ -168,13 +164,11 @@ def auto_skip_crawler_types() -> frozenset[str]:
 
 _ALL_MONITOR_TYPES: frozenset[str] = _RICH_MONITORS | {
     "avature",
-    "bite",
     "breezy",
     "candidatus",
     "computrabajo",
     "eightfold",
     "gupy",
-    "herp",
     "hrmos",
     "icims",
     "infoniqa",
@@ -225,7 +219,6 @@ _ALL_SCRAPER_TYPES: frozenset[str] = frozenset(
     {
         "adp",
         "api_sniffer",
-        "bite",
         "dom",
         "eightfold",
         "embedded",
@@ -242,7 +235,6 @@ _ALL_SCRAPER_TYPES: frozenset[str] = frozenset(
         "notion",
         "onlyfy",
         "oracle_hcm",
-        "paycor",
         "paycom",
         "paylocity",
         "peoplesoft",
@@ -437,16 +429,6 @@ def detect_ats_from_url(url: str) -> str | None:
     ):
         return "infoniqa"
     if (
-        host == "herp.careers"
-        and not parsed.query
-        and re.fullmatch(
-            r"/v1/[a-z0-9][a-z0-9_-]{0,62}(?:/[A-Za-z0-9_~-]{6,64})?/?",
-            parsed.path,
-            re.IGNORECASE,
-        )
-    ):
-        return "herp"
-    if (
         host == "hrmos.co"
         and not parsed.query
         and re.fullmatch(
@@ -623,8 +605,6 @@ def detect_ats_from_url(url: str) -> str | None:
         return "workday"
     if host.endswith(".rippling.com"):
         return "rippling"
-    if host.endswith(".hireology.com"):
-        return "hireology"
     if host.endswith(".hirehive.com"):
         return "hirehive"
     if re.fullmatch(r"/SU[0-9a-f]{24}/(?:pb|mc)(?:/.*)?", parsed.path, re.IGNORECASE):
@@ -641,8 +621,6 @@ def detect_ats_from_url(url: str) -> str | None:
         r"/jobs/[a-z0-9]+(?:-[a-z0-9]+)*(?:/.*)?", parsed.path, re.IGNORECASE
     ):
         return "curately"
-    if host.endswith(".dvinci-hr.com"):
-        return "dvinci"
     if host == "jobs.dualoo.com" and re.fullmatch(
         r"/portal/[a-z0-9]+/?", parsed.path, re.IGNORECASE
     ):
@@ -1188,8 +1166,6 @@ def auto_scraper_type(
         )
     if monitor_type == "intervieweb":
         return ("json-ld", None)
-    if monitor_type == "herp":
-        return ("json-ld", None)
     if monitor_type == "gupy":
         return ("json-ld", None)
     if monitor_type == "hrmos":
@@ -1238,8 +1214,6 @@ def auto_scraper_type(
         )
     if monitor_type == "breezy":
         return ("json-ld", _BREEZY_SCRAPER_CONFIG)
-    if monitor_type == "bite":
-        return ("bite", None)
     if monitor_type == "rippling":
         return ("rippling", None)
     if monitor_type == "smartrecruiters":

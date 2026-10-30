@@ -1,7 +1,7 @@
 """Snapshot of the registered monitors so accidental removal is caught.
 
-Update the sets deliberately when adding or removing a monitor. Re-pinned on 2026-10-15 after the
-re-sync with jobseek's core (D28).
+Update the sets deliberately when adding or removing a monitor. Re-pinned on 2026-10-30 after dropping
+the monitors no board uses.
 """
 
 from __future__ import annotations
@@ -12,32 +12,30 @@ from src.core import monitors
 
 EXPECTED_MONITORS = frozenset(
     {
-        "accenture", "adp", "almacareer", "amazon", "api_sniffer", "ashby", "avature", "bamboohr",
-        "beehire", "beisen", "bite", "brassring", "breezy", "bytedance", "candidatus", "cnstaff", "comeet",
-        "computrabajo", "cornerstone", "curately", "cvwarehouse", "darwinbox", "dayforce", "deel", "dom",
-        "dvinci", "earcu", "eightfold", "fenbi", "gem", "greenhouse", "greythr", "gupy", "headhunter",
-        "herp", "hibob", "hirehive", "hireology", "hrmos", "icims", "infoniqa", "infor", "inline", "inploi",
-        "intervieweb", "jarvi", "jazzhr", "job51", "jobbank104", "jobconvo", "jobdiva", "jobs_ch",
-        "jobstreet", "jobvite", "jobylon", "johdi", "join", "keka", "kipt", "lever", "linkedin", "manatal",
-        "mokahr", "nextdata", "njoyn", "notion", "nowhiring", "oracle_hcm", "pageup", "papa_johns",
-        "paycom", "paylocity", "paynet", "peoplesoft", "personio", "phenom", "pinpoint", "practicematch",
-        "prospective", "recruitee", "recruiter_co_kr", "recruiterbox", "rippling", "rss", "seamlesshiring",
-        "seek", "sitemap", "smartrecruiters", "softgarden", "talemetry", "talentbrew", "talentreef",
-        "taleo", "traffit", "turbohire", "typify", "ukg", "umantis", "unifr", "unisante", "universia",
-        "wecruit", "welcometothejungle", "woowa", "workable", "workday", "ycombinator", "zoho_recruit"
+        "accenture", "adp", "almacareer", "amazon", "api_sniffer", "ashby", "avature", "bamboohr", "beehire", "beisen",
+        "brassring", "breezy", "bytedance", "candidatus", "cnstaff", "comeet", "computrabajo", "cornerstone",
+        "curately", "cvwarehouse", "darwinbox", "dayforce", "deel", "dom", "earcu", "eightfold", "fenbi", "gem",
+        "greenhouse", "gupy", "headhunter", "hibob", "hirehive", "hrmos", "icims", "infoniqa", "infor", "inline",
+        "inploi", "intervieweb", "jarvi", "jazzhr", "job51", "jobbank104", "jobconvo", "jobdiva", "jobs_ch",
+        "jobstreet", "jobvite", "jobylon", "johdi", "join", "keka", "kipt", "lever", "linkedin", "manatal", "mokahr",
+        "nextdata", "njoyn", "notion", "nowhiring", "oracle_hcm", "pageup", "papa_johns", "paycom", "paylocity",
+        "paynet", "peoplesoft", "personio", "phenom", "pinpoint", "practicematch", "prospective", "recruitee",
+        "recruiter_co_kr", "recruiterbox", "rippling", "rss", "seamlesshiring", "seek", "sitemap", "smartrecruiters",
+        "softgarden", "talemetry", "talentbrew", "talentreef", "taleo", "traffit", "turbohire", "typify", "ukg",
+        "umantis", "unifr", "unisante", "universia", "wecruit", "welcometothejungle", "woowa", "workable", "workday",
+        "ycombinator"
     }
 )
 
 EXPECTED_RICH = frozenset(
     {
-        "accenture", "adp", "almacareer", "amazon", "ashby", "bamboohr", "beehire", "beisen", "brassring",
-        "bytedance", "cnstaff", "comeet", "cornerstone", "curately", "cvwarehouse", "darwinbox", "dayforce",
-        "deel", "dvinci", "earcu", "fenbi", "gem", "greenhouse", "greythr", "headhunter", "hibob",
-        "hirehive", "hireology", "infor", "inline", "inploi", "jarvi", "job51", "jobbank104", "jobstreet",
-        "jobylon", "keka", "kipt", "lever", "linkedin", "manatal", "mokahr", "nowhiring", "oracle_hcm",
-        "pageup", "paycom", "paylocity", "paynet", "peoplesoft", "pinpoint", "prospective", "recruitee",
-        "recruiter_co_kr", "rss", "seamlesshiring", "talentreef", "traffit", "turbohire", "typify", "ukg",
-        "unifr", "unisante", "universia", "wecruit", "welcometothejungle", "woowa", "zoho_recruit"
+        "accenture", "adp", "almacareer", "amazon", "ashby", "bamboohr", "beehire", "beisen", "brassring", "bytedance",
+        "cnstaff", "comeet", "cornerstone", "curately", "cvwarehouse", "darwinbox", "dayforce", "deel", "earcu",
+        "fenbi", "gem", "greenhouse", "headhunter", "hibob", "hirehive", "infor", "inline", "inploi", "jarvi", "job51",
+        "jobbank104", "jobstreet", "jobylon", "keka", "kipt", "lever", "linkedin", "manatal", "mokahr", "nowhiring",
+        "oracle_hcm", "pageup", "paycom", "paylocity", "paynet", "peoplesoft", "pinpoint", "prospective", "recruitee",
+        "recruiter_co_kr", "rss", "seamlesshiring", "talentreef", "traffit", "turbohire", "typify", "ukg", "unifr",
+        "unisante", "universia", "wecruit", "welcometothejungle", "woowa"
     }
 )
 
