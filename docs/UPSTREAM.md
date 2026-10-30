@@ -18,9 +18,8 @@ Ours, not vendored: `src/core/*_resolve.py`, `salary_extract.py` (+ `salary_inr.
 ## Deltas to re-apply after a copy
 1. `src/shared/http.py`: honest User-Agent plus `CHROME_UA_HOSTS` and `ChromeUAForWAFHostsTransport`, wrapped
    inside `RequestHostTrackingTransport` (D14). Marked `myjobs delta`.
-2. `src/core/monitors/__init__.py`: import `greythr` and `zoho_recruit` (ours) in the registration list.
-3. `src/core/static_registry.py`: add `greythr` and `zoho_recruit` to `_RICH_MONITORS`.
-4. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
+2. `src/core/monitors/brassring.py`: selectolax's `LexborHTMLParser`, not `selectolax.parser` (removed in selectolax 1.x).
+3. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
    `webshare_proxy_canary_slot`, …).
 
 Stand-ins, so vendored files stay unmodified:
@@ -33,4 +32,4 @@ Stand-ins, so vendored files stay unmodified:
 3. Run `python3 -m pytest -q`:
    - `tests/test_static_registry.py` catches registry drift;
    - re-pin `tests/characterization/test_registry.py` deliberately (D5).
-4. Remove monitors no registered board uses (D27 scope); see `scripts/import_upstream_registry.py`.
+4. Delete monitors and scrapers no board in `data/boards.csv` uses, with their registry entries and tests.

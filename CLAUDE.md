@@ -1,94 +1,34 @@
-# myjobs: public feed of the latest tech jobs (revamp in progress)
+# myjobs: public feed of the latest tech jobs
 
-Continuous crawler over ~3,169 company career boards (2,882 companies) → Postgres → public read-only API and web feed (jseek.co-style).
-**Revamp underway**: worldwide coverage, strongest for India, tech-adjacent jobs only (D27), at least jseek.co's coverage (D28).
-Per-user profiles come later (D10). Read `docs/REVAMP_PLAN.md`, `docs/DECISIONS.md` and `docs/REPO_MAP.md` before starting work;
-`docs/HANDOFF.md` has the latest session state.
+A continuous crawler over ~7,800 company career boards (~6,000 companies) → Postgres → a read-only API and a Next.js feed
+(jseek.co-style). Worldwide, strongest for India, tech jobs only (D27), at least jseek.co's coverage (D28). Per-user features
+come later (D10). It runs on the user's home laptop (D29).
 
----
+Read `README.md` (repo map), `docs/DECISIONS.md` and, for production, `docs/DEPLOY.md` before starting work.
 
 ## Hard rules
-- **Public repo: no personal data in tracked files.** Real profile, resumes and notes live in `private/` (gitignored). The local
-  pre-commit hook (gitleaks + `private/pii_patterns.txt`) blocks leaks. Don't bypass it.
-- **Never fabricate resume content.** Tailoring may select and reorder real content only.
-- **Branches:** work on `revamp/<phase>` branches, small logical commits, never commit to `main`. The auto-push hook is disabled.
-- **Respect the web:** prefer public ATS APIs; honour robots.txt for site-reading monitors. jobseek's portal monitors (LinkedIn,
-  SEEK, JobStreet…) are allowed by the user's explicit decision (D25); don't add new portal scrapers (e.g. Naukri) without asking.
-- **Scraper changes** must keep `tests/characterization/` green or update snapshots deliberately (see DECISIONS D5).
-- `src/core/` and `src/shared/` are a fork of colophon-group/jobseek (MIT, see `THIRD_PARTY_NOTICES.md`). We may edit them.
-- **No bloat:** keep the codebase short. Cut code nothing uses; list removals and confirm with the user before deleting.
+- **Public repo: no personal data in tracked files.** Profiles, resumes and notes live in `private/` (gitignored). The
+  pre-commit hook (gitleaks + `private/pii_patterns.txt`) blocks leaks; don't bypass it.
+- **Never fabricate resume content.** Tailoring may only select and reorder real content.
+- **Branches:** work on `revamp/<phase>` branches in small logical commits; never commit to `main`.
+- **Respect the web:** prefer public ATS APIs and honour robots.txt for site-reading monitors. The portal monitors are allowed
+  (D25); ask before adding a new portal (e.g. Naukri).
+- **Scraper changes** keep `tests/characterization/` green, or update the snapshots deliberately (D5).
+- `src/core/` and `src/shared/` are vendored from jobseek (MIT). Edit them only through the deltas in `docs/UPSTREAM.md`.
+- **No bloat:** keep the codebase short and readable. Cut code nothing uses, but list the removals and confirm them with the
+  user first.
 
----
-
-## Running
-
+## Commands
 ```bash
-pip install -e ".[dev]"
-python -m playwright install chromium     # for render/browser boards
-docker compose up -d                       # Postgres 16 + Redis 7 (REDIS_PORT/POSTGRES_PORT override host ports)
-alembic upgrade head                       # migrations in src/migrations/versions/
-python scripts/load_geonames.py            # location taxonomy (once; idempotent)
-python scripts/populate_taxonomy.py        # seniority/occupation taxonomy (once)
-
-./scripts/dev.sh          # one command: DBs + migrations + worker + API :8090 + web :3000 (--no-worker, --no-browser)
-myjobs worker             # crawl continuously (syncs CSV config first); Ctrl-C to stop
-myjobs worker --no-browser
-myjobs crawl              # one pass: drain ready queues, then exit
-myjobs serve              # API at http://127.0.0.1:8080 (docs at /api/docs)
-myjobs health             # alerts (stale feed, worker behind, boards gone); exits 1 on alert
-myjobs stats              # freshness + coverage
-myjobs sync               # CSV → Postgres + Redis queues
-myjobs company list|add|disable
-
-python scripts/discover_companies.py data/candidates/india_companies.csv [--apply]   # candidate → verified board
-python scripts/discover_companies.py <gone.csv> --rediscover --apply                 # re-find boards that went away
-
-cd web && npm install && API_ORIGIN=http://127.0.0.1:8080 npm run dev               # Next.js feed (direction C)
+./scripts/dev.sh             # local: DBs + migrations + worker + API :8090 + web :3000
+myjobs worker | crawl | serve | sync | stats | health | boards <company|ats> | company add|list|disable
+python3 -m pytest -q         # all tests, no network (asyncio_mode=auto)
+python scripts/jseek_parity.py --api <url>   # coverage gaps against jseek.co
+git push laptop <branch> && ssh rohan@192.168.29.132 '~/myjobs/deploy/laptop/setup.sh'   # deploy
 ```
-
-**Production** runs on the user's home laptop (D29): `git push laptop <branch>`, then `deploy/laptop/setup.sh` there.
-See `docs/DEPLOY.md`.
-
-Env: copy `.env.example` → `.env` (`LOCAL_DATABASE_URL`, `REDIS_URL`, `API_RATE_LIMIT_PER_MINUTE`, `API_CORS_ORIGINS`, optional proxy settings).
-
----
-
-## Architecture (short; full map in docs/REPO_MAP.md)
-
-```
-data/companies.csv + data/boards.csv → src/sync.py → Postgres (company, job_board) + Redis queues
-src/workers/pipeline.py → src/core/monitors/* (37 types) → src/core/scrapers/* (16 types) → job_posting + descriptions
-src/processing/cpu.py enrichment (GeoNames locations, salary, seniority, occupation)
-src/api/ (FastAPI): /api/v1/jobs|jobs/{id}|companies|locations|stats|coverage 
-web/ (Next.js App Router + TS): server-rendered feed, job detail, coverage; talks to the API via /api rewrite
-src/discovery/ + scripts/discover_companies.py: candidate companies → careers board → ATS → robots/parse checks → registry or review queue
-```
-
-- Config: `src/config.py` (pydantic-settings).
-- DB: Postgres via asyncpg (`src/db.py`); schema in alembic migrations 0001–0011.
-- Queue: `src/redis_queue.py` + `src/lua/*.lua` (per-key rate limit, leases, reaper, dead letter).
-- SSRF guard: `src/shared/ssrf.py`, installed by `create_http_client` (used by the worker and discovery).
-- robots.txt: `src/shared/robots.py`. Site-reading monitors honour it; ATS API monitors (`API_MONITORS`) are exempt.
-- Delegation: agy for ~50% of the work (Gemini 3.8 Flash first). Briefs live in `delegation/`; verify with tests, not by reading code.
-
----
-
-## Testing
-
-```bash
-python3 -m pytest -q                        # all tests, no network
-python3 -m pytest tests/characterization    # monitor/scraper behavior pins
-python3 -m pytest tests/api                 # public API (fake pool, no DB)
-```
-
-`asyncio_mode="auto"`, so no `@pytest.mark.asyncio` needed.
-
----
 
 ## Code style
-- Logging: `get_logger(__name__)` from `src/logger.py`; never `print()`.
+- Config in `src/config.py` (pydantic-settings, `.env`). Logging: `get_logger(__name__)` from `src/logger.py`; never `print()`.
+- Schema changes go in a new alembic migration in `src/migrations/versions/`.
 - Record non-obvious choices in `docs/DECISIONS.md`.
-- Delegated tasks get briefs in `delegation/<phase>-<NN>-<slug>.md` (see `delegation/TEMPLATE.md`).
-
-## Gitignored
-`.env`, `private/`, `jobs.db*`, `output/`, `scripts/scraping_status.json`, `.claude/`, `.history/`
+- Delegation to agy (D17): briefs go in `delegation/<phase>-<NN>-<slug>.md` (`delegation/TEMPLATE.md`); verify the work with tests.
