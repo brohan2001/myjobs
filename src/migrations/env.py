@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, make_url, pool
 
 from src.config import settings
 
 config = context.config
 
 # Override sqlalchemy.url from application settings so the URL is never
-# hard-coded in alembic.ini.
-config.set_main_option("sqlalchemy.url", settings.local_database_url)
+# hard-coded in alembic.ini. Plain postgresql:// means psycopg 3 from SQLAlchemy 2.1;
+# we ship psycopg2-binary, so name it.
+url = make_url(settings.local_database_url)
+if url.drivername == "postgresql":
+    url = url.set(drivername="postgresql+psycopg2")
+config.set_main_option("sqlalchemy.url", url.render_as_string(hide_password=False))
 
 
 def run_migrations_offline() -> None:
