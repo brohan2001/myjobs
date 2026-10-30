@@ -261,15 +261,18 @@ async def fetch_companies(pool: asyncpg.Pool, q: str | None, limit: int) -> list
         return await conn.fetch(_COMPANIES, pattern, max(1, min(limit, 500)))
 
 
+# One scan of job_posting for its three counts (three sub-selects took ~1.7 s at 640k rows).
 _STATS = """
 SELECT
-    (SELECT COUNT(*) FROM job_posting WHERE is_active AND is_tech)                             AS active_jobs,
-    (SELECT COUNT(*) FROM job_posting WHERE is_active AND is_tech AND listed_at >= now() - interval '24 hours') AS new_last_24h,
-    (SELECT COUNT(DISTINCT company_id) FROM job_posting WHERE is_active AND is_tech)           AS companies_hiring,
+    jp.active_jobs, jp.new_last_24h, jp.companies_hiring,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled)                                          AS boards_enabled,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled AND last_success_at >= now() - interval '24 hours') AS boards_fresh_24h,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled AND consecutive_failures > 0)             AS boards_failing,
     (SELECT MAX(last_success_at) FROM job_board)                                               AS last_updated
+FROM (SELECT COUNT(*)                                                         AS active_jobs,
+             COUNT(*) FILTER (WHERE listed_at >= now() - interval '24 hours') AS new_last_24h,
+             COUNT(DISTINCT company_id)                                       AS companies_hiring
+      FROM job_posting WHERE is_active AND is_tech) jp
 """
 
 
