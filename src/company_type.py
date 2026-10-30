@@ -1,4 +1,4 @@
-"""Company-type taxonomy for registry tags (``company.extras->>'company_type'``), see REVAMP_PLAN 2A.5."""
+"""Company-type taxonomy for registry tags (``company.extras->>'company_type'``) (D21)."""
 
 from __future__ import annotations
 

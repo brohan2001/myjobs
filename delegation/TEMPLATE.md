@@ -1,6 +1,6 @@
 # <phase>-<NN>-<slug>
 
-**Model:** Gemini 3.8 Flash | Sonnet 5.5 | Opus 5.5 (agy)
+**Model:** Gemini 3.8 Flash | Sonnet 4.6 | Opus 4.6 (agy)
 **Branch:** `revamp/<phase>-<NN>-<slug>` (create from `revamp/<phase>`; do not push to main)
 
 ## Goal

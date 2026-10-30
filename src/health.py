@@ -1,4 +1,4 @@
-"""Crawler health checks with alert thresholds (REVAMP_PLAN 2B.8).
+"""Crawler health checks with alert thresholds (D23).
 
 ``myjobs health`` prints the checks and exits 1 when any alert fires, so cron or a
 systemd timer can page on it. ``evaluate`` is pure; ``fetch_snapshot`` is the only SQL.
