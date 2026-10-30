@@ -49,7 +49,7 @@ say "Services"
 mkdir -p ~/.config/systemd/user ~/backups
 ln -sf "$repo"/deploy/laptop/systemd/* ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now myjobs-api myjobs-worker myjobs-web myjobs-backup.timer
+systemctl --user enable --now myjobs-api myjobs-worker myjobs-web myjobs-backup.timer myjobs-alert.timer
 systemctl --user restart myjobs-api myjobs-worker myjobs-web
 if grep -q '^TUNNEL_TOKEN=.' .env; then
   systemctl --user enable --now myjobs-tunnel && systemctl --user restart myjobs-tunnel

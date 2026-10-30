@@ -1,0 +1,6 @@
+[Unit]
+Description=myjobs health alerts to ntfy.sh
+
+[Service]
+Type=oneshot
+ExecStart=%h/myjobs/deploy/laptop/alert.sh
