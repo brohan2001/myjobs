@@ -9,7 +9,8 @@ set -euo pipefail
 
 user=${SUDO_USER:?run this with sudo from your normal account}
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-lan=$(ip -4 route | awk '/proto kernel/ && $1 ~ /^(10|172|192\.168)\./ {print $1; exit}')
+wifi=$(ip -4 route show default | awk '{print $5; exit}')   # not docker0: Docker adds its own 172.x routes
+lan=$(ip -4 route show dev "$wifi" proto kernel | awk '{print $1; exit}')
 
 apt-get update
 apt-get install -y docker.io docker-compose-v2 nodejs npm avahi-daemon

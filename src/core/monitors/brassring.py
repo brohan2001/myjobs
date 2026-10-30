@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 import structlog
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser
 
 from src.core.monitors import DiscoveredJob, register
 from src.shared.browser import BROWSER_KEYS, navigate, open_page
@@ -127,7 +127,7 @@ def _location(questions: dict[str, object]) -> list[str] | None:
 def _detail_location(body: str, expected_job_id: str) -> list[str]:
     """Extract and validate a location from a server-rendered detail page."""
 
-    preload = HTMLParser(body).css_first(_PRELOAD_SELECTOR)
+    preload = LexborHTMLParser(body).css_first(_PRELOAD_SELECTOR)
     raw_payload = preload.attributes.get("value") if preload is not None else None
     if not isinstance(raw_payload, str) or not raw_payload:
         raise ValueError(f"BrassRing detail {expected_job_id} omitted preLoadJSON")
