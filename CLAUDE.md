@@ -46,6 +46,9 @@ python scripts/discover_companies.py <gone.csv> --rediscover --apply            
 cd web && npm install && API_ORIGIN=http://127.0.0.1:8080 npm run dev               # Next.js feed (direction C)
 ```
 
+**Production** runs on the user's home laptop (D29): `git push laptop <branch>`, then `deploy/laptop/setup.sh` there.
+See `docs/DEPLOY.md`.
+
 Env: copy `.env.example` → `.env` (`LOCAL_DATABASE_URL`, `REDIS_URL`, `API_RATE_LIMIT_PER_MINUTE`, `API_CORS_ORIGINS`, optional proxy settings).
 
 ---

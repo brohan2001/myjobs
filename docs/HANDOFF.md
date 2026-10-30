@@ -1,4 +1,13 @@
-# Handoff: myjobs (2026-10-15)
+# Handoff: myjobs (2026-10-30)
+
+## 2026-10-30: moved to the home laptop (D29)
+Everything now runs on `rohan-laptop` (192.168.29.132, Ubuntu 26.04) as systemd user services; see `docs/DEPLOY.md`.
+The Mac's database (466k active postings, migration 0012) was restored there, and the re-scrape backlog was cleared
+(`next_scrape_at = NULL` on 97k scraped rows; the laptop's Redis started empty). That covers live-verification steps 3.1–3.3
+below. Fixes the laptop's newer dependencies exposed: brassring moved to selectolax's lexbor parser (1.x removed Modest),
+alembic names psycopg2 (SQLAlchemy 2.1 defaults to psycopg 3), and pyyaml is now declared. Next: step 3.4 (`myjobs health`
+after 2 h) on the laptop, then the parity run against `http://rohan-laptop.local:3000`.
+
 
 Branch `revamp/phase-1-feed`, not pushed (ahead of origin). Read `CLAUDE.md`, `docs/REVAMP_PLAN.md` (status and plan),
 `docs/DECISIONS.md` (D1–D28), `docs/REPO_MAP.md` and `docs/UPSTREAM.md` first.
