@@ -26,7 +26,9 @@ docker compose up -d
 until docker compose exec -T postgres pg_isready -U crawler -q; do sleep 1; done
 if [ -n "$restore" ]; then
   say "Restoring $restore"
-  docker compose exec -T postgres pg_restore -U crawler -d crawler --no-owner -j 4 < "$restore"
+  docker compose cp "$restore" postgres:/tmp/restore.dump   # parallel restore can't read a pipe
+  docker compose exec -T postgres pg_restore -U crawler -d crawler --no-owner -j 4 /tmp/restore.dump
+  docker compose exec -T postgres rm /tmp/restore.dump
 fi
 .venv/bin/alembic upgrade head
 if [ -z "$restore" ] && [ "$(docker compose exec -T postgres psql -U crawler -tAc 'select count(*) from location')" = 0 ]; then
