@@ -105,7 +105,14 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Why the public `/api/v1` stays open:** it serves no user data.
 - **Why not real accounts:** there is one operator, so one token is enough.
 
-## D32: Public URL through Tailscale Funnel (User, 2026-10-30)
-Funnel serves `https://<host>.<tailnet>.ts.net` from :3000. It's free, needs no domain and no open router port. Only the web
-app is exposed; the API, Postgres and Redis stay on 127.0.0.1. A domain on a Cloudflare Tunnel is the upgrade path if the
-user buys one.
+## D32: Public URL through Cloudflare Tunnel on a free domain (User, 2026-10-30)
+- **What:** a Cloudflare Tunnel publishes :3000 under a free DigitalPlat domain (`*.dpdns.org`), with DNS hosted on
+  Cloudflare's free plan. `cloudflared` runs as the user unit `myjobs-tunnel`, from a token made in the dashboard, so no
+  root is needed.
+- **Why not Tailscale Funnel:** it was tried first and dropped. Funnel reached the laptop through relays in Europe and the
+  US, so pages took 7–12 s.
+- **Why Cloudflare:** its edge has servers in India and ends TLS there. Pages take well under a second, and static assets
+  are cached.
+- **Exposure:** only the web app is public; the API, Postgres and Redis stay on 127.0.0.1.
+- **Fallbacks:** a `workers.dev` Worker with Workers VPC needs no domain, but it is in beta. A paid domain is also possible.
+- **Upkeep:** the free domain must be renewed by hand once a year.

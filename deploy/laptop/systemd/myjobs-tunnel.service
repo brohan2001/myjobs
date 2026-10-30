@@ -1,0 +1,14 @@
+[Unit]
+Description=myjobs public URL (Cloudflare Tunnel to :3000, D32)
+After=network-online.target myjobs-web.service
+
+[Service]
+Slice=myjobs.slice
+# TUNNEL_TOKEN comes from the tunnel created in the Cloudflare dashboard; its public hostname points at localhost:3000
+EnvironmentFile=%h/myjobs/.env
+ExecStart=%h/.local/bin/cloudflared tunnel --no-autoupdate run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
