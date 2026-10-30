@@ -1,5 +1,5 @@
 [Unit]
-Description=myjobs web feed (:3000, public via Tailscale Funnel)
+Description=myjobs web feed (:3000, public via Cloudflare Tunnel)
 After=myjobs-api.service
 
 [Service]

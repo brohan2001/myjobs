@@ -20,6 +20,12 @@ export PATH="$HOME/.local/bin:$PATH"
 uv pip install -q -p .venv -e ".[dev]"
 .venv/bin/python -m playwright install chromium
 [ -f .env ] || { cp .env.example .env; chmod 600 .env; }
+# Cloudflare Tunnel client (D32), installed per user so no root is needed
+[ -x ~/.local/bin/cloudflared ] || {
+  mkdir -p ~/.local/bin
+  curl -fsSL -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+  chmod +x ~/.local/bin/cloudflared
+}
 
 say "Postgres and Redis"
 docker compose up -d
@@ -45,6 +51,11 @@ ln -sf "$repo"/deploy/laptop/systemd/* ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now myjobs-api myjobs-worker myjobs-web myjobs-backup.timer
 systemctl --user restart myjobs-api myjobs-worker myjobs-web
+if grep -q '^TUNNEL_TOKEN=.' .env; then
+  systemctl --user enable --now myjobs-tunnel && systemctl --user restart myjobs-tunnel
+else
+  echo "Note: set TUNNEL_TOKEN in .env to publish the feed through Cloudflare Tunnel"
+fi
 
 grep -q '^ADMIN_TOKEN=.' .env || echo "Note: set ADMIN_TOKEN in .env to enable /admin"
-say "Feed: http://$(hostname).local:3000  (public: $(tailscale funnel status 2>/dev/null | grep -om1 'https://[^ ]*' || echo 'run root-setup.sh for Tailscale Funnel'))"
+say "Feed: http://$(hostname).local:3000  (public: the hostname set on the tunnel in the Cloudflare dashboard)"

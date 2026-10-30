@@ -4,8 +4,8 @@
 #   sudo deploy/laptop/root-setup.sh
 #
 # Installs Docker, Node, Chromium's libraries and Google Chrome; keeps the laptop awake with the lid shut; lets user
-# services run without a login; opens the feed (:3000) to the home network and publishes it through Tailscale Funnel
-# (D32). Then run deploy/laptop/setup.sh as your user.
+# services run without a login; opens the feed (:3000) to the home network. Then run deploy/laptop/setup.sh as your
+# user; the public URL is a Cloudflare Tunnel it runs as a user service (D32).
 set -euo pipefail
 
 user=${SUDO_USER:?run this with sudo from your normal account}
@@ -45,11 +45,5 @@ loginctl enable-linger "$user"
 ufw allow OpenSSH
 ufw allow from "${lan:?no home network found}" to any port 3000 proto tcp comment 'myjobs feed (LAN)'
 ufw --force enable
-
-# Public URL (D32): Tailscale Funnel serves https://<host>.<tailnet>.ts.net from :3000; no domain or open router port.
-# The first run prints a login link. Enable HTTPS and Funnel for the tailnet in the admin console if asked.
-command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
-tailscale status >/dev/null 2>&1 || tailscale up
-tailscale funnel --bg 3000
 
 echo "Done. Log out and back in (or reboot) so '$user' can use Docker, then run deploy/laptop/setup.sh."
