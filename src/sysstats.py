@@ -1,14 +1,13 @@
 """Host and service resource usage for /api/admin/system (D30).
 
-Reads psutil for the machine, ``systemctl --user show`` for the myjobs units and their slice budget, ``docker stats``
-for Postgres and Redis, and sysfs for the iGPU clock. Anything unavailable (say, on a Mac) comes back as null.
+Reads psutil for the machine, ``systemctl --user show`` for the myjobs units and their slice budget, the Docker
+containers' cgroups for Postgres and Redis (no Docker socket needed), and sysfs for the iGPU clock. Anything unavailable (say, on a Mac) comes back as null.
 """
 
 from __future__ import annotations
 
 import asyncio
 import glob
-import json
 import os
 import time
 from pathlib import Path
@@ -18,6 +17,7 @@ import psutil
 UNITS = ("myjobs.slice", "myjobs-api.service", "myjobs-web.service", "myjobs-worker.service", "myjobs-backup.service")
 _PROPS = "Id,ActiveState,SubState,NRestarts,MemoryCurrent,MemoryPeak,MemoryMax,CPUUsageNSec,CPUQuotaPerSecUSec," \
          "ActiveEnterTimestampMonotonic"
+_DOCKER_CGROUPS = "/sys/fs/cgroup/system.slice/docker-*.scope"
 _SAMPLE_S = 1.0
 _CACHE_S = 10.0
 _cache: tuple[float, dict] | None = None
@@ -87,16 +87,41 @@ def _cpu_temp() -> float | None:
     return None
 
 
-def _containers(text: str | None) -> list[dict]:
-    rows = []
-    for line in (text or "").splitlines():
-        try:
-            c = json.loads(line)
-        except ValueError:
-            continue
-        rows.append({"name": c.get("Name"), "cpu_percent": c.get("CPUPerc"), "memory": c.get("MemUsage"),
-                     "memory_percent": c.get("MemPerc")})
-    return rows
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def parse_cpu_max(text: str | None) -> float | None:
+    """cgroup v2 ``cpu.max`` → percent of one CPU: ``100000 100000`` → 100.0, ``max 100000`` → None."""
+    quota, _, period = (text or "").partition(" ")
+    return round(100 * int(quota) / int(period), 1) if quota.isdigit() and period.isdigit() else None
+
+
+def _containers() -> dict[str, dict]:
+    """Docker containers by process name (postgres, redis-server), from their cgroups."""
+    out = {}
+    for scope in glob.glob(_DOCKER_CGROUPS):
+        base = Path(scope)
+        pid = ((_read(base / "cgroup.procs") or "").split() or [""])[0]
+        usage = next((line.split()[1] for line in (_read(base / "cpu.stat") or "").splitlines()
+                      if line.startswith("usage_usec ")), None)
+        out[_read(Path(f"/proc/{pid}/comm")) or base.name[7:19]] = {
+            "cpu_usec": int(usage) if usage else None,
+            "memory_bytes": _int(_read(base / "memory.current")),
+            "memory_max_bytes": _int(_read(base / "memory.max")),
+            "cpu_quota_percent": parse_cpu_max(_read(base / "cpu.max")),
+        }
+    return out
+
+
+def _container(name: str, now: dict, then: dict | None, elapsed: float) -> dict:
+    cpu = now.pop("cpu_usec")
+    before = (then or {}).get("cpu_usec")
+    cpu_percent = round((cpu - before) / 1e6 / elapsed * 100, 1) if cpu is not None and before is not None else None
+    return {"name": name, "cpu_percent": cpu_percent, **now}
 
 
 def _service(props: dict[str, str], before: dict[str, str] | None, elapsed: float) -> dict:
@@ -119,10 +144,9 @@ def _service(props: dict[str, str], before: dict[str, str] | None, elapsed: floa
 
 async def _collect() -> dict:
     psutil.cpu_percent(percpu=True)  # primes the per-core counters for the sample below
-    docker = asyncio.create_task(_run("docker", "stats", "--no-stream", "--format", "{{json .}}"))
-    before, t0 = await _units(), time.monotonic()
+    before, containers_before, t0 = await _units(), _containers(), time.monotonic()
     await asyncio.sleep(_SAMPLE_S)
-    after, elapsed = await _units(), time.monotonic() - t0
+    after, containers_after, elapsed = await _units(), _containers(), time.monotonic() - t0
     vm, swap, disk = psutil.virtual_memory(), psutil.swap_memory(), psutil.disk_usage("/")
     return {
         "host": {
@@ -136,7 +160,8 @@ async def _collect() -> dict:
             "gpu": _gpu(),
         },
         "services": [_service(p, before.get(unit), elapsed) for unit, p in after.items()],
-        "containers": _containers(await docker),
+        "containers": [_container(name, c, containers_before.get(name), elapsed)
+                       for name, c in sorted(containers_after.items())],
     }
 
 

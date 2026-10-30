@@ -129,13 +129,19 @@ export default async function AdminOverview() {
                   {system.containers.map((c) => (
                     <tr key={c.name}>
                       <td>
-                        <b>{c.name.replace(/^myjobs-|-1$/g, "")}</b> <span className="admin-note">docker</span>
+                        <b>{c.name === "redis-server" ? "redis" : c.name}</b> <span className="admin-note">docker</span>
                       </td>
                       <td className="healthy-cell">running</td>
                       <td className="num">–</td>
                       <td className="num">–</td>
-                      <td className="num">{c.cpu_percent}</td>
-                      <td className="num">{c.memory}</td>
+                      <td className="num">
+                        {c.cpu_percent == null ? "–" : `${c.cpu_percent}%`}
+                        {c.cpu_quota_percent ? ` / ${c.cpu_quota_percent}%` : ""}
+                      </td>
+                      <td className="num">
+                        {bytes(c.memory_bytes)}
+                        {c.memory_max_bytes ? ` / ${bytes(c.memory_max_bytes)}` : ""}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

@@ -70,7 +70,13 @@ export interface SystemStats {
     gpu: { freq_mhz: number; max_mhz: number; percent: number | null } | null;
   };
   services: Service[];
-  containers: { name: string; cpu_percent: string; memory: string; memory_percent: string }[];
+  containers: {
+    name: string;
+    cpu_percent: number | null;
+    cpu_quota_percent: number | null;
+    memory_bytes: number | null;
+    memory_max_bytes: number | null;
+  }[];
 }
 
 export async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {

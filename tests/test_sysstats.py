@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.sysstats import _service, parse_cpu_quota, parse_systemctl_show
+from src.sysstats import _container, _service, parse_cpu_max, parse_cpu_quota, parse_systemctl_show
 
 SHOW = """Id=myjobs.slice
 ActiveState=active
@@ -41,3 +41,17 @@ def test_service_cpu_percent_from_two_samples():
     slice_ = _service(units["myjobs.slice"], None, elapsed=1.0)
     assert slice_["cpu_quota_percent"] == 300.0 and slice_["memory_max_bytes"] == 5368709120
     assert slice_["cpu_percent"] is None
+
+
+def test_parse_cpu_max():
+    assert parse_cpu_max("100000 100000") == 100.0
+    assert parse_cpu_max("25000 100000") == 25.0
+    assert parse_cpu_max("max 100000") is None
+    assert parse_cpu_max(None) is None
+
+
+def test_container_cpu_percent():
+    now = {"cpu_usec": 1_500_000, "memory_bytes": 10, "memory_max_bytes": 20, "cpu_quota_percent": 100.0}
+    c = _container("postgres", now, {"cpu_usec": 1_000_000}, elapsed=1.0)
+    assert c == {"name": "postgres", "cpu_percent": 50.0, "memory_bytes": 10, "memory_max_bytes": 20,
+                 "cpu_quota_percent": 100.0}
