@@ -40,7 +40,7 @@ loginctl enable-linger "$user"
 # Firewall: SSH from anywhere it can reach, the feed from the home network only. The API (:8090), Postgres and
 # Redis listen on 127.0.0.1 and stay private.
 ufw allow OpenSSH
-ufw allow from "${lan:?couldn't find the home network}" to any port 3000 proto tcp comment 'myjobs feed (LAN)'
+ufw allow from "${lan:?no home network found}" to any port 3000 proto tcp comment 'myjobs feed (LAN)'
 ufw --force enable
 
 echo "Done. Log out and back in (or reboot) so '$user' can use Docker, then run deploy/laptop/setup.sh."
