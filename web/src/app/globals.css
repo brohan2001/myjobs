@@ -169,6 +169,53 @@ a {
   background: var(--sel);
 }
 
+.theme-btn {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: none;
+  color: var(--ink);
+  border: 1.5px solid var(--edge);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.theme-btn:hover {
+  background: var(--sel);
+}
+
+.theme-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.theme-btn .sun,
+:root[data-theme="dark"] .theme-btn .moon {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme-btn .sun {
+  display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-btn .moon {
+    display: none;
+  }
+
+  :root:not([data-theme="light"]) .theme-btn .sun {
+    display: block;
+  }
+}
+
 .fresh {
   margin: 18px 0 6px;
   font-size: 15px;
