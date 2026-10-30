@@ -3,8 +3,9 @@
 #
 #   sudo deploy/laptop/root-setup.sh
 #
-# Installs Docker, Node and Chromium's libraries; keeps the laptop awake with the lid shut; lets user services run
-# without a login; opens the feed (:3000) to the home network only. Then run deploy/laptop/setup.sh as your user.
+# Installs Docker, Node, Chromium's libraries and Google Chrome; keeps the laptop awake with the lid shut; lets user
+# services run without a login; opens the feed (:3000) to the home network and publishes it through Tailscale Funnel
+# (D32). Then run deploy/laptop/setup.sh as your user.
 set -euo pipefail
 
 user=${SUDO_USER:?run this with sudo from your normal account}
@@ -17,8 +18,9 @@ apt-get install -y docker.io docker-compose-v2 nodejs npm avahi-daemon
 systemctl enable --now docker avahi-daemon
 usermod -aG docker "$user"
 
-# The browser worker's system libraries
+# The browser worker's system libraries, and real Chrome for boards that need channel="chrome" (njoyn)
 "$repo/.venv/bin/playwright" install-deps chromium
+"$repo/.venv/bin/playwright" install --with-deps chrome
 
 # Never sleep: ignore the lid and disable every suspend path (GNOME's idle suspend included)
 mkdir -p /etc/systemd/logind.conf.d /etc/NetworkManager/conf.d
@@ -43,5 +45,11 @@ loginctl enable-linger "$user"
 ufw allow OpenSSH
 ufw allow from "${lan:?no home network found}" to any port 3000 proto tcp comment 'myjobs feed (LAN)'
 ufw --force enable
+
+# Public URL (D32): Tailscale Funnel serves https://<host>.<tailnet>.ts.net from :3000; no domain or open router port.
+# The first run prints a login link. Enable HTTPS and Funnel for the tailnet in the admin console if asked.
+command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
+tailscale status >/dev/null 2>&1 || tailscale up
+tailscale funnel --bg 3000
 
 echo "Done. Log out and back in (or reboot) so '$user' can use Docker, then run deploy/laptop/setup.sh."
