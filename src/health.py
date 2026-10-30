@@ -88,18 +88,57 @@ def evaluate(s: Snapshot) -> list[Alert]:
     return alerts
 
 
+# Board-list filters and orders for `myjobs boards` and /admin/boards (whitelisted SQL, never user text)
+BOARD_STATUSES = {
+    "all": "true",
+    "failing": "b.consecutive_failures > 0 AND b.board_status NOT IN ('gone', 'disabled')",
+    "overdue": "b.is_enabled AND b.board_status <> 'gone' AND b.next_check_at < now() - interval '2 hours'",
+    "never": "b.is_enabled AND b.last_success_at IS NULL",
+    "disabled": "NOT b.is_enabled AND b.board_status <> 'gone'",
+    "gone": "b.board_status = 'gone'",
+}
+BOARD_SORTS = {
+    "stale": "b.last_success_at ASC NULLS FIRST",
+    "due": "b.next_check_at",
+    "recent": "b.last_checked_at DESC NULLS LAST",
+    "failures": "b.consecutive_failures DESC, b.last_success_at ASC NULLS FIRST",
+}
+
 _BOARDS_SQL = """
-SELECT c.slug AS company, b.board_slug, b.crawler_type, b.board_status, b.is_enabled,
-       b.last_success_at, b.next_check_at, b.consecutive_failures, left(b.last_error, 120) AS last_error,
+SELECT b.id, c.slug AS company, c.name AS company_name, b.board_slug, b.board_url, b.crawler_type, b.board_status,
+       b.is_enabled, b.last_checked_at, b.last_success_at, b.next_check_at, b.consecutive_failures,
+       left(b.last_error, 300) AS last_error,
        (SELECT count(*) FROM job_posting jp WHERE jp.board_id = b.id AND jp.is_active) AS active_jobs
 FROM job_board b JOIN company c ON c.id = b.company_id
-WHERE c.slug = $1 OR c.name ILIKE '%' || $1 || '%' OR b.crawler_type = $1 OR b.board_slug = $1
-ORDER BY b.next_check_at
-LIMIT $2
+WHERE ($1::text IS NULL OR c.slug = $1 OR c.name ILIKE '%' || $1 || '%' OR b.crawler_type = $1 OR b.board_slug = $1)
+  AND ($2::text IS NULL OR b.crawler_type = $2)
+  AND {status}
+ORDER BY {order}
+LIMIT $3 OFFSET $4
 """
 
 
-async def fetch_boards(pool: asyncpg.Pool, term: str, limit: int = 50) -> list[asyncpg.Record]:
-    """Boards matching a company slug or name, an ATS type, or a board slug, most overdue first."""
+async def fetch_boards(pool: asyncpg.Pool, term: str | None, limit: int = 50, *, ats: str | None = None,
+                       status: str = "all", sort: str = "due", offset: int = 0) -> list[asyncpg.Record]:
+    """Boards matching a company slug or name, an ATS type, or a board slug; `status` and `sort` are keys of
+    BOARD_STATUSES and BOARD_SORTS."""
+    sql = _BOARDS_SQL.format(status=BOARD_STATUSES[status], order=BOARD_SORTS[sort])
     async with pool.acquire() as conn:
-        return await conn.fetch(_BOARDS_SQL, term, limit)
+        return await conn.fetch(sql, term, ats, limit, offset)
+
+
+_ERRORS_SQL = """
+SELECT left(regexp_replace(last_error, '\\s+', ' ', 'g'), 100) AS error, count(*) AS boards,
+       array_agg(DISTINCT crawler_type) AS ats
+FROM job_board b
+WHERE last_error IS NOT NULL AND consecutive_failures > 0 AND board_status <> 'gone'
+GROUP BY 1
+ORDER BY 2 DESC
+LIMIT 50
+"""
+
+
+async def fetch_errors(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    """Failing and auto-disabled boards grouped by the start of their last error, most common first."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(_ERRORS_SQL)

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Public API
     api_rate_limit_per_minute: int = 120
     api_cors_origins: str = ""  # comma-separated; empty = same-origin only
+    admin_token: str = ""  # bearer token for /api/admin/*; empty disables the admin routes (D31)
 
     log_level: str = "INFO"
     worker_id_prefix: str = ""

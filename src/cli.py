@@ -278,7 +278,7 @@ def boards(
     for r in rows:
         status = r["board_status"] if r["is_enabled"] else "disabled"
         table.add_row(r["board_slug"], r["crawler_type"], status, ago(r["last_success_at"]), ago(r["next_check_at"]),
-                      str(r["consecutive_failures"]), str(r["active_jobs"]), r["last_error"] or "")
+                      str(r["consecutive_failures"]), str(r["active_jobs"]), (r["last_error"] or "")[:120])
     console.print(table)
 
 

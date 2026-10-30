@@ -73,6 +73,9 @@ class FakeConn:
         self.pool.calls.append(("fetchrow", sql, args))
         return self.pool.fetchrow_row
 
+    async def execute(self, sql, *args):
+        self.pool.calls.append(("execute", sql, args))
+
 
 class FakePool:
     def __init__(self):

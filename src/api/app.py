@@ -3,6 +3,7 @@
 Everyone sees the same feed: the latest jobs from every tracked career board.
 No auth, because nothing here is user data; abuse is bounded by per-IP rate
 limits, capped page sizes, keyset pagination and the DB statement timeout.
+The token-guarded admin routes live in ``src/api/admin.py`` (D31).
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api import queries
+from src.api import admin, queries
 from src.api.locations import LocationIndex, load_location_index
 from src.api.ratelimit import RateLimiter
 from src.config import settings
@@ -276,6 +277,7 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
             row["last_success_at"] = _iso(row.get("last_success_at"))
         return JSONResponse(data, headers={"Cache-Control": "public, max-age=300"})
 
+    app.include_router(admin.router)
     return app
 
 
