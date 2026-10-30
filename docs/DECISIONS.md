@@ -59,7 +59,8 @@ every line.
 
 ## D23: Health alerts are an exit code (Default, 2026-10-12)
 `myjobs health` checks feed staleness (>3 h), worker lag (>5% of boards 2 h overdue), mass board loss (>20 gone a day) and per-ATS
-failure (>25%) or emptiness. It exits 1 on any alert.
+failure (>25%) or emptiness. It exits 1 on any alert. On the laptop, `deploy/laptop/alert.sh` runs it every 15 min and
+pushes alerts to a free ntfy.sh topic, sending again only when the set of firing checks changes.
 
 ## D25: Portal monitors are allowed (User, 2026-10-15)
 The user wants every jobseek monitor, including job portals whose terms forbid scraping (linkedin, seek, jobstreet, headhunter,
@@ -116,3 +117,17 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Exposure:** only the web app is public; the API, Postgres and Redis stay on 127.0.0.1.
 - **Fallbacks:** a `workers.dev` Worker with Workers VPC needs no domain, but it is in beta. A paid domain is also possible.
 - **Upkeep:** the free domain must be renewed by hand once a year.
+
+## D33: Slow board types are checked every 3 h (User, 2026-10-31)
+- **What:** `sync` gives browser boards and the dom, sitemap, icims, workday and api_sniffer types a 180-minute
+  check interval. Every other type stays at 60 (`_check_interval` in `src/sync.py`).
+- **Why:** under the D30 budget the worker managed ~72 boards a minute against ~122 needed. 1,629 boards were more than 2 h
+  overdue, all of them slow types; the fast API boards were on time.
+- **Trade-off:** "posted X ago" can be up to 3 h late on slow boards. Most jobs come from the hourly API boards.
+
+## D34: An empty board is never disabled (Default, 2026-10-31)
+- **What:** after 6 empty checks a board's postings are delisted, but the board stays enabled as `suspect` and turns
+  `active` again when jobs return. Only a 404/410 from the ATS marks a board `gone` and disables it.
+- **Why:** 6 empty hourly checks disabled real boards for good. Startups with no openings right now, such as lucidbots
+  and striiminc, returned 200 with an empty list. 219 boards had been lost that way, with no rediscovery to bring them
+  back. They were re-enabled on 2026-10-31.
