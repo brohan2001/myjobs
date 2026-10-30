@@ -672,6 +672,8 @@ _EUR_NUM = (
 # Currency token: EUR (ISO) or € (symbol) or spell-out (euros / Euro).
 # Spell-out lives behind a word boundary so we don't pick up "euroska".
 _EUR_CUR = r"(?:EUR|€|euros?\b|Euro\b)"
+# Every EUR pattern needs this token, so texts without it skip the slow regex scans.
+_EUR_CUR_RE = re.compile(_EUR_CUR, re.IGNORECASE)
 
 # Range separator vocabulary. Two flavours:
 #   * tight — dash glyphs or a single connector word with whitespace.
@@ -984,6 +986,8 @@ def _extract_eur(text: str) -> list[SalaryRange]:
     First sweeps ranges (so we don't fragment a `€A — €B` into two singles),
     then collects keyword-prefixed singles for the cells the range pass misses.
     """
+    if not _EUR_CUR_RE.search(text):
+        return []
     results: list[SalaryRange] = []
     range_spans: list[tuple[int, int]] = []
 
@@ -1748,6 +1752,16 @@ _EU_RES: dict[str, re.Pattern[str]] = {
     code: _build_eu_currency_regex(spec["symbols"], spec.get("word_break", False))
     for code, spec in _EU_CURRENCIES.items()
 }
+# Every shape above has one symbol with its left guard and no letter after it; texts without one skip the
+# full regex, which tries a match at every digit.
+_EU_SYM_RES: dict[str, re.Pattern[str]] = {
+    code: re.compile(
+        (r"(?<![A-Za-zÀ-ž])" if spec.get("word_break", False) else r"(?<![A-Za-z0-9])")
+        + "(?:" + "|".join(spec["symbols"]) + r")(?![A-Za-zÀ-ž])",
+        re.IGNORECASE,
+    )
+    for code, spec in _EU_CURRENCIES.items()
+}
 
 
 def _extract_eu_currency(text: str, code: str) -> list[SalaryRange]:
@@ -1761,6 +1775,8 @@ def _extract_eu_currency(text: str, code: str) -> list[SalaryRange]:
       5.  Parsed value falls within the per-currency magnitude window for the
           detected (or inferred) period.
     """
+    if not _EU_SYM_RES[code].search(text):
+        return []
     spec = _EU_CURRENCIES[code]
     pat = _EU_RES[code]
     results: list[SalaryRange] = []
