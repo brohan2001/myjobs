@@ -282,22 +282,6 @@ def boards(
     console.print(table)
 
 
-@app.command(name="apply-tech-gate")
-def apply_tech_gate() -> None:
-    """Apply the tech-only rule (D27) to stored postings; rerun after changing tech_gate.py."""
-    async def _run():
-        from src.db import close_all_pools, create_local_pool
-        from src.processing.tech_backfill import apply_tech_gate as run
-        pool = await create_local_pool()
-        try:
-            return await run(pool)
-        finally:
-            await close_all_pools()
-
-    counts = asyncio.run(_run())
-    console.print(", ".join(f"{k}: {v}" for k, v in counts.items()))
-
-
 @app.command(name="prune-scrape-queues")
 def prune_scrape_queues() -> None:
     """Remove stale per-domain scrape queues from Redis."""
