@@ -11,6 +11,7 @@ Everything runs on the user's old laptop: Ubuntu 26.04, x86_64, 16 GB RAM, 450 G
 | Web feed + `/admin` (`next start`) | user unit `myjobs-web` | `http://rohan-laptop.local:3000`, public via Cloudflare Tunnel (D32) |
 | Public URL (`cloudflared`) | user unit `myjobs-tunnel`, token `TUNNEL_TOKEN` in `.env` | `https://myjobs.dpdns.org` (D32) |
 | Backups | `myjobs-backup.timer`: daily 03:30 `pg_dump -Fc` to `~/backups`, keeps 7 | — |
+| Health alerts | `myjobs-alert.timer`: every 15 min, new `myjobs health` alerts to ntfy.sh topic `NTFY_TOPIC` | — |
 
 The units are in `deploy/laptop/systemd/`, symlinked into `~/.config/systemd/user/`. Linger starts them at boot without a login.
 The laptop never sleeps: the lid is ignored and the sleep targets are masked.
@@ -49,4 +50,4 @@ sudo ~/myjobs/deploy/laptop/root-setup.sh   # once: Docker, Node, Chromium libs 
 - sudo asks for a password, so root steps can't run over a non-interactive SSH session.
 
 ## Not done yet
-Off-machine backups, and alerting on `myjobs health`.
+Off-machine backups.
