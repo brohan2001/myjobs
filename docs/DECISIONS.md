@@ -121,8 +121,11 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 ## D33: Slow board types are checked every 3 h (User, 2026-10-31)
 - **What:** `sync` gives browser boards and the dom, sitemap, icims, workday and api_sniffer types a 180-minute
   check interval. Every other type stays at 60 (`_check_interval` in `src/sync.py`).
-- **Why:** under the D30 budget the worker managed ~72 boards a minute against ~122 needed. 1,629 boards were more than 2 h
-  overdue, all of them slow types; the fast API boards were on time.
+- **Why:** the boards restored from jobseek already carried these intervals, but `sync` wrote 60 for every board, so
+  the next sync would have made all 2,016 slow boards hourly. Even at 3 h they ran behind: 1,629 boards were more than
+  2 h overdue, all of them slow types. The fast API boards were on time.
+- **Real bottleneck:** the worker's one Python event loop sat at 100% of a core while the machine was 80% idle. py-spy
+  found salary and occupation matching using most of it, and both are now 2–6× faster.
 - **Trade-off:** "posted X ago" can be up to 3 h late on slow boards. Most jobs come from the hourly API boards.
 
 ## D34: An empty board is never disabled (Default, 2026-10-31)
