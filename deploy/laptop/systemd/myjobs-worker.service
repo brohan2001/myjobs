@@ -7,9 +7,14 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/myjobs/.venv/bin/myjobs worker
 # The worker drains in-flight work, then force-exits after 60 s
 TimeoutStopSec=90
-# One Chromium per browser board (up to ~20 at once): squeeze it before it can starve the desktop, Postgres or the API
-MemoryHigh=8G
-MemoryMax=10G
+Slice=myjobs.slice
+# Background work: the feed and the API win when the slice's CPU budget is contended
+CPUWeight=50
+IOWeight=50
+Nice=10
+# Its own ceiling inside the slice, so an OOM kills the worker (which restarts) and not the feed
+MemoryHigh=3800M
+MemoryMax=4300M
 Restart=always
 RestartSec=30
 

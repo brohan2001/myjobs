@@ -960,6 +960,9 @@ async def run_pipeline(
     """
     concurrency = settings.discovery_concurrency
     monitor_cap = settings.monitor_concurrency
+    if browser:
+        # Each browser coroutine owns a Playwright driver and launches a Chromium per board, so cap both (D30)
+        concurrency = monitor_cap = settings.browser_monitor_concurrency
     monitor_sem = asyncio.Semaphore(monitor_cap) if monitor_cap > 0 else None
     grace_s = max(0, int(settings.shutdown_grace_seconds))
     wtype = "browser" if browser else "simple"
