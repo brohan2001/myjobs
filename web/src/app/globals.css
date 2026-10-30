@@ -884,3 +884,170 @@ a {
   padding: 18px 14px;
 }
 
+
+/* Admin (/admin) */
+.admin-badge {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--clay);
+  border: 1.5px solid var(--clay);
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
+
+.admin-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.admin-nav a {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.admin-note {
+  color: var(--mute);
+  font-size: 14px;
+}
+
+.healthy-text {
+  color: var(--moss);
+  font-weight: 700;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  border: 1.5px solid var(--rule);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.tile-num {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-label {
+  color: var(--mute);
+  font-size: 14px;
+}
+
+.alert-list {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  color: var(--clay);
+}
+
+.meter {
+  display: inline-block;
+  width: 72px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--sel);
+  border: 1px solid var(--rule);
+  vertical-align: middle;
+  overflow: hidden;
+}
+
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--moss);
+}
+
+.meter > span.hot {
+  background: var(--clay);
+}
+
+.core-bars {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.core-bars .meter {
+  width: 22px;
+}
+
+.plain-table th[scope="row"] {
+  border-bottom: 1px dashed var(--rule);
+  vertical-align: top;
+}
+
+.plain-table .error-cell {
+  color: var(--clay);
+  font-size: 14px;
+  max-width: 28em;
+  overflow-wrap: anywhere;
+}
+
+.plain-table .actions-cell {
+  white-space: nowrap;
+}
+
+.actions-cell form {
+  display: inline;
+}
+
+.btn-small {
+  background: none;
+  border: 1.5px solid var(--edge);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin-left: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.btn-small:hover {
+  background: var(--sel);
+}
+
+.admin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.admin-filters input,
+.admin-filters select {
+  border: 1.5px solid var(--edge);
+  border-radius: 4px;
+  padding: 0 10px;
+  min-height: 38px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+  min-width: 0;
+}
+
+.admin-filters .tbtn {
+  margin-left: 0;
+}
+
+.pager {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
