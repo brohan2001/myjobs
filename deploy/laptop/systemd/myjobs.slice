@@ -1,0 +1,9 @@
+[Unit]
+Description=myjobs resource budget (D30)
+
+[Slice]
+# api + web + worker share 3 of the laptop's 8 threads and 5 GB; Postgres and Redis get 1 thread and ~1.25 GB in
+# docker-compose.yml. The rest stays free for the desktop and keeps the CPU out of thermal throttling.
+CPUQuota=300%
+MemoryHigh=4500M
+MemoryMax=5G

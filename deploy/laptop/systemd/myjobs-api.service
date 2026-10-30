@@ -2,6 +2,7 @@
 Description=myjobs public API (127.0.0.1:8090)
 
 [Service]
+Slice=myjobs.slice
 WorkingDirectory=%h/myjobs
 Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/myjobs/.venv/bin/myjobs serve --port 8090

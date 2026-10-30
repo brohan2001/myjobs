@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     # Pipeline concurrency (per-instance)
     discovery_concurrency: int = 40
     monitor_concurrency: int = 20  # single-instance default; per-domain rate limits still apply
+    browser_monitor_concurrency: int = 6  # one Chromium each: ~20 crashed launches and blew the memory budget (D30)
     raw_buffer_size: int = 10
     done_buffer_size: int = 10
     writeback_concurrency: int = 5
