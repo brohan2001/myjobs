@@ -9,7 +9,7 @@ Everything runs on the user's old laptop: Ubuntu 26.04, x86_64, 16 GB RAM, 450 G
 | API (`myjobs serve --port 8090`) | user unit `myjobs-api` | 127.0.0.1:8090 only |
 | Crawler (`myjobs worker`) | user unit `myjobs-worker` | — |
 | Web feed + `/admin` (`next start`) | user unit `myjobs-web` | `http://rohan-laptop.local:3000`, public via Cloudflare Tunnel (D32) |
-| Public URL (`cloudflared`) | user unit `myjobs-tunnel`, token `TUNNEL_TOKEN` in `.env` | the tunnel's hostname (D32) |
+| Public URL (`cloudflared`) | user unit `myjobs-tunnel`, token `TUNNEL_TOKEN` in `.env` | `https://myjobs.dpdns.org` (D32) |
 | Backups | `myjobs-backup.timer`: daily 03:30 `pg_dump -Fc` to `~/backups`, keeps 7 | — |
 
 The units are in `deploy/laptop/systemd/`, symlinked into `~/.config/systemd/user/`. Linger starts them at boot without a login.
