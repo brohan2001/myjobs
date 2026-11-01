@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     raw_buffer_size: int = 10
     done_buffer_size: int = 10
     writeback_concurrency: int = 5
+    # Share of claims that try page scrapes before board checks, so a check backlog can't starve them
+    scrape_claim_share: float = 0.3
     cpu_threads: int = 1
 
     model_config = SettingsConfigDict(env_file=(".env", ".env.local"), extra="ignore")

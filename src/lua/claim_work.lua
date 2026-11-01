@@ -5,6 +5,7 @@
 -- ARGV[3] = default_rate_delay (float seconds)
 -- ARGV[4] = max_domains_to_check (int) for the scrape pass
 -- ARGV[5] = lease_ttl (float seconds; lease set on claim — see #3159 / #3173)
+-- ARGV[6] = "1" to try page scrapes first (a share of claims, so a board-check backlog can't starve them)
 --
 -- Returns: {task_id, source_type, domain} or nil
 --
@@ -28,6 +29,7 @@ local now = tonumber(ARGV[2])
 local default_delay = tonumber(ARGV[3])
 local max_check = tonumber(ARGV[4]) or 10
 local lease_ttl = tonumber(ARGV[5]) or 600
+local prefer_scrapes = ARGV[6] == "1"
 
 local MONITOR_SCAN = 2000  -- due domains examined in pass A
 
@@ -96,6 +98,46 @@ local function finish(ready_key, domain, task_id, source_type)
     return {task_id, source_type, domain}
 end
 
+-- Pass B: page scrapes (and any monitor pass A couldn't reach), jobseek's round-robin.
+-- With scrapes_first, a domain's scrape is taken before its monitor.
+local function pass_b(scrapes_first)
+    local first, second = "monitors_", "scrapes_"
+    if scrapes_first then
+        first, second = "scrapes_", "monitors_"
+    end
+    for tier = 0, 2 do
+        local ready_key = "ready:" .. wtype .. ":" .. tier
+        local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, max_check)
+        for _, domain in ipairs(candidates) do
+            local rl_at = rate_limited(domain)
+            if rl_at then
+                -- Rate-limited: move it to when it becomes available
+                redis.call("ZADD", ready_key, rl_at, domain)
+            else
+                local prefix = first
+                local task_id = pop_due(first, domain)
+                if not task_id then
+                    prefix = second
+                    task_id = pop_due(second, domain)
+                end
+                if task_id then
+                    return finish(ready_key, domain, task_id, prefix == "monitors_" and "monitor" or "scrape")
+                end
+                -- Domain had no claimable tasks — remove from ready queue
+                redis.call("ZREM", ready_key, domain)
+            end
+        end
+    end
+    return nil
+end
+
+if prefer_scrapes then
+    local claimed = pass_b(true)
+    if claimed then
+        return claimed
+    end
+end
+
 -- Pass A: board checks, longest queue first. A shared throttle key such as "greenhouse" holds
 -- ~1,400 boards; served one domain per turn it would get one check per round of ~1,500 company
 -- domains. Picking the non-rate-limited domain with the most due checks drains big backlogs at
@@ -116,29 +158,4 @@ if best_domain then
     return finish(best_key, best_domain, pop_due("monitors_", best_domain), "monitor")
 end
 
--- Pass B: page scrapes (and any monitor pass A couldn't reach), jobseek's round-robin.
-for tier = 0, 2 do
-    local ready_key = "ready:" .. wtype .. ":" .. tier
-    local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, max_check)
-    for _, domain in ipairs(candidates) do
-        local rl_at = rate_limited(domain)
-        if rl_at then
-            -- Rate-limited: move it to when it becomes available
-            redis.call("ZADD", ready_key, rl_at, domain)
-        else
-            local task_id = pop_due("monitors_", domain)
-            local source_type = "monitor"
-            if not task_id then
-                task_id = pop_due("scrapes_", domain)
-                source_type = "scrape"
-            end
-            if task_id then
-                return finish(ready_key, domain, task_id, source_type)
-            end
-            -- Domain had no claimable tasks — remove from ready queue
-            redis.call("ZREM", ready_key, domain)
-        end
-    end
-end
-
-return nil
+return pass_b(false)

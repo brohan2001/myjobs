@@ -101,3 +101,21 @@ def test_big_monitor_backlog_is_not_starved_by_many_small_domains(r):
     claimed = [r.eval(LUA, 0, "simple", NOW + step * 0.1, 2.0, 10, 600)[2] for step in range(100)]
     assert claimed.count("greenhouse") >= 19  # every 0.5 s over 10 s
     assert len(set(claimed)) > 50  # the small domains still get served in between
+
+
+def test_a_scrape_first_claim_takes_a_scrape_despite_due_monitors(r):
+    # The share of claims made with ARGV[6] = "1" keeps scrapes moving during a board-check backlog.
+    r.zadd("monitors_simple:greenhouse", {"board-1": NOW - 3600})
+    r.zadd("ready:simple:1", {"greenhouse": NOW - 3600})
+    r.zadd("ft_scrapes_simple:jobs.example.com", {"posting-1": 0})
+    r.zadd("ready:simple:0", {"jobs.example.com": 0})
+
+    assert r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "1") == ["posting-1", "scrape", "jobs.example.com"]
+    assert claim(r) == ["board-1", "monitor", "greenhouse"]
+
+
+def test_a_scrape_first_claim_falls_back_to_monitors(r):
+    r.zadd("monitors_simple:greenhouse", {"board-1": NOW - 3600})
+    r.zadd("ready:simple:1", {"greenhouse": NOW - 3600})
+
+    assert r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "1") == ["board-1", "monitor", "greenhouse"]

@@ -36,6 +36,7 @@ Rate limiting (shared across worker types):
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -314,6 +315,7 @@ async def claim_work(*, browser: bool = False) -> WorkItem | None:
         str(settings.throttle_delay_default),
         "10",  # max domains to check per tier in the scrape pass
         str(settings.inflight_lease_ttl_seconds),
+        "1" if random.random() < settings.scrape_claim_share else "0",
     )
 
     if not result:
