@@ -145,3 +145,16 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
   yet, only 0.6% were in India, and half came from Workday (Dollar Tree, CVS, Five Below…).
 - **Measured on 30k scraped postings:** the URL title drops 99.3% of non-tech jobs and loses 1.2% of tech ones, mostly
   vague slugs like "Manager" with a fuller real title. The strict test would have dropped only 23% of non-tech jobs.
+
+## D36: India-first check intervals (User, 2026-11-01)
+- **What:** `src/priority.py` sorts each company by its open tech jobs and sets its boards' check interval in Postgres
+  and in the Redis board hash:
+  - `india`: any open job is in India or has no resolved location. Keeps the base interval: 1 h, or 3 h for slow types
+    (D33).
+  - `no_india`: every open job is located, and none is in India. Checked every 12 h.
+  - `none`: no open tech jobs. Checked every 8 h.
+- **When:** at the end of `sync`, and every 6 h from the simple-worker pipeline, with a Redis lock so only one process
+  runs it.
+- **Why:** the user asked for India-first crawling. On 2026-11-01 the split was 3,682 / 2,398 / 1,131 boards, so board
+  checks fall from about 5,850/h to about 3,000/h, and the freed time goes to page fetches.
+- **Trade-off:** when a `no_india` company opens its first India job, it can show up to 12 h late.
