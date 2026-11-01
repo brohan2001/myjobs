@@ -49,8 +49,9 @@ say "Services"
 mkdir -p ~/.config/systemd/user ~/backups
 ln -sf "$repo"/deploy/laptop/systemd/* ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now myjobs-api myjobs-worker myjobs-web myjobs-backup.timer myjobs-alert.timer
-systemctl --user restart myjobs-api myjobs-worker myjobs-web
+extras="myjobs-worker-extra@1 myjobs-worker-extra@2"   # simple-board crawlers next to myjobs-worker (D30)
+systemctl --user enable --now myjobs-api myjobs-worker $extras myjobs-web myjobs-backup.timer myjobs-alert.timer
+systemctl --user restart myjobs-api myjobs-worker $extras myjobs-web
 if grep -q '^TUNNEL_TOKEN=.' .env; then
   systemctl --user enable --now myjobs-tunnel && systemctl --user restart myjobs-tunnel
 else
