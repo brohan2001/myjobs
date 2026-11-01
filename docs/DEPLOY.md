@@ -7,7 +7,7 @@ Everything runs on the user's old laptop: Ubuntu 26.04, x86_64, 16 GB RAM, 450 G
 |---|---|---|
 | Postgres 16, Redis 7 | `docker compose`, `restart: unless-stopped` | 127.0.0.1 only |
 | API (`myjobs serve --port 8090`) | user unit `myjobs-api` | 127.0.0.1:8090 only |
-| Crawler (`myjobs worker`) | user unit `myjobs-worker` | — |
+| Crawler (`myjobs worker`) | user units `myjobs-worker` (browser + sync) and `myjobs-worker-extra@1..2` | — |
 | Web feed + `/admin` (`next start`) | user unit `myjobs-web` | `http://rohan-laptop.local:3000`, public via Cloudflare Tunnel (D32) |
 | Public URL (`cloudflared`) | user unit `myjobs-tunnel`, token `TUNNEL_TOKEN` in `.env` | `https://myjobs.dpdns.org` (D32) |
 | Backups | `myjobs-backup.timer`: daily 03:30 `pg_dump -Fc` to `~/backups`, keeps 7 | — |
@@ -17,7 +17,7 @@ The units are in `deploy/laptop/systemd/`, symlinked into `~/.config/systemd/use
 The laptop never sleeps: the lid is ignored and the sleep targets are masked.
 
 **Resource budget (D30):**
-- api, web and worker run in `myjobs.slice` (300% CPU, 5 GB). Postgres and Redis get 1 CPU and ~1.25 GB in
+- api, web and the workers run in `myjobs.slice` (400% CPU, 6.5 GB). Postgres and Redis get 1 CPU and ~1.3 GB in
   `docker-compose.yml`.
 - Check the live limits with `systemctl --user show myjobs.slice -p CPUQuotaPerSecUSec,MemoryMax,MemoryCurrent` and
   `docker stats`.

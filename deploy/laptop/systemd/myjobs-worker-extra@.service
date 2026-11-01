@@ -1,0 +1,22 @@
+[Unit]
+Description=myjobs extra crawler %i (simple boards only, D30)
+After=myjobs-worker.service
+
+[Service]
+WorkingDirectory=%h/myjobs
+Environment=PYTHONUNBUFFERED=1
+# One Python event loop is the crawl's bottleneck (D33), so extra processes add throughput where extra coroutines can't.
+# No browser and no sync: myjobs-worker owns both.
+ExecStart=%h/myjobs/.venv/bin/myjobs worker --no-browser --no-sync
+TimeoutStopSec=90
+Slice=myjobs.slice
+CPUWeight=50
+IOWeight=50
+Nice=10
+MemoryHigh=1200M
+MemoryMax=1500M
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
