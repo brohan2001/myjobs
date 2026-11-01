@@ -192,9 +192,14 @@ _KNOWN_ATS_DOMAINS = frozenset(
 )
 
 
+# Scrapes are queued by job-URL host. These hosts serve every tenant of an ATS whose scraper calls its public detail
+# API, so they get the ATS delay too (SmartRecruiters had an 80k-page backlog at 2 s a page).
+_ATS_API_SCRAPE_HOSTS = frozenset({"jobs.smartrecruiters.com", "apply.workable.com"})
+
+
 def delay_for_domain(domain: str) -> float:
     """Return the throttle delay for a domain."""
-    if domain in _KNOWN_ATS_DOMAINS:
+    if domain in _KNOWN_ATS_DOMAINS or domain in _ATS_API_SCRAPE_HOSTS:
         return settings.throttle_delay_ats
     return settings.throttle_delay_default
 
