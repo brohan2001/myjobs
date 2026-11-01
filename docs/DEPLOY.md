@@ -49,5 +49,8 @@ sudo ~/myjobs/deploy/laptop/root-setup.sh   # once: Docker, Node, Chromium libs 
 - Status: `systemctl --user status 'myjobs-*'`; `.venv/bin/myjobs health`; `.venv/bin/myjobs stats`.
 - sudo asks for a password, so root steps can't run over a non-interactive SSH session.
 
-## Not done yet
-Off-machine backups.
+## Off-machine backup (on the Mac)
+`deploy/laptop/pull-backup.sh` copies the newest dump to `~/myjobs-backups` and keeps 3. A LaunchAgent
+(`~/Library/LaunchAgents/co.myjobs.pull-backup.plist`) runs it daily at 10:00 and at login. macOS won't let a
+LaunchAgent run scripts in `~/Documents`, so it runs a copy: `cp deploy/laptop/pull-backup.sh ~/myjobs-backups/`
+after changing the script. The log is `~/myjobs-backups/pull.log`.
