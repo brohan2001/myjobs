@@ -36,6 +36,7 @@ from src.metrics import (
     tasks_total,
     worker_heartbeat_ts,
 )
+from src.priority import priority_loop
 from src.redis_queue import (
     BoardWork,
     ScrapeWork,
@@ -1000,6 +1001,8 @@ async def run_pipeline(
         name="reaper",
     )
     tasks.append(reaper_task)
+    if not browser:
+        tasks.append(asyncio.create_task(priority_loop(local_pool, shutdown_event), name="priority"))
 
     try:
         # Phase 1: wait until either shutdown_event fires or a worker
