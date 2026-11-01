@@ -22,6 +22,7 @@ data/{companies,boards}.csv ─► sync ─► Redis queues ─► worker: monit
 | `data/` | Company and board registry, plus taxonomy CSVs |
 | `src/sync.py` | CSV → Postgres + Redis queues |
 | `src/workers/pipeline.py` | The crawl loop |
+| `src/priority.py` | Check intervals: India-first (D36) |
 | `src/core/monitors/`, `src/core/scrapers/` | Per-ATS code, vendored from jobseek (`docs/UPSTREAM.md`) |
 | `src/core/*_resolve.py`, `*_extract.py`, `tech_gate.py` | Enrichment and the tech filter (ours) |
 | `src/processing/`, `src/queries/`, `src/lua/`, `src/redis_queue.py` | Pipeline stages, SQL, queue scripts |
