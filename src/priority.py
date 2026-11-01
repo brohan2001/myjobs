@@ -21,6 +21,7 @@ SLOW_MONITORS = {"dom", "sitemap", "icims", "workday", "api_sniffer"}
 NO_INDIA_MINUTES = 720
 NO_JOBS_MINUTES = 480
 REFRESH_SECONDS = 6 * 3600
+RETRY_SECONDS = 600
 
 # A company "may hire in India" if any open tech job is in India or has no resolved location.
 _CLASSIFY = """
@@ -85,13 +86,24 @@ async def apply_india_priority(conn: asyncpg.Connection) -> Counter:
 
 
 async def priority_loop(pool: asyncpg.Pool, shutdown_event: asyncio.Event) -> None:
-    """Re-classify every 6 h. A Redis lock lets only one worker process do it."""
-    while not shutdown_event.is_set():
+    """Re-classify every 6 h. A Redis lock lets only one worker process do it; a failed run frees it for a retry.
+
+    The first run waits 10 min: the worker's startup sync has just applied the intervals.
+    """
+    wait = RETRY_SECONDS
+    while True:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown_event.wait(), timeout=wait)
+        if shutdown_event.is_set():
+            return
+        wait = REFRESH_SECONDS
+        r = get_redis()
         try:
-            if await get_redis().set("lock:priority", "1", nx=True, ex=REFRESH_SECONDS - 60):
+            if await r.set("lock:priority", "1", nx=True, ex=REFRESH_SECONDS - 60):
                 async with pool.acquire() as conn:
                     await apply_india_priority(conn)
         except Exception:
             log.exception("priority.failed")
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(shutdown_event.wait(), timeout=REFRESH_SECONDS)
+            with contextlib.suppress(Exception):
+                await r.delete("lock:priority")
+            wait = RETRY_SECONDS
