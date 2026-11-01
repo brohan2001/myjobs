@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Redis (local instance)
     redis_url: str = "redis://localhost:6379/0"
-    redis_max_connections: int = 60
+    redis_max_connections: int = 200  # per process: one per coroutine plus each in-flight lease heartbeat
     throttle_delay_default: float = 2.0
     throttle_delay_ats: float = 0.5
 
