@@ -90,6 +90,8 @@ is needed only once. Resource limits are in D30. See `docs/DEPLOY.md`.
 Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 °C. Its ~20 Chromiums also crashed on launch.
 - **Budget:** `myjobs.slice` gives api, web and worker 300% CPU and 5 GB together. Postgres and Redis get 1 CPU and about
   1.25 GB in `docker-compose.yml`.
+  That is Postgres 768 MB and Redis 512 MB. Redis started with 256 MB, but on 2026-10-31 a scrape backlog of 429k tasks
+  got it OOM-killed. The queue now reloads its Lua scripts after a Redis restart.
 - **Priorities inside the slice:** the worker has a lower CPU and IO weight and its own 4.3 GB ceiling, so under pressure it
   slows down or restarts and the feed stays up.
 - **Why a quota and not pinning:** a quota (`CPUQuota`) still lets the scheduler spread the load across every core.
