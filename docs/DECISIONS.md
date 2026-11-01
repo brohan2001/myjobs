@@ -136,3 +136,12 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Why:** 6 empty hourly checks disabled real boards for good. Startups with no openings right now, such as lucidbots
   and striiminc, returned 200 with an empty list. 219 boards had been lost that way, with no rediscovery to bring them
   back. They were re-enabled on 2026-10-31.
+
+## D35: Workday and iCIMS jobs are judged by the title in their URL (Default, 2026-11-01)
+- **What:** these ATSs list only URLs, but the URL carries the real title (`…/job/<location>/<Title>_<ReqId>`,
+  `…/jobs/<id>/<title>/job`). `drop_at_monitor` now runs the full tech test on that title, so non-tech jobs are never
+  stored or queued for a page fetch. Other URL slugs still drop only clearly non-tech roles.
+- **Why:** 424k first-time page fetches were queued and growing by about 15k/h. 94% of the queued postings had no title
+  yet, only 0.6% were in India, and half came from Workday (Dollar Tree, CVS, Five Below…).
+- **Measured on 30k scraped postings:** the URL title drops 99.3% of non-tech jobs and loses 1.2% of tech ones, mostly
+  vague slugs like "Manager" with a fuller real title. The strict test would have dropped only 23% of non-tech jobs.
