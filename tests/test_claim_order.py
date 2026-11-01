@@ -127,3 +127,15 @@ def test_a_scrapes_only_claim_never_returns_a_monitor(r):
 
     assert r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "2") is None
     assert claim(r) == ["board-1", "monitor", "greenhouse"]  # still queued for a normal claim
+
+
+def test_a_scrapes_only_claim_reaches_past_monitor_only_domains(r):
+    # 200 due monitor-only domains at the front must not hide a scrape behind them.
+    for i in range(200):
+        r.zadd(f"monitors_simple:m{i}.example.com", {f"board-{i}": NOW - 60})
+        r.zadd("ready:simple:0", {f"m{i}.example.com": NOW - 100 + i * 0.01})
+    r.zadd("ft_scrapes_simple:jobs.example.com", {"posting-1": 0})
+    r.zadd("ready:simple:0", {"jobs.example.com": NOW - 1})
+
+    claims = [r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "2", f) for f in (0.0, 0.5, 0.999)]
+    assert ["posting-1", "scrape", "jobs.example.com"] in claims

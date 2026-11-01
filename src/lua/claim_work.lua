@@ -7,6 +7,8 @@
 -- ARGV[5] = lease_ttl (float seconds; lease set on claim — see #3159 / #3173)
 -- ARGV[6] = "1" to try page scrapes first (a share of claims, so a board-check backlog can't starve them),
 --           "2" for scrapes only (the worker has no free monitor slot)
+-- ARGV[7] = a random fraction in [0, 1): where scrape-first claims start in each ready set, so they spread over
+--           every domain instead of re-reading the same front of the queue
 --
 -- Returns: {task_id, source_type, domain} or nil
 --
@@ -32,6 +34,7 @@ local max_check = tonumber(ARGV[4]) or 10
 local lease_ttl = tonumber(ARGV[5]) or 600
 local prefer_scrapes = ARGV[6] == "1" or ARGV[6] == "2"
 local scrapes_only = ARGV[6] == "2"
+local start_frac = tonumber(ARGV[7]) or 0
 
 local MONITOR_SCAN = 2000  -- due domains examined in pass A
 
@@ -111,7 +114,12 @@ local function pass_b(scrapes_first)
         local ready_key = "ready:" .. wtype .. ":" .. tier
         -- Scrapes-only claims skip monitor-only domains without removing them, so they look further.
         local limit = scrapes_only and max_check * 5 or max_check
-        local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, limit)
+        local offset = 0
+        if scrapes_first then
+            local due_count = redis.call("ZCOUNT", ready_key, "-inf", tostring(now))
+            offset = math.floor(start_frac * math.max(0, due_count - limit + 1))
+        end
+        local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", offset, limit)
         for _, domain in ipairs(candidates) do
             local rl_at = rate_limited(domain)
             if rl_at then
