@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import redis.asyncio as aioredis
+from redis.exceptions import NoScriptError
 import structlog
 
 from src.config import settings
@@ -135,27 +136,27 @@ class WorkItem:
 # ---------------------------------------------------------------------------
 
 _LUA_DIR = Path(__file__).parent / "lua"
-_CLAIM_SHA: str | None = None
-_ENQUEUE_SHA: str | None = None
-_RESCHEDULE_SHA: str | None = None
-_COMPLETE_SHA: str | None = None
-_HEARTBEAT_SHA: str | None = None
-_REAP_SHA: str | None = None
+_SCRIPTS = ("claim_work", "enqueue_task", "reschedule_task", "complete_task", "heartbeat_task", "reap_expired")
+_SHAS: dict[str, str] = {}
 
 
 async def _load_scripts() -> None:
-    """Load Lua scripts into Redis and cache their SHAs."""
-    global _CLAIM_SHA, _ENQUEUE_SHA, _RESCHEDULE_SHA
-    global _COMPLETE_SHA, _HEARTBEAT_SHA, _REAP_SHA
-    if _CLAIM_SHA is not None:
-        return
+    """Load the Lua scripts into Redis and cache their SHAs."""
     r = get_redis()
-    _CLAIM_SHA = await r.script_load((_LUA_DIR / "claim_work.lua").read_text())
-    _ENQUEUE_SHA = await r.script_load((_LUA_DIR / "enqueue_task.lua").read_text())
-    _RESCHEDULE_SHA = await r.script_load((_LUA_DIR / "reschedule_task.lua").read_text())
-    _COMPLETE_SHA = await r.script_load((_LUA_DIR / "complete_task.lua").read_text())
-    _HEARTBEAT_SHA = await r.script_load((_LUA_DIR / "heartbeat_task.lua").read_text())
-    _REAP_SHA = await r.script_load((_LUA_DIR / "reap_expired.lua").read_text())
+    for name in _SCRIPTS:
+        _SHAS[name] = await r.script_load((_LUA_DIR / f"{name}.lua").read_text())
+
+
+async def _evalsha(script: str, *args: str):
+    """Run a cached Lua script. A restarted Redis has lost its script cache, so reload once on NoScriptError."""
+    if not _SHAS:
+        await _load_scripts()
+    try:
+        return await get_redis().evalsha(_SHAS[script], 0, *args)
+    except NoScriptError:
+        log.warning("redis.scripts_reloaded", script=script)
+        await _load_scripts()
+        return await get_redis().evalsha(_SHAS[script], 0, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -212,13 +213,11 @@ async def enqueue_monitor(
     first_time: bool = False,
 ) -> bool:
     """Enqueue a board monitor task. Returns True if newly added."""
-    await _load_scripts()
     r = get_redis()
     wtype = "browser" if browser else "simple"
 
-    added = await r.evalsha(
-        _ENQUEUE_SHA,
-        0,
+    added = await _evalsha(
+        "enqueue_task",
         wtype,
         domain,
         board_id,
@@ -269,13 +268,11 @@ async def enqueue_scrape(
     first_time: bool = False,
 ) -> bool:
     """Enqueue a scrape task. Returns True if newly added."""
-    await _load_scripts()
     r = get_redis()
     wtype = "browser" if browser else "simple"
 
-    added = await r.evalsha(
-        _ENQUEUE_SHA,
-        0,
+    added = await _evalsha(
+        "enqueue_task",
         wtype,
         domain,
         posting_id,
@@ -307,13 +304,11 @@ async def claim_work(*, browser: bool = False) -> WorkItem | None:
     calling ``reschedule_task`` or ``complete_task``, the reaper sweeps
     the expired lease back onto the per-domain queue.
     """
-    await _load_scripts()
     r = get_redis()
     wtype = "browser" if browser else "simple"
 
-    result = await r.evalsha(
-        _CLAIM_SHA,
-        0,
+    result = await _evalsha(
+        "claim_work",
         wtype,
         str(time.time()),
         str(settings.throttle_delay_default),
@@ -375,12 +370,9 @@ async def reschedule_task(
 
     Also clears the inflight lease entry — see ``reschedule_task.lua``.
     """
-    await _load_scripts()
-    r = get_redis()
     wtype = "browser" if browser else "simple"
-    await r.evalsha(
-        _RESCHEDULE_SHA,
-        0,
+    await _evalsha(
+        "reschedule_task",
         wtype,
         domain,
         task_id,
@@ -409,12 +401,9 @@ async def complete_task(
     re-enqueue. Idempotent: returns 1 if the lease was present, 0 if
     it had already been swept.
     """
-    await _load_scripts()
-    r = get_redis()
     wtype = "browser" if browser else "simple"
-    result = await r.evalsha(
-        _COMPLETE_SHA,
-        0,
+    result = await _evalsha(
+        "complete_task",
         wtype,
         task_type,
         domain,
@@ -439,8 +428,6 @@ async def heartbeat_task(
     already gone (reaper raced ahead — caller should stop processing
     to avoid double-execution).
     """
-    await _load_scripts()
-    r = get_redis()
     wtype = "browser" if browser else "simple"
     ttl = (
         extension_seconds
@@ -448,9 +435,8 @@ async def heartbeat_task(
         else float(settings.inflight_lease_ttl_seconds)
     )
     new_until = time.time() + ttl
-    result = await r.evalsha(
-        _HEARTBEAT_SHA,
-        0,
+    result = await _evalsha(
+        "heartbeat_task",
         wtype,
         task_type,
         domain,
@@ -467,13 +453,10 @@ async def reap_expired(*, browser: bool = False) -> dict[str, int]:
     for the single batch swept. The reaper coroutine calls this on a
     loop; ``max_entries`` caps work per call to bound Lua runtime.
     """
-    await _load_scripts()
-    r = get_redis()
     wtype = "browser" if browser else "simple"
     now = time.time()
-    result = await r.evalsha(
-        _REAP_SHA,
-        0,
+    result = await _evalsha(
+        "reap_expired",
         wtype,
         str(now),
         str(settings.reaper_batch_size),
