@@ -37,7 +37,9 @@ _OCCUPATIONS_CSV = Path(__file__).resolve().parents[2] / "data" / "occupations.c
 _TECH_WORDS = re.compile(
     r"\b("
     r"software|developer|programmer|engineer(?:ing)?|sde|swe|sdet|mts|devops|devsecops|sre|"
-    r"full[- ]?stack|front[- ]?end|back[- ]?end|web|mobile|android|ios|flutter|react|java|python|golang|"
+    r"full[- ]?stack|front[- ]?end|back[- ]?end|web|android|"
+    # Bare "mobile" matched retail roles ("Mobile Associate - Retail Sales"); only mobile software counts.
+    r"mobile (?:apps?|application|develop\w*|engineer\w*|software|platform|games?)|ios|flutter|react|java|python|golang|"
     r"\.net|node(?:\.?js)?|data|analytics|machine learning|ml|mlops|ai|artificial intelligence|llm|nlp|"
     r"computer vision|deep learning|scientist|research(?:er)?|cloud|platform|infrastructure|"
     r"security|cyber|network|database|dba|systems?|it|qa|quality assurance|test(?:ing)?|automation|"
