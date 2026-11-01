@@ -316,6 +316,7 @@ async def claim_work(*, browser: bool = False, scrapes_only: bool = False) -> Wo
         "10",  # max domains to check per tier in the scrape pass
         str(settings.inflight_lease_ttl_seconds),
         "2" if scrapes_only else "1" if random.random() < settings.scrape_claim_share else "0",
+        str(random.random()),
     )
 
     if not result:
