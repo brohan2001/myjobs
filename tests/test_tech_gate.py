@@ -70,3 +70,13 @@ WD = "https://acme.wd5.myworkdayjobs.com/External/job"
 ])
 def test_drop_at_monitor_ats_slug_titles(url, dropped):
     assert drop_at_monitor(url, None) is dropped
+
+
+@pytest.mark.parametrize("title,tech", [
+    ("Mobile Associate - Retail Sales", False),
+    ("Senior Mobile Engineer", True),
+    ("Team Lead Mobile Development", True),
+    ("Mobile App Developer", True),
+])
+def test_mobile_counts_only_as_mobile_software(title, tech):
+    assert is_tech_title(title) is tech
