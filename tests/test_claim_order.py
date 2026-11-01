@@ -139,3 +139,11 @@ def test_a_scrapes_only_claim_reaches_past_monitor_only_domains(r):
 
     claims = [r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "2", f) for f in (0.0, 0.5, 0.999)]
     assert ["posting-1", "scrape", "jobs.example.com"] in claims
+
+
+def test_shared_ats_api_hosts_get_the_ats_delay():
+    from src.config import settings
+    from src.redis_queue import delay_for_domain
+
+    assert delay_for_domain("jobs.smartrecruiters.com") == settings.throttle_delay_ats
+    assert delay_for_domain("careers.example.com") == settings.throttle_delay_default
