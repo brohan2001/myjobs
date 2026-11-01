@@ -296,7 +296,7 @@ async def enqueue_scrape(
 # ---------------------------------------------------------------------------
 
 
-async def claim_work(*, browser: bool = False, prefer_scrapes: bool = False) -> WorkItem | None:
+async def claim_work(*, browser: bool = False, scrapes_only: bool = False) -> WorkItem | None:
     """Claim the next available work item from the tiered ready queues.
 
     Uses a Lua script for atomic claim + rate limit + reschedule +
@@ -315,7 +315,7 @@ async def claim_work(*, browser: bool = False, prefer_scrapes: bool = False) -> 
         str(settings.throttle_delay_default),
         "10",  # max domains to check per tier in the scrape pass
         str(settings.inflight_lease_ttl_seconds),
-        "1" if prefer_scrapes or random.random() < settings.scrape_claim_share else "0",
+        "2" if scrapes_only else "1" if random.random() < settings.scrape_claim_share else "0",
     )
 
     if not result:

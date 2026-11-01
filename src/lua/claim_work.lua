@@ -5,7 +5,8 @@
 -- ARGV[3] = default_rate_delay (float seconds)
 -- ARGV[4] = max_domains_to_check (int) for the scrape pass
 -- ARGV[5] = lease_ttl (float seconds; lease set on claim — see #3159 / #3173)
--- ARGV[6] = "1" to try page scrapes first (a share of claims, so a board-check backlog can't starve them)
+-- ARGV[6] = "1" to try page scrapes first (a share of claims, so a board-check backlog can't starve them),
+--           "2" for scrapes only (the worker has no free monitor slot)
 --
 -- Returns: {task_id, source_type, domain} or nil
 --
@@ -29,7 +30,8 @@ local now = tonumber(ARGV[2])
 local default_delay = tonumber(ARGV[3])
 local max_check = tonumber(ARGV[4]) or 10
 local lease_ttl = tonumber(ARGV[5]) or 600
-local prefer_scrapes = ARGV[6] == "1"
+local prefer_scrapes = ARGV[6] == "1" or ARGV[6] == "2"
+local scrapes_only = ARGV[6] == "2"
 
 local MONITOR_SCAN = 2000  -- due domains examined in pass A
 
@@ -107,7 +109,9 @@ local function pass_b(scrapes_first)
     end
     for tier = 0, 2 do
         local ready_key = "ready:" .. wtype .. ":" .. tier
-        local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, max_check)
+        -- Scrapes-only claims skip monitor-only domains without removing them, so they look further.
+        local limit = scrapes_only and max_check * 5 or max_check
+        local candidates = redis.call("ZRANGEBYSCORE", ready_key, "-inf", tostring(now), "LIMIT", 0, limit)
         for _, domain in ipairs(candidates) do
             local rl_at = rate_limited(domain)
             if rl_at then
@@ -116,15 +120,17 @@ local function pass_b(scrapes_first)
             else
                 local prefix = first
                 local task_id = pop_due(first, domain)
-                if not task_id then
+                if not task_id and not scrapes_only then
                     prefix = second
                     task_id = pop_due(second, domain)
                 end
                 if task_id then
                     return finish(ready_key, domain, task_id, prefix == "monitors_" and "monitor" or "scrape")
                 end
-                -- Domain had no claimable tasks — remove from ready queue
-                redis.call("ZREM", ready_key, domain)
+                -- Domain had no claimable tasks — remove from ready queue (unless only its scrapes were looked at)
+                if not scrapes_only then
+                    redis.call("ZREM", ready_key, domain)
+                end
             end
         end
     end
@@ -133,7 +139,7 @@ end
 
 if prefer_scrapes then
     local claimed = pass_b(true)
-    if claimed then
+    if claimed or scrapes_only then
         return claimed
     end
 end

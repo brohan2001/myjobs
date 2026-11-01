@@ -119,3 +119,11 @@ def test_a_scrape_first_claim_falls_back_to_monitors(r):
     r.zadd("ready:simple:1", {"greenhouse": NOW - 3600})
 
     assert r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "1") == ["board-1", "monitor", "greenhouse"]
+
+
+def test_a_scrapes_only_claim_never_returns_a_monitor(r):
+    r.zadd("monitors_simple:greenhouse", {"board-1": NOW - 3600})
+    r.zadd("ready:simple:1", {"greenhouse": NOW - 3600})
+
+    assert r.eval(LUA, 0, "simple", NOW, 2.0, 10, 600, "2") is None
+    assert claim(r) == ["board-1", "monitor", "greenhouse"]  # still queued for a normal claim
