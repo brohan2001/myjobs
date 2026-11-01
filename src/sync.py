@@ -27,7 +27,7 @@ from src.core.monitors import api_monitor_types, monitor_needs_browser
 from src.core.scrapers import scraper_needs_browser
 from src.db import close_all_pools, create_local_pool
 from src.priority import apply_india_priority, base_interval
-from src.redis_queue import close_redis, enqueue_monitor, remove_monitor
+from src.redis_queue import close_redis, enqueue_monitor, get_redis, remove_monitor
 from src.shared.logging import setup_logging
 
 _API_MONITOR_TYPES = api_monitor_types()
@@ -363,13 +363,17 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
             "monitor_needs_browser": monitor_browser_flags[i],
             "scraper_needs_browser": scraper_browser_flags[i],
         }
+        # A board already on its recurring schedule keeps its due time: re-adding it as first-time would make
+        # every board due at once after each worker restart.
+        wtype = "browser" if mon_browser else "simple"
+        scheduled = await get_redis().zscore(f"monitors_{wtype}:{throttle_keys[i]}", str(board_id))
         await enqueue_monitor(
             throttle_keys[i],
             str(board_id),
             time.time(),
             config,
             browser=mon_browser,
-            first_time=True,
+            first_time=scheduled is None,
         )
         redis_enqueued += 1
 
