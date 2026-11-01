@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     crawler_db_pool_max: int = 20
 
     # Pipeline concurrency (per-instance)
-    discovery_concurrency: int = 40
-    monitor_concurrency: int = 30  # per process; the other 10 coroutines keep page scrapes moving
+    discovery_concurrency: int = 80  # per process; the work waits on the network and per-domain delays, not CPU
+    monitor_concurrency: int = 40  # per process; the other 40 coroutines keep page scrapes moving
     browser_monitor_concurrency: int = 6  # one Chromium each: ~20 crashed launches and blew the memory budget (D30)
     raw_buffer_size: int = 10
     done_buffer_size: int = 10
