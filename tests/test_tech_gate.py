@@ -51,3 +51,22 @@ def test_untitled_jobs_are_kept(title):
 ])
 def test_drop_at_monitor(url, title, dropped):
     assert drop_at_monitor(url, title) is dropped
+
+
+WD = "https://acme.wd5.myworkdayjobs.com/External/job"
+
+
+@pytest.mark.parametrize("url,dropped", [
+    # Workday and iCIMS put the real title in the URL, so it is judged like a title (D35).
+    (f"{WD}/Plano-TX/Store-Associate_R12345-1", True),
+    (f"{WD}/Ipswich/Senior-Wealth-Planner---Mass-Affluent_JR-0000100217-1", True),
+    (f"{WD}/Bengaluru/Senior-Software-Engineer_R123", False),
+    (f"{WD}/San-Jose-California-US/ASIC-Engineering-Technical-Leader_2006625", False),
+    ("https://careers-x.icims.com/jobs/1706473/part-time-grocery-stock-clerk/job", True),
+    ("https://careers-x.icims.com/jobs/19057/experienced-component-engineer/job", False),
+    # Too little to judge: kept for the scrape.
+    (f"{WD}/Pune/Manager_R1", False),
+    (f"{WD}/Tokyo/XMLNAME--2027-_R9", False),
+])
+def test_drop_at_monitor_ats_slug_titles(url, dropped):
+    assert drop_at_monitor(url, None) is dropped

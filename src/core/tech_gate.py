@@ -111,15 +111,45 @@ def title_from_url(url: str) -> str | None:
     return best
 
 
+_ATS_REQ_ID = re.compile(r"_[A-Za-z0-9-]*\d[A-Za-z0-9-]*$")
+_UNICODE_WORD = re.compile(r"[^\W\d_][\w+#.]*")
+
+
+def ats_slug_title(url: str) -> str | None:
+    """The job title from a URL whose ATS puts it in a fixed place, or None.
+
+    Workday: ``…myworkdayjobs.com/<site>/job/<location>/<Title-Words>_<ReqId>``; iCIMS:
+    ``…icims.com/jobs/<id>/<title-words>/job``. One-word slugs and Workday's ``XMLNAME`` placeholder
+    say too little and return None.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    segments = [unquote(s) for s in parsed.path.split("/") if s]
+    if host.endswith(".myworkdayjobs.com") and "job" in segments[:-1]:
+        raw = _ATS_REQ_ID.sub("", segments[-1])
+    elif host.endswith(".icims.com") and len(segments) >= 3 and segments[0] == "jobs" and segments[1].isdigit():
+        raw = segments[2]
+    else:
+        return None
+    words = _UNICODE_WORD.findall(raw.replace("-", " ").replace("_", " "))
+    if len(words) < 2 or "xmlname" in raw.lower():
+        return None
+    return " ".join(words)
+
+
 def drop_at_monitor(url: str, title: str | None) -> bool:
     """Should a board check drop this posting before it is stored or scraped?
 
-    With a real title (rich monitors), drop non-tech titles. With only a URL, drop just when the
-    slug names a known non-tech occupation ("…/Restaurant-Crew-Member/123"): a vague slug like
-    "open-positions" must never cost a real tech job. Everything else is judged after the scrape.
+    With a real title (rich monitors), drop non-tech titles. Workday and iCIMS URLs carry the real
+    title, so they are judged like one (D35). With any other URL, drop just when the slug names a
+    known non-tech occupation ("…/Restaurant-Crew-Member/123"): a vague slug like "open-positions"
+    must never cost a real tech job. Everything else is judged after the scrape.
     """
     if title and title.strip():
         return not is_tech_title(title)
+    ats_title = ats_slug_title(url)
+    if ats_title:
+        return not is_tech_title(ats_title)
     slug_title = title_from_url(url)
     return bool(slug_title) and clearly_non_tech(slug_title)
 
