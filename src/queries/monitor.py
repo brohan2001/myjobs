@@ -200,7 +200,10 @@ touched AS (
   WHERE job_posting.board_id = $2
     AND job_posting.is_active = true
     AND job_posting.source_url = d.url
-  RETURNING job_posting.id, job_posting.source_url, job_posting.description_r2_hash
+  -- The stored content lets the caller skip re-extracting rows that haven't changed.
+  RETURNING job_posting.id, job_posting.source_url, job_posting.description_r2_hash,
+            (SELECT max(ds.hash) FROM descriptions ds WHERE ds.posting_id = job_posting.id) AS desc_hash,
+            job_posting.titles, job_posting.locations_raw, job_posting.employment_type
 ),
 relisted AS (
   UPDATE job_posting
@@ -249,15 +252,18 @@ new_urls AS (
     WHERE jp.source_url = d.url
   )
 )
-SELECT 'touched' AS action, id::text, source_url AS url, description_r2_hash FROM touched
+SELECT 'touched' AS action, id::text, source_url AS url, description_r2_hash,
+       desc_hash, titles, locations_raw, employment_type FROM touched
 UNION ALL
-SELECT 'relisted' AS action, id::text, source_url AS url, description_r2_hash FROM relisted
+SELECT 'relisted' AS action, id::text, source_url AS url, description_r2_hash,
+       NULL::bigint, NULL::text[], NULL::text[], NULL::text FROM relisted
 UNION ALL
 -- id is NULL for foreign rows: the owning board's id has no meaning
 -- for the calling board, and the Python layer only counts this action.
-SELECT 'foreign' AS action, NULL::text, source_url AS url, NULL::bigint FROM foreign_touched
+SELECT 'foreign' AS action, NULL::text, source_url AS url, NULL::bigint,
+       NULL::bigint, NULL::text[], NULL::text[], NULL::text FROM foreign_touched
 UNION ALL
-SELECT 'new', NULL, url, NULL::bigint FROM new_urls
+SELECT 'new', NULL, url, NULL::bigint, NULL::bigint, NULL::text[], NULL::text[], NULL::text FROM new_urls
 """
 
 _MARK_GONE = """

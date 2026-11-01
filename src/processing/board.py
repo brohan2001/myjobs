@@ -42,6 +42,7 @@ from src.processing.cpu import (
     _error_message,
     _extract_experience_fields,
     _extract_salary_fields,
+    _rich_row_unchanged,
     _parse_metadata,
     _resolve_locations_sync,
     _resolve_occupation_seniority,
@@ -870,6 +871,10 @@ async def _process_one_board_streaming(
                                     "id": row["id"],
                                     "url": row["url"],
                                     "r2_hash": int(r2h) if r2h is not None else None,
+                                    "desc_hash": row["desc_hash"],
+                                    "titles": row["titles"],
+                                    "locations_raw": row["locations_raw"],
+                                    "employment_type": row["employment_type"],
                                 }
                             )
                         elif action == "foreign":
@@ -1083,6 +1088,13 @@ async def _process_one_board_streaming(
                             for _, j, _ in update_triples:
                                 j.description = normalize_description_html(j.description)
                                 enrich_description(j)
+                            # A board re-lists mostly the same jobs every check; skip the extraction and
+                            # writes for rows whose stored content is unchanged.
+                            stored = {item["id"]: item for item in touched}
+                            update_triples = [
+                                t for t in update_triples if not _rich_row_unchanged(t[1], stored.get(t[0]))
+                            ]
+                            for _, j, _ in update_triples:
                                 if not j.language and j.description:
                                     j.language = detect_language(j.description)
 
