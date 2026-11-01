@@ -247,7 +247,7 @@ _COMPANIES = """
 SELECT c.slug, c.name, c.website, c.logo, COUNT(jp.id) AS active_jobs,
        MAX(jp.listed_at) AS latest_job_at
 FROM company c
-JOIN job_posting jp ON jp.company_id = c.id AND jp.is_active AND jp.is_tech
+JOIN job_posting jp ON jp.company_id = c.id AND jp.is_active AND jp.is_tech AND jp.titles[1] IS NOT NULL
 WHERE ($1::text IS NULL OR lower(c.name) LIKE $1)
 GROUP BY c.id
 ORDER BY active_jobs DESC, c.name
@@ -272,7 +272,7 @@ SELECT
 FROM (SELECT COUNT(*)                                                         AS active_jobs,
              COUNT(*) FILTER (WHERE listed_at >= now() - interval '24 hours') AS new_last_24h,
              COUNT(DISTINCT company_id)                                       AS companies_hiring
-      FROM job_posting WHERE is_active AND is_tech) jp
+      FROM job_posting WHERE is_active AND is_tech AND titles[1] IS NOT NULL) jp  -- what the feed can show
 """
 
 
