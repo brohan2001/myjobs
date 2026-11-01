@@ -376,7 +376,9 @@ async def _discovery_worker(
         while not shutdown_event.is_set():
             worker_heartbeat_ts.labels(worker_id=str(worker_id)).set_to_current_time()
             try:
-                work = await claim_work(browser=browser)
+                # With every monitor slot taken, a claimed monitor would just wait: take a scrape instead.
+                busy = monitor_semaphore is not None and monitor_semaphore.locked()
+                work = await claim_work(browser=browser, prefer_scrapes=busy)
             except Exception:
                 worker_log.warning("pipeline.claim_error", exc_info=True)
                 with contextlib.suppress(TimeoutError):
