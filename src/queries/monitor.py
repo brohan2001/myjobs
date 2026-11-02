@@ -419,6 +419,14 @@ WHERE taxonomy_miss.status = 'pending'
 # The ATS's own publish date for a newly inserted rich posting (feed's "posted X ago").
 _SET_POSTED_AT = "UPDATE job_posting SET posted_at = $2 WHERE id = $1::uuid"
 
+# A check that turns up a pile of new undated jobs found old ones (new pages, a widened filter), not a burst of
+# fresh posts: those rows are marked backlog, so the feed shows "date unknown" until a date turns up (D38).
+_MARK_BULK_BACKLOG = """
+UPDATE job_posting SET backlog = true
+WHERE board_id = $1::uuid AND first_seen_at >= $2 AND posted_at IS NULL AND NOT backlog
+"""
+BULK_NEW_MIN = 50  # new jobs in one check, and more than a quarter of the jobs it already had
+
 # Jobs stored before posted_at existed (migration 0012), or by a monitor that only later gave a date, get their publish
 # date from the next crawl that has one. Only this board's rows with no date yet are touched.
 _FILL_POSTED_AT = """
