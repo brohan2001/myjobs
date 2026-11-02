@@ -35,6 +35,7 @@ from src.processing.cpu import (
     BatchResult,
     JobCPUResult,
     _coerce_datetime,
+    _vague_old_date,
     _build_locales,
     _build_titles,
     _coerce_locations,
@@ -61,6 +62,7 @@ from src.queries.monitor import (
     _BATCH_UPDATE_RICH_CONTENT,
     _FILL_POSTED_AT,
     _MARK_BULK_BACKLOG,
+    _MARK_OLD_BACKLOG,
     _SET_POSTED_AT,
     BULK_NEW_MIN,
     _BLAST_RADIUS_FLOOR_DEFAULT,
@@ -930,6 +932,9 @@ async def _process_one_board_streaming(
                             await conn.execute(
                                 _FILL_POSTED_AT, board_id, [u for u, _ in dated], [dt for _, dt in dated]
                             )
+                        old = [u for u, j in chunk_jobs.items() if u not in new_set and _vague_old_date(j.date_posted)]
+                        if old:
+                            await conn.execute(_MARK_OLD_BACKLOG, board_id, old)
                         new_jobs = [chunk_jobs[u] for u in rich_new_urls]
 
                         if new_jobs:
@@ -1041,6 +1046,9 @@ async def _process_one_board_streaming(
                             ]
                             if posted:
                                 await conn.executemany(_SET_POSTED_AT, posted)
+                            old = [j.url for j, _t, _pid in inserted_rich if _vague_old_date(j.date_posted)]
+                            if old:
+                                await conn.execute(_MARK_OLD_BACKLOG, board_id, old)
                             if n_rich_dedup:
                                 monitor_dedup_total.labels(path="rich").inc(n_rich_dedup)
                                 board_log.info(

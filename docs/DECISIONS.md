@@ -186,6 +186,8 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Bulk first sightings (2026-11-02):** a check that finds at least 50 new undated jobs, more than a quarter of the
   board's others, marks them `backlog` too (`_MARK_BULK_BACKLOG`). On 2026-11-02, 294 of the top 500 feed jobs were
   undated, NHS posting 350 at once. Migration 0014 applies the rule to the last 7 days, by board and hour.
+- **Vague old dates (2026-11-03):** an undated job whose ATS says only "Posted more than 1 month ago" or "30+ days ago"
+  (Accenture, Workday) is backlog too: it is old, just not by how much.
 
 ## D39: The feed tells a company's post date from a crawl time (User, 2026-11-02)
 - **What:** a real post date shows as "● 3 h ago" in green. A job with only our crawler's first sighting shows as

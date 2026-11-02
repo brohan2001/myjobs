@@ -278,6 +278,13 @@ _DATE_FORMATS = (
 )
 _RELATIVE = re.compile(r"(?:posted\s+)?(?:(today|just posted|just now)|(yesterday)|(\d+)\s+(minute|hour|day|week)s?\s+ago)$")
 _EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
+# "Posted more than 1 month ago", "30+ days ago": no date, but the job is old.
+_VAGUE_OLD = re.compile(r"more than \d+|over \d+|\d+\+\s*(day|week|month)")
+
+
+def _vague_old_date(val: object) -> bool:
+    """True for a date text that only says the job is old ("Posted more than 1 month ago", "30+ days ago")."""
+    return isinstance(val, str) and bool(_VAGUE_OLD.search(val.lower()))
 
 
 def _coerce_datetime(val: object | None, now: datetime | None = None) -> datetime | None:
