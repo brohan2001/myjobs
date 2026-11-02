@@ -292,7 +292,7 @@ async def _delist_board_postings(conn: asyncpg.Connection, board_id: str) -> int
 
     Used by the three silent-delist paths that bypass the normal
     ``_MARK_GONE_BY_TIMESTAMP`` flow: empty-check threshold reached,
-    BoardGoneError (upstream 404), and 5-strike failure auto-disable.
+    BoardGoneError (upstream 404), and a board failing for 5 checks and a day.
     Without these paths emitting the matching ``gone`` counter, the
     Grafana panel showed ``new >> gone`` even when the DB was balanced.
 
@@ -493,23 +493,24 @@ async def _mark_gone_with_guards(
 # ``last_success_at`` so transient outages back off without data loss;
 # only boards that have been failing past this window get delisted.
 _DELIST_AFTER_FAILURE_AGE = timedelta(hours=24)
+_DELIST_AFTER_FAILURES = 5
 
 
-async def _maybe_delist_after_disable(
+async def _maybe_delist_after_failures(
     conn: asyncpg.Connection,
     board_id: str,
     last_success_at: datetime | None,
     board_log: structlog.stdlib.BoundLogger,
 ) -> int:
-    """Delist a 5-strike-disabled board's postings ONLY if the board
-    has been silent past ``_DELIST_AFTER_FAILURE_AGE``. Returns the
-    count of rows flipped (0 if the recency gate skipped the delist).
+    """Delist a failing board's postings ONLY if the board has been
+    silent past ``_DELIST_AFTER_FAILURE_AGE``. Returns the count of
+    rows flipped (0 if the recency gate skipped the delist).
     """
     # asyncpg returns timezone-aware timestamps for TIMESTAMPTZ
     now = datetime.now(tz=UTC)
     if last_success_at is not None and now - last_success_at < _DELIST_AFTER_FAILURE_AGE:
         board_log.warning(
-            "batch.monitor.five_strike_disable_kept_active",
+            "batch.monitor.failing_board_kept_active",
             last_success_age_s=int((now - last_success_at).total_seconds()),
             reason="recent success — likely transient outage",
         )
@@ -1418,7 +1419,7 @@ async def _process_one_board_streaming(
     except BoardGoneError as exc:
         # Upstream confirmed the board no longer exists (404 from
         # greenhouse/lever/recruitee/ashby per-board API). Skip the
-        # 5-strike `_RECORD_FAILURE` ramp and disable in one shot —
+        # `_RECORD_FAILURE` backoff and disable in one shot —
         # otherwise the Redis monitor task keeps re-firing the dead
         # endpoint every cycle until sync removes it (which only runs
         # on CSV pushes). See issue #2215.
@@ -1452,28 +1453,20 @@ async def _process_one_board_streaming(
         tasks_total.labels(kind="monitor", status="failed").inc()
         # Discard stale location misses from this failed board
         loc_resolver.drain_location_misses()
-        # A 5-strike failure flips ``is_enabled=false`` + ``board_status='disabled'``.
-        # _FETCH_DUE_BOARDS won't pick the board again, so active postings
-        # would otherwise sit orphaned (``is_active=true``, never to be
-        # refreshed or marked gone). Detect the transition (the pre-fetch
-        # row was ``is_enabled=true``, so any post-update ``false`` is a
-        # fresh disable) and gate the delist on ``last_success_at`` so a
-        # provider outage doesn't mass-tombstone postings that would all
-        # come back on recovery.
+        # A failing board stays enabled and backs off (D37). After 5 failures in a row its postings are
+        # delisted, gated on ``last_success_at`` so a provider outage doesn't tombstone postings that
+        # would all come back on recovery. The delist only touches still-active postings, so repeating it
+        # on later failures is cheap and catches boards whose 5th failure came within the gate.
         failure_gone_count = 0
         try:
             async with pool.acquire() as conn, conn.transaction():
                 row = await conn.fetchrow(_RECORD_FAILURE, board_id, error_msg)
-                just_disabled = row is not None and not row["is_enabled"]
-                if just_disabled:
-                    failure_gone_count = await _maybe_delist_after_disable(
+                if row is not None and row["consecutive_failures"] >= _DELIST_AFTER_FAILURES:
+                    failure_gone_count = await _maybe_delist_after_failures(
                         conn, board_id, row["last_success_at"], board_log
                     )
                     if failure_gone_count:
-                        board_log.warning(
-                            "batch.monitor.five_strike_disable",
-                            gone=failure_gone_count,
-                        )
+                        board_log.warning("batch.monitor.failing_board_delisted", gone=failure_gone_count)
         except (asyncpg.PostgresError, ConnectionError):
             board_log.exception("batch.monitor.record_failure_failed")
         else:
