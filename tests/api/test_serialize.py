@@ -90,3 +90,12 @@ def test_sanitize_links_get_rel():
 def test_sanitize_drops_javascript_urls():
     out = sanitize_description('<a href="javascript:alert(1)">x</a>')
     assert "javascript" not in out
+
+
+def test_backlog_job_has_no_listed_at(index):
+    """Migration 0013 lists an undated job from a board's first crawl at the epoch: its age is unknown."""
+    from datetime import datetime, timezone
+
+    out = serialize_job(make_job_row(listed_at=datetime(1970, 1, 1, tzinfo=timezone.utc)), index)
+    assert out["listed_at"] is None
+    assert out["first_seen_at"] == "2026-01-01T12:00:00+00:00"

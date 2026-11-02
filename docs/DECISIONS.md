@@ -175,3 +175,11 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
   HCLTech (11,054) were among them, after one `ReadError` midway through their large feeds. They were the two largest
   gaps in the jseek parity run (D28), which found 78.2%.
 - **Cost:** a dead board is retried once a day instead of never.
+
+## D38: Undated jobs from a board's first crawl show "date unknown" (User, 2026-11-02)
+- **What:** a posting inserted while its board has no successful check in the last 2 days is flagged `backlog`
+  (a trigger, migration 0013). With no publish date, its `listed_at` is the epoch: it sorts after every dated job, the
+  API sends `listed_at: null`, and the feed shows "date unknown". Once a crawl finds its date, it becomes a normal job.
+- **Why:** a first crawl returns the board's whole backlog. Without a date every job looked "just posted": after the
+  D37 re-enable, 483 of the newest 500 feed jobs were undated, 315 of them CGI's.
+- **Backfill:** only the last 2 days. Older first crawls already sit weeks deep in the feed.

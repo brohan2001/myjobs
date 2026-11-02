@@ -5,7 +5,8 @@ export interface Salary {
   period: string;
 }
 
-export function relativeTime(iso: string, now: Date = new Date()): string {
+export function relativeTime(iso: string | null, now: Date = new Date()): string {
+  if (!iso) return "date unknown";
   const date = new Date(iso);
   const diffMs = now.getTime() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
@@ -35,7 +36,8 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   return `${dayDiff} days ago`;
 }
 
-export function timeBucket(iso: string, now: Date = new Date()): string {
+export function timeBucket(iso: string | null, now: Date = new Date()): string {
+  if (!iso) return "date unknown";
   const date = new Date(iso);
   const diffMs = now.getTime() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
