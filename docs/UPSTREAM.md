@@ -20,6 +20,8 @@ Ours, not vendored: `src/core/*_resolve.py`, `salary_extract.py` (+ `salary_inr.
    inside `RequestHostTrackingTransport` (D14). Marked `myjobs delta`.
 2. `src/core/monitors/brassring.py`: selectolax's `LexborHTMLParser`, not `selectolax.parser` (removed in selectolax 1.x).
 3. `src/core/monitors/lever.py`: `date_posted` from Lever's `createdAt` (epoch ms). Marked `myjobs delta`.
+   `accenture.py`: falls back to `postedDateText` ("Posted 3 days ago"). `pinpoint.py`: no `date_posted`; upstream
+   read `deadline_at`, the application deadline, and Pinpoint publishes no post date.
 4. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
    `webshare_proxy_canary_slot`, …).
 

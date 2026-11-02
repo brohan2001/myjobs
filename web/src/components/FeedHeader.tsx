@@ -83,6 +83,10 @@ export function FeedHeader({
         <ThemeToggle />
       </div>
       <p className="fresh">{freshnessText}</p>
+      <p className="when-legend">
+        <span className="when-posted">● posted by the company</span> ·{" "}
+        <span className="when-seen">○ seen by our crawler</span>
+      </p>
       <h1 className="sr">Newest jobs</h1>
       <form onSubmit={handleSubmit} role="search" aria-label="Filters">
         <p className="sentence">

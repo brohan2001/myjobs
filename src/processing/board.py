@@ -35,6 +35,7 @@ from src.processing.cpu import (
     BatchResult,
     JobCPUResult,
     _coerce_datetime,
+    _vague_old_date,
     _build_locales,
     _build_titles,
     _coerce_locations,
@@ -44,6 +45,7 @@ from src.processing.cpu import (
     _extract_salary_fields,
     _rich_row_unchanged,
     _parse_metadata,
+    _parse_update_count,
     _resolve_locations_sync,
     _resolve_occupation_seniority,
     _resolve_technology_ids,
@@ -59,7 +61,10 @@ from src.processing.scrape import (
 from src.queries.monitor import (
     _BATCH_UPDATE_RICH_CONTENT,
     _FILL_POSTED_AT,
+    _MARK_BULK_BACKLOG,
+    _MARK_OLD_BACKLOG,
     _SET_POSTED_AT,
+    BULK_NEW_MIN,
     _BLAST_RADIUS_FLOOR_DEFAULT,
     _COUNT_BOARD_ACTIVE_AND_MISSING,
     _CREATE_RICH_UPDATES_TEMP,
@@ -120,6 +125,11 @@ _SLOW_SCRAPE_SECONDS = 15.0
 
 
 # ── URL sanity check ─────────────────────────────────────────────────
+
+
+def _bulk_sighting(new: int, processed: int) -> bool:
+    """True when one check found many new jobs: at least BULK_NEW_MIN, and more than a quarter of the board's others."""
+    return new >= BULK_NEW_MIN and new * 4 > processed - new
 
 
 def _classify_job_url(url: str, board_url: str | None = None) -> str | None:
@@ -922,6 +932,9 @@ async def _process_one_board_streaming(
                             await conn.execute(
                                 _FILL_POSTED_AT, board_id, [u for u, _ in dated], [dt for _, dt in dated]
                             )
+                        old = [u for u, j in chunk_jobs.items() if u not in new_set and _vague_old_date(j.date_posted)]
+                        if old:
+                            await conn.execute(_MARK_OLD_BACKLOG, board_id, old)
                         new_jobs = [chunk_jobs[u] for u in rich_new_urls]
 
                         if new_jobs:
@@ -1033,6 +1046,9 @@ async def _process_one_board_streaming(
                             ]
                             if posted:
                                 await conn.executemany(_SET_POSTED_AT, posted)
+                            old = [j.url for j, _t, _pid in inserted_rich if _vague_old_date(j.date_posted)]
+                            if old:
+                                await conn.execute(_MARK_OLD_BACKLOG, board_id, old)
                             if n_rich_dedup:
                                 monitor_dedup_total.labels(path="rich").inc(n_rich_dedup)
                                 board_log.info(
@@ -1360,6 +1376,11 @@ async def _process_one_board_streaming(
             # over-report skipped cycles).
             if gone_skipped_reason:
                 monitor_gone_skipped_total.labels(reason=gone_skipped_reason).inc()
+
+        if _bulk_sighting(total_new, total_processed):
+            n_bulk = _parse_update_count(await pool.execute(_MARK_BULK_BACKLOG, board_id, monitor_start_ts))
+            if n_bulk:
+                board_log.info("batch.monitor.bulk_backlog", new=total_new, marked=n_bulk)
 
         # Flush location misses to taxonomy_miss table
         await _batch._flush_location_misses(loc_resolver, pool)
