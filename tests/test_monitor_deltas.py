@@ -1,10 +1,12 @@
-"""join.com boards render jobs under pageData (new) or initialState (old); the monitor reads both."""
+"""myjobs deltas to vendored monitors: join.com page layouts, nextdata exact_total."""
 
 import json
 
 import httpx
+import pytest
 
 from src.core.monitors.join import discover
+from src.core.monitors.nextdata import _validate_total_records
 
 
 def _page(root: str, ids: list[int]) -> str:
@@ -27,3 +29,13 @@ async def test_join_reads_new_page_data_layout():
 
 async def test_join_reads_old_initial_state_layout():
     assert len(await _discover("initialState")) == 2
+
+
+def test_exact_total_false_accepts_repeated_rows():
+    data = {"s": {"totalRecords": 120}}
+    cfg = {"path": "s", "total_records": "totalRecords", "exact_total": False}
+    _validate_total_records({f"u{i}" for i in range(100)}, data, cfg, board_url="b")  # repeats: fine
+    with pytest.raises(RuntimeError):
+        _validate_total_records({f"u{i}" for i in range(50)}, data, cfg, board_url="b")
+    with pytest.raises(RuntimeError):  # default stays exact
+        _validate_total_records({f"u{i}" for i in range(100)}, data, {**cfg, "exact_total": True}, board_url="b")
