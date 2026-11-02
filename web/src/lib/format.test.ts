@@ -1,6 +1,6 @@
 // Contract for web/src/lib/format.ts — copy to web/src/lib/format.test.ts unchanged.
 import { describe, expect, it } from "vitest";
-import { formatSalary, relativeTime, timeBucket } from "./format";
+import { formatSalary, jobWhen, relativeTime, timeBucket } from "./format";
 
 const NOW = new Date("2026-10-11T12:00:00Z");
 
@@ -13,6 +13,15 @@ describe("relativeTime", () => {
     ["2026-10-07T12:00:00Z", "4 days ago"],
   ])("%s → %s", (iso, want) => {
     expect(relativeTime(iso, NOW)).toBe(want);
+  });
+});
+
+describe("jobWhen", () => {
+  it("tells a company's post date from a crawl time", () => {
+    const at = "2026-10-11T10:00:00Z";
+    expect(jobWhen({ posted_at: at, listed_at: at }, NOW)).toMatchObject({ kind: "posted", text: "2 h ago" });
+    expect(jobWhen({ posted_at: null, listed_at: at }, NOW)).toMatchObject({ kind: "seen", text: "seen 2 h ago" });
+    expect(jobWhen({ posted_at: null, listed_at: null }, NOW)).toMatchObject({ kind: "unknown", text: "date unknown" });
   });
 });
 

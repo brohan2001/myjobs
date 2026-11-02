@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchJob } from "@/lib/api";
 import { formatAtsName } from "@/lib/ats";
-import { formatSalary, relativeTime } from "@/lib/format";
+import { formatSalary, jobWhen } from "@/lib/format";
 import { RATES } from "@/lib/rates";
 import { formatWorkModes } from "@/lib/work_modes";
 import { Footer } from "@/components/Footer";
@@ -29,7 +29,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
     notFound();
   }
 
-  const timeString = relativeTime(job.listed_at);
+  const when = jobWhen(job);
   const atsName = formatAtsName(job.ats);
 
   // Formatted location
@@ -66,7 +66,9 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
         </Link>
 
         <div className="detail-header">
-          <p className="when">{job.posted_at ? "posted" : "first seen"} {timeString}</p>
+          <p className={`when when-${when.kind}`} title={when.title}>
+            {when.kind === "posted" ? `posted ${when.text}` : when.text}
+          </p>
           <h1 className="detail-title">{job.title}</h1>
           <p className="detail-meta">
             <b>{job.company.name}</b> in {locationText}

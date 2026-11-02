@@ -36,6 +36,26 @@ export function relativeTime(iso: string | null, now: Date = new Date()): string
   return `${dayDiff} days ago`;
 }
 
+/** How sure we are of a job's age: the company's own post date, our crawler's first sighting, or unknown. */
+export type WhenKind = "posted" | "seen" | "unknown";
+
+export function jobWhen(
+  job: { posted_at: string | null; listed_at: string | null },
+  now: Date = new Date(),
+): { kind: WhenKind; text: string; title: string } {
+  if (job.posted_at && job.listed_at) {
+    return { kind: "posted", text: relativeTime(job.listed_at, now), title: "Posted by the company" };
+  }
+  if (job.listed_at) {
+    return {
+      kind: "seen",
+      text: `seen ${relativeTime(job.listed_at, now)}`,
+      title: "When our crawler found it. The company didn't publish a date.",
+    };
+  }
+  return { kind: "unknown", text: "date unknown", title: "Already open when we first crawled this board" };
+}
+
 export function timeBucket(iso: string | null, now: Date = new Date()): string {
   if (!iso) return "date unknown";
   const date = new Date(iso);
