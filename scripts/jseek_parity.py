@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 JSEEK = "https://jseek.co/api/v1"
 SAMPLE = ROOT / "output" / "parity-jseek.json"  # reused by later runs; --refresh fetches a new one
 API_PAUSE_S = 0.5  # stays under the API's default 120 requests per minute
-CITIES = ["india", "bengaluru", "hyderabad", "pune", "chennai", "gurugram", "noida", "mumbai"]
+CITIES = ["india", "bengaluru", "hyderabad-telangana-india", "pune", "chennai", "gurugram", "noida", "mumbai"]
 OCCUPATIONS = [
     "software-engineer", "backend-developer", "frontend-developer", "fullstack-developer", "mobile-developer",
     "devops-engineer", "data-engineer", "data-scientist", "data-analyst", "ml-engineer", "ai-engineer",
