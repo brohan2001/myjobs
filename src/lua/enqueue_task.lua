@@ -36,7 +36,16 @@ local queue_key = prefix .. wtype .. ":" .. domain
 -- ZADD NX — only add if not already present
 local added = redis.call("ZADD", queue_key, "NX", score, task_id)
 
-if added == 1 then
+-- An already-queued task whose domain lost its ready entry would never be claimed. Re-filing it here
+-- lets sync (run at every worker start) repair the schedule.
+local unfiled = true
+for t = 0, 2 do
+    if redis.call("ZSCORE", "ready:" .. wtype .. ":" .. t, domain) then
+        unfiled = false
+    end
+end
+
+if added == 1 or unfiled then
     -- Determine the correct ready queue tier and score.
     --
     -- First-time tasks always win (tier 0, ready_score=now to claim ASAP).

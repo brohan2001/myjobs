@@ -71,14 +71,10 @@ local function earliest(zkey)
     return nil
 end
 
--- Rate-limit the domain, record the lease, and re-file the domain in the tier of its next task
--- (first-time work → 0, else the earlier of next monitor (1) and next scrape (2)).
-local function finish(ready_key, domain, task_id, source_type)
-    local rate_delay = tonumber(redis.call("GET", "delay:" .. domain) or default_delay)
-    redis.call("SET", "ratelimit:" .. domain, tostring(now + rate_delay), "EX", math.ceil(rate_delay) + 1)
+-- Re-file the domain in the tier of its next task (first-time work → 0, else the earlier of next
+-- monitor (1) and next scrape (2)), no earlier than not_before. A domain with no tasks left is dropped.
+local function refile(ready_key, domain, not_before)
     redis.call("ZREM", ready_key, domain)
-    redis.call("ZADD", "inflight:" .. wtype, now + lease_ttl, source_type .. "|" .. domain .. "|" .. task_id)
-
     local ft_score = earliest(key("ft_monitors_", domain))
     local ft_scr = earliest(key("ft_scrapes_", domain))
     if ft_scr ~= nil and (ft_score == nil or ft_scr < ft_score) then
@@ -98,8 +94,16 @@ local function finish(ready_key, domain, task_id, source_type)
         next_score, next_tier = scr_score, 2
     end
     if next_score ~= nil then
-        redis.call("ZADD", "ready:" .. wtype .. ":" .. next_tier, math.max(now + rate_delay, next_score), domain)
+        redis.call("ZADD", "ready:" .. wtype .. ":" .. next_tier, math.max(not_before, next_score), domain)
     end
+end
+
+-- Rate-limit the domain, record the lease, and re-file the domain.
+local function finish(ready_key, domain, task_id, source_type)
+    local rate_delay = tonumber(redis.call("GET", "delay:" .. domain) or default_delay)
+    redis.call("SET", "ratelimit:" .. domain, tostring(now + rate_delay), "EX", math.ceil(rate_delay) + 1)
+    redis.call("ZADD", "inflight:" .. wtype, now + lease_ttl, source_type .. "|" .. domain .. "|" .. task_id)
+    refile(ready_key, domain, now + rate_delay)
     return {task_id, source_type, domain}
 end
 
@@ -135,9 +139,10 @@ local function pass_b(scrapes_first)
                 if task_id then
                     return finish(ready_key, domain, task_id, prefix == "monitors_" and "monitor" or "scrape")
                 end
-                -- Domain had no claimable tasks — remove from ready queue (unless only its scrapes were looked at)
+                -- Nothing due yet: re-file at its next task (unless only its scrapes were looked at). Dropping it
+                -- stranded any later tasks: on 2026-11-02, 543 domains had queued tasks but no ready entry.
                 if not scrapes_only then
-                    redis.call("ZREM", ready_key, domain)
+                    refile(ready_key, domain, now)
                 end
             end
         end
