@@ -14,6 +14,8 @@ FEED_STALE_MINUTES = 180  # no new posting anywhere for this long → the worker
 OVERDUE_SHARE = 0.05  # share of active boards >2h past their next check → the worker is behind
 ATS_MIN_BOARDS = 5  # ignore ATS types with fewer boards (too noisy)
 ATS_FAILING_SHARE = 0.25  # share of an ATS's boards failing → the adapter or the ATS API broke
+# D40: a board counts as failing only with no success for a day; a passing timeout is noise.
+FAILING_SQL = "consecutive_failures > 0 AND coalesce(last_success_at, '-infinity') < now() - interval '1 day'"
 ATS_EMPTY_SHARE = 0.30  # share of an ATS's boards with no jobs for 3 days → the parser silently broke
 GONE_PER_DAY = 20  # boards marked gone in 24h → a mass ATS migration or a detection bug
 
@@ -46,13 +48,13 @@ SELECT
 _BY_ATS_SQL = """
 SELECT crawler_type,
        count(*)                                                                  AS boards,
-       count(*) FILTER (WHERE consecutive_failures > 0)                          AS failing,
+       count(*) FILTER (WHERE {failing})                                         AS failing,
        count(*) FILTER (WHERE last_checked_at IS NOT NULL
                           AND coalesce(last_non_empty_at, '-infinity') < now() - interval '3 days') AS empty_3d
 FROM job_board
 WHERE is_enabled AND board_status <> 'gone'
 GROUP BY crawler_type
-"""
+""".format(failing=FAILING_SQL)
 
 
 async def fetch_snapshot(pool: asyncpg.Pool) -> Snapshot:
