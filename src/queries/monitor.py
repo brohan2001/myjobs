@@ -425,7 +425,13 @@ _MARK_BULK_BACKLOG = """
 UPDATE job_posting SET backlog = true
 WHERE board_id = $1::uuid AND first_seen_at >= $2 AND posted_at IS NULL AND NOT backlog
 """
-BULK_NEW_MIN = 50  # new jobs in one check, and more than a quarter of the jobs it already had
+BULK_NEW_MIN = 50
+
+# Undated jobs whose ATS says only "posted more than a month ago" are old: backlog too (D38).
+_MARK_OLD_BACKLOG = """
+UPDATE job_posting SET backlog = true
+WHERE board_id = $1::uuid AND source_url = ANY($2::text[]) AND posted_at IS NULL AND NOT backlog
+"""  # new jobs in one check, and more than a quarter of the jobs it already had
 
 # Jobs stored before posted_at existed (migration 0012), or by a monitor that only later gave a date, get their publish
 # date from the next crawl that has one. Only this board's rows with no date yet are touched.

@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.processing.cpu import _coerce_datetime
+from src.processing.cpu import _coerce_datetime, _vague_old_date
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 
@@ -39,3 +39,10 @@ def test_reads_feed_formats(raw, want):
 )
 def test_unknown_or_implausible_is_none(raw):
     assert _coerce_datetime(raw, now=NOW) is None
+
+
+def test_vague_old_dates():
+    assert _vague_old_date("Posted more than 1 month ago")  # Accenture
+    assert _vague_old_date("Posted 30+ Days Ago")  # Workday
+    assert not _vague_old_date("Posted 3 days ago")
+    assert not _vague_old_date(None)
