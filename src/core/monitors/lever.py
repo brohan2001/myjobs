@@ -6,6 +6,8 @@ Returns full job data. Supports pagination via skip/limit. Rate limit: 2 req/sec
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import asyncio
 import hashlib
 import os
@@ -175,8 +177,16 @@ def _parse_job(posting: dict) -> DiscoveredJob | None:
         employment_type=categories.get("commitment"),
         job_location_type=posting.get("workplaceType"),
         base_salary=_parse_salary(posting.get("salaryRange")),
+        # myjobs delta: Lever's createdAt (epoch ms) is the publish date.
+        date_posted=_created_at(posting.get("createdAt")),
         metadata=metadata or None,
     )
+
+
+def _created_at(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
 
 
 def _token_from_url(board_url: str) -> str | None:

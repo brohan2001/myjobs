@@ -19,7 +19,8 @@ Ours, not vendored: `src/core/*_resolve.py`, `salary_extract.py` (+ `salary_inr.
 1. `src/shared/http.py`: honest User-Agent plus `CHROME_UA_HOSTS` and `ChromeUAForWAFHostsTransport`, wrapped
    inside `RequestHostTrackingTransport` (D14). Marked `myjobs delta`.
 2. `src/core/monitors/brassring.py`: selectolax's `LexborHTMLParser`, not `selectolax.parser` (removed in selectolax 1.x).
-3. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
+3. `src/core/monitors/lever.py`: `date_posted` from Lever's `createdAt` (epoch ms). Marked `myjobs delta`.
+4. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
    `webshare_proxy_canary_slot`, …).
 
 Stand-ins, so vendored files stay unmodified:
