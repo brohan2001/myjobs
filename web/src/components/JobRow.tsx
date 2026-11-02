@@ -28,10 +28,8 @@ export function JobRow({
   onOpen,
 }: JobRowProps) {
   // Freshness check (< 60 minutes). listed_at is the ATS's posting date when it gives one,
-  // otherwise when we first saw the job.
-  const listedMs = new Date(job.listed_at).getTime();
-  const ageMin = Math.max(0, Math.round((Date.now() - listedMs) / 60000));
-  const isFresh = ageMin < 60;
+  // otherwise when we first saw the job; null when its age is unknown (a board's first crawl).
+  const isFresh = job.listed_at !== null && Date.now() - new Date(job.listed_at).getTime() < 3_600_000;
 
   const timeString = relativeTime(job.listed_at);
 
@@ -71,7 +69,10 @@ export function JobRow({
         }
       }}
     >
-      <p className="when" title={job.posted_at ? "Posted by the company" : "First seen by our crawler"}>
+      <p
+        className="when"
+        title={job.posted_at ? "Posted by the company" : job.listed_at ? "First seen by our crawler" : "Already open when we first crawled this board"}
+      >
         {timeString}
       </p>
       <div className="body">
