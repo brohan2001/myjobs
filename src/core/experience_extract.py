@@ -61,10 +61,10 @@ _EXPERIENCE_RE = re.compile(
     r"\s*"
     r"(?:years?|Jahre?|ans?|anni?|años?|jaar|år)"  # multilingual "year(s)"
     r"(?:\(s\))?"  # "year(s)"
-    r"[''s]*"  # "years'" or "years's"
+    r"['’s]*"  # "years'" or "years's"
     r"\s+"
     r"("  # capture experience context
-    r"(?:of\s+|d['']\s*|di\s+|de\s+|an\s+|van\s+)?"
+    r"(?:of\s+|d['’]\s*|di\s+|de\s+|an\s+|van\s+)?"
     r"(?:relevant\s+|professional\s+|hands[- ]on\s+|direct\s+|equivalent\s+|"
     r"progressive\s+|practical\s+|demonstrated?\s+|proven\s+|"
     r"non-internship\s+|full[- ]time\s+|industry\s+|related\s+|"
@@ -97,7 +97,7 @@ _EXPERIENCE_RE = re.compile(
 #   "esperienza di almeno 5 anni"
 _EXPERIENCE_REVERSED_RE = re.compile(
     r"(?:Erfahrung|Berufserfahrung|expérience|esperienza|experiencia|ervaring)"
-    r"\s+(?:von\s+)?(?:mindestens\s+|d['']\s*(?:au\s+moins\s+)?|"
+    r"\s+(?:von\s+)?(?:mindestens\s+|d['’]\s*(?:au\s+moins\s+)?|"
     r"di\s+(?:almeno\s+)?|de\s+(?:al\s+menos\s+)?|van\s+(?:minimaal\s+)?)?"
     r"(\d{1,2})"  # min years
     r"\s*(?:[+＋]|\s*[-–—]\s*(\d{1,2}))?"  # optional + or range
