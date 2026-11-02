@@ -113,6 +113,9 @@ def _resolve_technology_ids(description: str | None, tech_ids: dict[str, int]) -
     return ids or None
 
 
+_INT4_MAX = 2**31 - 1
+
+
 def _extract_salary_fields(
     html: str | None,
     rates: dict[str, float],
@@ -150,6 +153,10 @@ def _extract_salary_fields(
     to_eur = rates.get(sr.currency, 0)
     salary_eur = round(annual_min * to_eur) if to_eur > 0 else None
 
+    # The columns are int4: a salary in VND or IDR (or a misparse) beyond it failed the whole board's insert
+    # (Amazon, 2026-11-03), so it is dropped instead.
+    if any(v is not None and abs(v) > _INT4_MAX for v in (sal_min, sal_max, salary_eur)):
+        return None, None, None, None, None
     return sal_min, sal_max, sr.currency, sr.period, salary_eur
 
 
