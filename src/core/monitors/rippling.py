@@ -11,11 +11,14 @@ is handled by the scraper (``src/core/scrapers/rippling``).
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import httpx
 import structlog
 
-from src.core.monitors import fetch_page_text, register, slugs_from_url
+from src.core.monitors import register
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.raw import save_json_response
 from src.shared.truncation import truncated_url_result
 
 log = structlog.get_logger()
@@ -100,47 +103,71 @@ async def _probe_slug(slug: str, client: httpx.AsyncClient) -> tuple[bool, int |
         return False, None
 
 
-async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
-    """Detect Rippling: URL pattern -> page HTML scan -> slug-based API probe."""
-    slug = _slug_from_url(url)
-    if slug:
-        if client is not None:
-            found, count = await _probe_slug(slug, client)
-            if found:
-                result: dict = {"slug": slug}
-                if count is not None:
-                    result["jobs"] = count
-                return result
-        return {"slug": slug}
-
-    if client is None:
-        return None
-
-    html = await fetch_page_text(url, client)
-    if html:
-        for pattern in _PAGE_PATTERNS:
-            match = pattern.search(html)
-            if match:
-                found_slug = match.group(1)
-                if found_slug not in _IGNORE_SLUGS:
-                    log.info("rippling.detected_in_page", url=url, slug=found_slug)
-                    found, count = await _probe_slug(found_slug, client)
-                    if found:
-                        result = {"slug": found_slug}
-                        if count is not None:
-                            result["jobs"] = count
-                        return result
-
-    for slug_candidate in slugs_from_url(url):
-        found, count = await _probe_slug(slug_candidate, client)
-        if found:
-            log.info("rippling.detected_by_probe", url=url, slug=slug_candidate)
-            result = {"slug": slug_candidate}
-            if count is not None:
-                result["jobs"] = count
-            return result
-
+async def _fetch_job_count(
+    slug: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeCount | None:
+    _ = context
+    found, count = await _probe_slug(slug, client)
+    if found:
+        return count
     return None
 
 
-register("rippling", discover, cost=10, can_handle=can_handle, rich=False)
+async def _probe_template_slug(
+    slug: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeResult:
+    _ = context
+    return await _probe_slug(slug, client)
+
+
+def _slug_result(slug: str, count: ProbeCount | None, context: None) -> dict:
+    _ = context
+    result: dict = {"slug": slug}
+    if count is not None:
+        result["jobs"] = count
+    return result
+
+
+async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
+    """Detect Rippling: URL pattern -> page HTML scan -> slug-based API probe."""
+    _ = pw
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="rippling",
+        token_from_url=_slug_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_SLUGS,
+        fetch_job_count=_fetch_job_count,
+        api_probe=_probe_template_slug,
+        initial_context=None,
+        result_builder=_slug_result,
+        page_token_probe=_probe_template_slug,
+        log_token_field="slug",
+    )
+
+
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    slug = metadata.get("slug") or _slug_from_url(board_url)
+    if not slug:
+        return
+    await save_json_response(artifact_dir, client, _api_list_url(slug))
+
+
+register(
+    "rippling",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=False,
+    save_raw=save_raw,
+)

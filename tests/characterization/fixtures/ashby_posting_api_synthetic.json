@@ -1,0 +1,48 @@
+{
+  "apiVersion": "1",
+  "compensation": {
+    "compensationTierSummary": [
+      {"id": "tier-1", "min": 150000, "max": 200000, "currency": "USD", "interval": "1 YEAR"}
+    ]
+  },
+  "jobs": [
+    {
+      "id": "aaaa0001",
+      "title": "Backend Engineer",
+      "department": "Engineering",
+      "team": "Platform",
+      "location": "San Francisco, CA",
+      "secondaryLocations": [{"location": "Remote - US"}, "New York, NY", {"location": "San Francisco, CA"}],
+      "workplaceType": "Hybrid",
+      "employmentType": "FullTime",
+      "isListed": true,
+      "publishedAt": "2026-05-01T00:00:00.000+00:00",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/aaaa0001",
+      "descriptionHtml": "<p>Build backend systems.</p>",
+      "compensationTierSummary": "tier-1"
+    },
+    {
+      "id": "aaaa0002",
+      "title": "Product Designer",
+      "department": "Design",
+      "address": {"city": "Berlin", "region": "", "country": "Germany"},
+      "workplaceType": "Remote",
+      "employmentType": "Contract",
+      "isListed": true,
+      "jobUrl": "https://jobs.ashbyhq.com/acme/aaaa0002",
+      "descriptionPlain": "Design things."
+    },
+    {
+      "id": "aaaa0003",
+      "title": "Unlisted Role",
+      "location": "Nowhere",
+      "isListed": false,
+      "jobUrl": "https://jobs.ashbyhq.com/acme/aaaa0003"
+    },
+    {
+      "id": "aaaa0004",
+      "title": "No URL Role",
+      "isListed": true
+    }
+  ]
+}

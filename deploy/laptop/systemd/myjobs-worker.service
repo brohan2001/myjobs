@@ -1,0 +1,22 @@
+[Unit]
+Description=myjobs crawler
+
+[Service]
+WorkingDirectory=%h/myjobs
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/myjobs/.venv/bin/myjobs worker
+# The worker drains in-flight work, then force-exits after 60 s
+TimeoutStopSec=90
+Slice=myjobs.slice
+# Background work: the feed and the API win when the slice's CPU budget is contended
+CPUWeight=50
+IOWeight=50
+Nice=10
+# Its own ceiling inside the slice, so an OOM kills the worker (which restarts) and not the feed
+MemoryHigh=3800M
+MemoryMax=4300M
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

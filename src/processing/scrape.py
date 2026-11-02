@@ -17,6 +17,7 @@ import structlog
 import src.queries.lookups as _lookups_mod  # noqa: E402
 from src.core.enum_normalize import normalize_employment_type
 from src.core.location_resolve import LocationResolver
+from src.core.tech_gate import is_tech_title
 from src.core.scrapers import (
     JobContent,
     get_scraper,
@@ -26,6 +27,7 @@ from src.processing.cpu import (
     BatchResult,
     _build_locales,
     _build_titles,
+    _coerce_datetime,
     _coerce_locations,
     _coerce_text,
     _error_message,
@@ -280,7 +282,7 @@ def _is_skip_no_scrape(metadata: dict, crawler_type: str | None = None) -> bool:
     ct = crawler_type or None
     if scraper_type is None and ct:
         # Import here to avoid the workspace._compat dependency at module load
-        from src.workspace._compat import auto_skip_crawler_types
+        from src.core.static_registry import auto_skip_crawler_types
 
         if ct in auto_skip_crawler_types():
             return True
@@ -319,7 +321,7 @@ async def _load_board_scrapers(
         # Determine scraper: explicit > auto-configured > default (json-ld)
         if not explicit_scraper:
             # Check if monitor auto-configures a scraper
-            from src.workspace._compat import auto_scraper_type
+            from src.core.static_registry import auto_scraper_type
 
             auto = auto_scraper_type(crawler_type, metadata)
             if auto and auto[0] == "skip":
@@ -632,7 +634,9 @@ async def _process_one_enrich_scrape(
                     desc_hash,
                     desc_hash_legacy,
                 )
-            await conn.execute(_RECORD_SCRAPE_SUCCESS, item.job_posting_id)
+            await conn.execute(
+                _RECORD_SCRAPE_SUCCESS, item.job_posting_id, _coerce_datetime(content.date_posted), None
+            )
 
         await _batch._flush_location_misses(loc_resolver, pool)
         elapsed = monotonic() - t0
@@ -867,7 +871,12 @@ async def _process_one_scrape(
                     desc_hash,
                     desc_hash_legacy,
                 )
-            await conn.execute(_RECORD_SCRAPE_SUCCESS, item.job_posting_id)
+            await conn.execute(
+                _RECORD_SCRAPE_SUCCESS,
+                item.job_posting_id,
+                _coerce_datetime(content.date_posted),
+                is_tech_title(title_text) if title_text else None,
+            )
 
         await _batch._flush_location_misses(loc_resolver, pool)
 

@@ -13,6 +13,7 @@ most senior requirement the candidate must meet.
 from __future__ import annotations
 
 import re
+from html import unescape
 from dataclasses import dataclass
 
 # ── Result type ──────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ _WS_RE = re.compile(r"[ \t]+")
 
 
 def _html_to_text(html: str) -> str:
-    text = _TAG_RE.sub(" ", html)
+    text = unescape(_TAG_RE.sub(" ", html))
     return _WS_RE.sub(" ", text).strip()
 
 
@@ -55,14 +56,15 @@ _EXPERIENCE_RE = re.compile(
     r"\s*"
     r"(?:"
     r"[+＋]"  # "5+"
-    r"|\s*[-–—]\s*(\d{1,2})"  # "3-5" → captures max
+    r"|\s*(?:[-–—]|to)\s*(\d{1,2})"  # "3-5", "3 to 5" → captures max
     r")?"
     r"\s*"
     r"(?:years?|Jahre?|ans?|anni?|años?|jaar|år)"  # multilingual "year(s)"
-    r"[''s]*"  # "years'" or "years's"
+    r"(?:\(s\))?"  # "year(s)"
+    r"['’s]*"  # "years'" or "years's"
     r"\s+"
     r"("  # capture experience context
-    r"(?:of\s+|d['']\s*|di\s+|de\s+|an\s+|van\s+)?"
+    r"(?:of\s+|d['’]\s*|di\s+|de\s+|an\s+|van\s+)?"
     r"(?:relevant\s+|professional\s+|hands[- ]on\s+|direct\s+|equivalent\s+|"
     r"progressive\s+|practical\s+|demonstrated?\s+|proven\s+|"
     r"non-internship\s+|full[- ]time\s+|industry\s+|related\s+|"
@@ -95,11 +97,25 @@ _EXPERIENCE_RE = re.compile(
 #   "esperienza di almeno 5 anni"
 _EXPERIENCE_REVERSED_RE = re.compile(
     r"(?:Erfahrung|Berufserfahrung|expérience|esperienza|experiencia|ervaring)"
-    r"\s+(?:von\s+)?(?:mindestens\s+|d['']\s*(?:au\s+moins\s+)?|"
+    r"\s+(?:von\s+)?(?:mindestens\s+|d['’]\s*(?:au\s+moins\s+)?|"
     r"di\s+(?:almeno\s+)?|de\s+(?:al\s+menos\s+)?|van\s+(?:minimaal\s+)?)?"
     r"(\d{1,2})"  # min years
     r"\s*(?:[+＋]|\s*[-–—]\s*(\d{1,2}))?"  # optional + or range
     r"\s*(?:Jahren?|ans?|anni?|años?|jaar|år)",
+    re.IGNORECASE,
+)
+
+# Pattern C: a labelled field, common on Indian boards
+#   "Experience: 3-5 Years", "Total Experience: 6-9 Years", "Years of Experience: 3 to 5 years",
+#   "Years of Exp: 10 to 15 years", "Experience: >10 YEARS", "Experience Required: 4+ yrs"
+_EXPERIENCE_LABEL_RE = re.compile(
+    r"\b(?:(?:total|relevant|overall|work|minimum|min\.?)\s+)?"
+    r"(?:years?\s+of\s+)?(?:experience|exp\.?)(?:\s+(?:required|range|level))?"
+    r"\s*[:：]\s*"
+    r"(?:>\s*|over\s+|min(?:imum)?\.?\s+|at\s+least\s+)?"
+    r"(\d{1,2})"
+    r"\s*(?:[+＋]|\s*(?:[-–—]|to)\s*(\d{1,2}))?"
+    r"\s*(?:years?|yrs?)\b",
     re.IGNORECASE,
 )
 
@@ -158,6 +174,18 @@ def extract_experience(html: str) -> ExperienceRequirement | None:
 
     # Pattern B: reversed word order ("Erfahrung von 5 Jahren")
     for m in _EXPERIENCE_REVERSED_RE.finditer(text):
+        min_years = int(m.group(1))
+        max_years = int(m.group(2)) if m.group(2) else None
+
+        if not _check_match(text, m, min_years, max_years):
+            continue
+
+        if best_min is None or min_years > best_min:
+            best_min = min_years
+            best_max = max_years
+
+    # Pattern C: labelled field ("Experience: 3-5 Years")
+    for m in _EXPERIENCE_LABEL_RE.finditer(text):
         min_years = int(m.group(1))
         max_years = int(m.group(2)) if m.group(2) else None
 

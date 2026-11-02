@@ -1,7 +1,9 @@
 """Workable Posting API monitor.
 
-Public API:
-  List:   POST https://apply.workable.com/api/v3/accounts/{slug}/jobs
+Public APIs:
+  List:      POST https://apply.workable.com/api/v3/accounts/{slug}/jobs
+  Fallback:  GET  https://apply.workable.com/{slug}/{llms.txt,jobs.md}
+             GET  https://www.workable.com/api/accounts/{slug}
 
 The list endpoint returns metadata (title, location, department) but not the
 full job description.  The monitor discovers job URLs only; a dedicated
@@ -12,16 +14,25 @@ scrape schedule.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 
 import httpx
 import structlog
 
 from src.core.monitors import (
-    fetch_page_text,
     register,
     slug_guess_allowed,
-    slugs_from_url,
+)
+from src.core.monitors._ats_template import ProbeCount, ProbeResult, ats_can_handle
+from src.core.monitors.workable_capture import (
+    capture_workable_fallback,
+    capture_workable_response,
+)
+from src.shared.http_retry import (
+    PaginationFetchError,
+    fetch_json_page_with_retry,
+    fetch_text_page_with_retry,
 )
 from src.shared.truncation import truncated_url_result
 
@@ -29,7 +40,10 @@ log = structlog.get_logger()
 
 MAX_JOBS = 50_000
 _RETRY_ATTEMPTS = 4
-_RETRY_BACKOFF = (5.0, 15.0, 30.0, 60.0)
+_RETRY_BASE_DELAY = 5.0
+_MARKDOWN_RETRY_ATTEMPTS = 3
+_MARKDOWN_RETRY_BASE_DELAY = 0.5
+_PUBLIC_API_MAX_BYTES = 64 * 1024 * 1024
 
 _PAGE_PATTERNS = [
     re.compile(r"apply\.workable\.com/([\w-]+)"),
@@ -57,33 +71,194 @@ def _job_url(slug: str, shortcode: str) -> str:
     return f"https://apply.workable.com/{slug}/j/{shortcode}/"
 
 
-async def _api_list(slug: str, client: httpx.AsyncClient) -> tuple[set[str], bool]:
+def _llms_url(slug: str) -> str:
+    return f"https://apply.workable.com/{slug}/llms.txt"
+
+
+def _jobs_markdown_url(slug: str) -> str:
+    return f"https://apply.workable.com/{slug}/jobs.md"
+
+
+def _public_api_url(slug: str) -> str:
+    return f"https://www.workable.com/api/accounts/{slug}"
+
+
+def _parse_markdown_count(markdown: str) -> int:
+    # Workable inflects the official inventory sentence: one ``opening``, but
+    # zero or multiple ``openings``. Keep the provider phrase and numeric
+    # cross-check strict while accepting both documented grammatical forms.
+    match = re.search(r"All open roles .*?:\s*([\d,]+) current openings?\b", markdown)
+    if match is None:
+        raise ValueError("Workable llms.txt did not advertise a current-opening count")
+    return int(match.group(1).replace(",", ""))
+
+
+def _parse_markdown_job_urls(slug: str, markdown: str) -> set[str]:
+    """Extract canonical job URLs from an unfiltered Workable ``jobs.md``."""
+    pattern = re.compile(
+        rf"https://apply\.workable\.com/{re.escape(slug)}/jobs/view/([\w-]+)\.md\b"
+    )
+    return {_job_url(slug, match.group(1)) for match in pattern.finditer(markdown)}
+
+
+def _parse_public_api_job_urls(slug: str, data: dict) -> set[str]:
+    """Extract a complete canonical URL set from Workable's public JSON feed."""
+    jobs = data.get("jobs")
+    if not isinstance(jobs, list):
+        raise ValueError("Workable public jobs API did not return a jobs list")
+
+    urls: set[str] = set()
+    for item in jobs:
+        if not isinstance(item, dict):
+            raise ValueError("Workable public jobs API returned a non-object job")
+        shortcode = item.get("shortcode")
+        if not isinstance(shortcode, str) or not re.fullmatch(r"[\w-]+", shortcode):
+            raise ValueError("Workable public jobs API returned a job without a shortcode")
+        urls.add(_job_url(slug, shortcode))
+
+    return urls
+
+
+async def _public_api_inventory(
+    slug: str,
+    advertised: int,
+    client: httpx.AsyncClient,
+) -> set[str]:
+    """Fetch the legacy public JSON feed and verify it against ``llms.txt``."""
+    data = await fetch_json_page_with_retry(
+        client,
+        _public_api_url(slug),
+        expect_shape=dict,
+        retries=_MARKDOWN_RETRY_ATTEMPTS,
+        base_delay=_MARKDOWN_RETRY_BASE_DELAY,
+        follow_redirects=True,
+        max_bytes=_PUBLIC_API_MAX_BYTES,
+        log_event="workable.public_api_backoff",
+        sleep=asyncio.sleep,
+        on_success_body=(
+            lambda body, _status, url: capture_workable_fallback(slug, "public", url, body)
+        )
+        if os.environ.get("WORKABLE_CAPTURE_SLUGS")
+        else None,
+    )
+    urls = _parse_public_api_job_urls(slug, data)
+    rows = data["jobs"]
+    if len(urls) != advertised:
+        raise ValueError(
+            "Workable public inventory count mismatch: "
+            f"llms.txt advertises {advertised}, public API contains {len(urls)} unique jobs"
+        )
+    log.info(
+        "workable.public_api_listed",
+        slug=slug,
+        postings=len(urls),
+        rows=len(rows),
+        duplicate_rows=len(rows) - len(urls),
+    )
+    return urls
+
+
+async def _markdown_inventory(
+    slug: str,
+    client: httpx.AsyncClient,
+) -> tuple[set[str], bool]:
+    """Fetch and cross-check Workable's public Markdown inventory.
+
+    ``jobs.md`` also supports filtered query strings, so its contents are only
+    authoritative when the unique job-link count from the queryless endpoint
+    exactly matches the independently advertised total in ``llms.txt``.
+    """
+    llms = await fetch_text_page_with_retry(
+        client,
+        _llms_url(slug),
+        retries=_MARKDOWN_RETRY_ATTEMPTS,
+        base_delay=_MARKDOWN_RETRY_BASE_DELAY,
+        end_of_pagination_statuses=(),
+        require_nonempty=True,
+        log_event="workable.markdown_index_backoff",
+        sleep=asyncio.sleep,
+        on_success_body=(
+            lambda body, _status, url: capture_workable_fallback(slug, "llms", url, body)
+        )
+        if os.environ.get("WORKABLE_CAPTURE_SLUGS")
+        else None,
+    )
+    assert llms is not None
+    advertised = _parse_markdown_count(llms)
+    if advertised == 0:
+        log.info("workable.markdown_empty", slug=slug)
+        return set(), True
+
+    jobs_markdown = await fetch_text_page_with_retry(
+        client,
+        _jobs_markdown_url(slug),
+        retries=_MARKDOWN_RETRY_ATTEMPTS,
+        base_delay=_MARKDOWN_RETRY_BASE_DELAY,
+        end_of_pagination_statuses=(),
+        require_nonempty=True,
+        log_event="workable.markdown_jobs_backoff",
+        sleep=asyncio.sleep,
+        on_success_body=(
+            lambda body, _status, url: capture_workable_fallback(slug, "jobs", url, body)
+        )
+        if os.environ.get("WORKABLE_CAPTURE_SLUGS")
+        else None,
+    )
+    assert jobs_markdown is not None
+    urls = _parse_markdown_job_urls(slug, jobs_markdown)
+    if not urls and advertised > 0 and "Use the search endpoint to filter results" in jobs_markdown:
+        # Large Workable tenants now return search instructions instead of an
+        # unfiltered table from jobs.md. The documented public JSON endpoint
+        # still exposes the complete list; keep the llms.txt count as an
+        # independent completeness check before accepting it.
+        urls = await _public_api_inventory(slug, advertised, client)
+    if len(urls) != advertised:
+        raise ValueError(
+            "Workable Markdown inventory count mismatch: "
+            f"llms.txt advertises {advertised}, jobs.md contains {len(urls)} unique jobs"
+        )
+    log.info("workable.markdown_listed", slug=slug, postings=len(urls))
+    return urls, False
+
+
+async def _api_list(slug: str, client: httpx.AsyncClient) -> tuple[set[str], bool, bool]:
     """Paginate the list endpoint to collect all job URLs.
 
-    Returns ``(urls, truncated)``. ``truncated`` is True iff the MAX_JOBS
-    cap was hit before pagination completed; the pipeline uses the flag
-    to suppress gone-detection on this cycle (#3216).
+    Returns ``(urls, truncated, verified_empty)``. ``truncated`` is True iff
+    the MAX_JOBS cap was hit before pagination completed; the pipeline uses
+    the flag to suppress gone-detection on this cycle (#3216).
     """
     urls: set[str] = set()
     truncated = False
     body: dict = {"query": "", "location": [], "department": [], "worktype": []}
+    page = 0
 
     while True:
-        data = None
-        for attempt in range(_RETRY_ATTEMPTS):
-            resp = await client.post(_api_list_url(slug), json=body)
-            if resp.status_code == 429:
-                backoff = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
-                log.warning("workable.rate_limited", slug=slug, backoff_s=backoff)
-                await asyncio.sleep(backoff)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            break
-
-        if data is None:
-            log.warning("workable.retries_exhausted", slug=slug, collected=len(urls))
-            break
+        try:
+            data = await fetch_json_page_with_retry(
+                client,
+                _api_list_url(slug),
+                method="POST",
+                json_body=body,
+                expect_shape=dict,
+                retries=_RETRY_ATTEMPTS,
+                base_delay=_RETRY_BASE_DELAY,
+                log_event="workable.list_backoff",
+                sleep=asyncio.sleep,
+                on_success_body=(
+                    lambda data, _status, url, capture_page=page: capture_workable_response(
+                        slug, capture_page, url, data
+                    )
+                )
+                if os.environ.get("WORKABLE_CAPTURE_SLUGS")
+                else None,
+            )
+        except PaginationFetchError as exc:
+            if exc.last_status != 429 or urls:
+                raise
+            log.warning("workable.rate_limited_markdown_fallback", slug=slug)
+            markdown_urls, verified_empty = await _markdown_inventory(slug, client)
+            return markdown_urls, False, verified_empty
 
         results = data.get("results", [])
         for item in results:
@@ -96,13 +271,14 @@ async def _api_list(slug: str, client: httpx.AsyncClient) -> tuple[set[str], boo
             break
 
         body["token"] = next_page
+        page += 1
 
         if len(urls) >= MAX_JOBS:
             log.warning("workable.truncated", slug=slug, total=len(urls), cap=MAX_JOBS)
             truncated = True
             break
 
-    return urls, truncated
+    return urls, truncated, False
 
 
 async def discover(board: dict, client: httpx.AsyncClient, pw=None):
@@ -120,9 +296,16 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None):
             "and no token in metadata"
         )
 
-    urls, truncated = await _api_list(slug, client)
+    urls, truncated, verified_empty = await _api_list(slug, client)
     log.info("workable.listed", slug=slug, postings=len(urls))
 
+    if verified_empty:
+        from src.core.monitor import MonitorResult
+
+        return MonitorResult(
+            urls=set(),
+            verified_empty_reason="Workable llms.txt advertises zero current openings",
+        )
     if truncated:
         return truncated_url_result(urls)
     return urls
@@ -144,6 +327,13 @@ async def _probe_slug(slug: str, client: httpx.AsyncClient) -> tuple[bool, int |
             return True, len(results)
         return False, None
     except Exception:
+        log.debug(
+            "workable.probe_failed",
+            probe="slug",
+            slug=slug,
+            url=_api_list_url(slug),
+            exc_info=True,
+        )
         return False, None
 
 
@@ -158,47 +348,55 @@ async def _fetch_job_count(slug: str, client: httpx.AsyncClient) -> int | None:
         total = data.get("total")
         return total if isinstance(total, int) else None
     except Exception:
+        log.debug(
+            "workable.probe_failed",
+            probe="job_count",
+            slug=slug,
+            url=_api_list_url(slug),
+            exc_info=True,
+        )
         return None
+
+
+async def _fetch_template_count(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeCount | None:
+    _ = context
+    return await _fetch_job_count(token, client)
+
+
+async def _probe_template_slug(
+    token: str,
+    client: httpx.AsyncClient,
+    context: None,
+) -> ProbeResult:
+    _ = context
+    return await _probe_slug(token, client)
 
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
     """Detect Workable: URL pattern -> page HTML scan -> slug-based API probe."""
-    token = _token_from_url(url)
-    if token:
-        if client is not None:
-            count = await _fetch_job_count(token, client)
-            if count is not None:
-                return {"token": token, "jobs": count}
-        return {"token": token}
-
-    if client is None:
-        return None
-
-    html = await fetch_page_text(url, client)
-    if html:
-        for pattern in _PAGE_PATTERNS:
-            match = pattern.search(html)
-            if match:
-                found = match.group(1)
-                if found not in _IGNORE_TOKENS:
-                    log.info("workable.detected_in_page", url=url, board_token=found)
-                    count = await _fetch_job_count(found, client)
-                    result: dict = {"token": found}
-                    if count is not None:
-                        result["jobs"] = count
-                    return result
-
-    if slug_guess_allowed():
-        for slug in slugs_from_url(url):
-            found, count = await _probe_slug(slug, client)
-            if found:
-                log.info("workable.detected_by_probe", url=url, board_token=slug)
-                result = {"token": slug}
-                if count is not None:
-                    result["jobs"] = count
-                return result
-
-    return None
+    _ = pw
+    return await ats_can_handle(
+        url,
+        client,
+        monitor_name="workable",
+        token_from_url=_token_from_url,
+        page_patterns=_PAGE_PATTERNS,
+        ignore_tokens=_IGNORE_TOKENS,
+        fetch_job_count=_fetch_template_count,
+        api_probe=_probe_template_slug,
+        initial_context=None,
+        allow_slug_guess=slug_guess_allowed(),
+    )
 
 
-register("workable", discover, cost=10, can_handle=can_handle, rich=False)
+register(
+    "workable",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=False,
+)

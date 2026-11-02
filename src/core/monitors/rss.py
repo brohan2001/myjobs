@@ -1,34 +1,159 @@
 """Generic RSS 2.0 feed monitor with ATS presets.
 
-Supports multiple ATS platforms that expose job listings via RSS feeds:
+Supports multiple ATS platforms that expose job listings via RSS/XML-style transports:
 - **successfactors**: SAP SuccessFactors CSB ``/googlefeed.xml`` (Google Base namespace)
+  plus the Recruiting Marketing search API, native static DWR pagination,
+  and ``resultType=XML`` for legacy ``/career?company=...`` tenants
 - **teamtailor**: Teamtailor ``/jobs.rss`` (offset-paginated, ``tt:`` namespace)
+- **wp_job_manager**: WordPress WP Job Manager ``?feed=job_feed`` (page-paginated)
+- **governmentjobs**: NEOGOV/GovernmentJobs ``/SearchEngine/JobsFeed?agency=...``
+- **hr_manager**: Talent Recruiter / HR Manager embedded positions + full-description RSS
+- **zoho_recruit**: Zoho Recruit career sites with first-party ``/jobs/<page>/rss`` feeds
 - **generic**: Standard RSS 2.0 (manual config, not auto-detected)
 
-Config: ``{"preset": "<name>", "feed_url": "..."}``
+Config: ``{"preset": "<name>", "feed_url": "..."}``. Legacy SuccessFactors
+uses ``{"preset": "successfactors", "variant": "legacy", "host": "...",
+"company": "..."}`` and still runs through this monitor type. Legacy XML uses
+``{"preset": "successfactors", "variant": "legacy_xml", "feed_url": "..."}``.
+Recruiting Marketing sites use ``{"preset": "successfactors", "variant":
+"rmk", "brand": "..."}``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
+import json
+import random
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 import structlog
+from selectolax.lexbor import LexborHTMLParser
 
+from src.core.enum_normalize import normalize_job_location_type
 from src.core.monitors import DiscoveredJob, fetch_page_text, register
+from src.core.monitors.dom import BotChallengeError, _raise_if_bot_challenge
+from src.core.monitors.raw import save_text_response
+from src.core.monitors.successfactors_capture import open_successfactors_capture
+from src.core.monitors.teamtailor_capture import open_teamtailor_capture
+from src.shared.http_retry import (
+    PaginationFetchError,
+    fetch_text_page_with_retry,
+    is_retryable_status,
+)
+from src.shared.successfactors import (
+    SuccessFactorsLegacyBoard,
+    normalize_successfactors_company,
+    successfactors_legacy_board_from_url,
+)
 from src.shared.truncation import truncated_rich_result
+
+if TYPE_CHECKING:
+    from src.core.monitor import MonitorResult
 
 log = structlog.get_logger()
 
 MAX_JOBS = 50_000
+_STREAM_BATCH = 200
+_HTTP_CHUNK_BYTES = 64 * 1024
+_SNIFF_BYTES = 512
+_SF_DETAIL_CONCURRENCY = 16
+_SF_DETAIL_ATTEMPTS = 3
+_SF_DETAIL_MAX_CHARS = 5_000_000
+_DETECTION_MAX_CHARS = 2_000_000
+_SF_DETAIL_MAX_REDIRECTS = 3
+_SF_DETAIL_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_SF_DETAIL_RETRYABLE_STATUSES = frozenset({401, 403, 429})
+_SF_JOB_IDENTITY_MAX_JOBS = 2_000
+_SF_JOB_IDENTITY_RE = re.compile(
+    r"/job/[^/?#]+/(?P<job_id>[1-9]\d{0,11})-"
+    r"(?P<locale>[a-z]{2}_[A-Z]{2})/"
+)
+_SF_JOB_SELECTOR = '[data-careersite-propertyid="title"]'
+_SF_DETAIL_FIELD_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_SF_METADATA_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SF_RMK_BRAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_SF_RMK_LOCALE_RE = re.compile(r"^[a-z]{2}_[A-Z]{2}$")
+_SF_RMK_CSRF_RE = re.compile(r'["\']X-CSRF-Token["\']\s*:\s*["\']([^"\']+)["\']')
+_SF_RMK_APP_BRAND_RE = re.compile(r"\bbrand\s*:\s*['\"]([^'\"]+)['\"]")
+_SF_RMK_APP_LOCALE_RE = re.compile(r"\blocale\s*:\s*['\"]([^'\"]+)['\"]")
+_SF_RMK_CSRF_VALUE_RE = re.compile(r"^[\x21-\x7e]{1,2048}$")
+_SF_RMK_PAGE_SIZE = 10
+_SF_RMK_REQUEST_ATTEMPTS = 6
+_SF_WRAPPER_QUERY_KEYS = frozenset(
+    {
+        "_s.crb",
+        "career_company",
+        "career_ns",
+        "company",
+        "lang",
+        "loginFlowRequired",
+        "navBarLevel",
+        "rcm_site_locale",
+        "site",
+    }
+)
+_SF_LEGACY_XML_QUERY_KEYS = frozenset({"career_ns", "company", "resultType"})
+_GOVERNMENTJOBS_HOSTS = frozenset({"governmentjobs.com", "www.governmentjobs.com"})
+_GOVERNMENTJOBS_BOARD_RE = re.compile(r"^/careers/(?P<agency>[a-z0-9][a-z0-9-]{0,63})/?$")
+_GOVERNMENTJOBS_NS = "http://www.neogov.com/namespaces/JobListing"
+_HR_MANAGER_BOARD_HOST = "candidate.hr-manager.net"
+_HR_MANAGER_FEED_HOST = "api.hr-manager.net"
+_HR_MANAGER_BOARD_PATH = "/vacancies/list.aspx"
+_HR_MANAGER_CUSTOMER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_HR_MANAGER_POSITION_LIST_ID_SUFFIX = "HiddenField_PositionList"
+_ZOHO_RECRUIT_HOST_RE = re.compile(
+    r"^(?P<tenant>[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\."
+    r"zohorecruit\.(?P<zone>com|ca|eu|in|com\.cn|com\.au|jp|uk|sa)$"
+)
+_ZOHO_RECRUIT_BOARD_PATH_RE = re.compile(
+    r"^/jobs/(?P<page>[A-Za-z0-9][A-Za-z0-9_-]{0,127})(?:/rss)?/?$"
+)
+_ZOHO_RECRUIT_LOCATION_RE = re.compile(
+    r"(?:Lieu|Location)\s*:\s*(?P<location>.*?)\s*<br\s*/?>",
+    re.IGNORECASE | re.DOTALL,
+)
+_GENERIC_PAGE_QUERY_PARAM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_GENERIC_PAGINATION_KEYS = frozenset({"param_name", "start", "increment", "page_size", "max_pages"})
+_GENERIC_DESCRIPTION_MODE = "title_employment_location"
+_GENERIC_MAX_PAGE_SIZE = 1_000
+_GENERIC_MAX_PAGES = 10_000
+_GENERIC_MAX_PAGE_NUMBER = 10_000_000
+_BROWSER_FEED_MAX_BYTES = 2_000_000
+_MAX_FEED_URL_CHARS = 8_192
+
+
+async def _sleep(delay: float) -> None:
+    """Patchable retry sleep used by RSS stream tests."""
+    await asyncio.sleep(delay)
 
 
 class RssFeedNotXml(ValueError):
     """Feed endpoint returned a non-XML body (e.g. publisher disabled the feed)."""
+
+
+class SuccessFactorsDetailPageError(RuntimeError):
+    """A detail endpoint repeatedly returned a non-job HTTP-200 document."""
+
+    def __init__(self, url: str, *, classification: str, attempts: int) -> None:
+        self.url = url
+        self.classification = classification
+        self.attempts = attempts
+        super().__init__(
+            "SuccessFactors company enrichment got invalid page "
+            f"(classification={classification}, attempts={attempts}): {url}"
+        )
+
+
+class SuccessFactorsJobIdentityError(RuntimeError):
+    """A configured SuccessFactors feed could not prove stable job identity."""
 
 
 def _parse_feed(text: str, feed_url: str) -> ET.Element:
@@ -41,7 +166,10 @@ def _parse_feed(text: str, feed_url: str) -> ET.Element:
     named error up-front so the monitor's ``last_error`` identifies the root
     cause instead of a column offset in a JavaScript blob.
     """
-    head = text.lstrip()[:512].lower()
+    # Some first-party feeds (including NEOGOV) start with a UTF-8 BOM.
+    # ``str.lstrip()`` does not consider U+FEFF whitespace, so strip it
+    # explicitly before rejecting an otherwise valid XML document.
+    head = text.lstrip("\ufeff \t\r\n")[:512].lower()
     if not head.startswith(("<?xml", "<rss", "<feed")):
         raise RssFeedNotXml(f"feed returned non-XML content: {feed_url}")
     return ET.fromstring(text)
@@ -57,6 +185,12 @@ class _Preset:
     feed_ns: dict[str, str]
     paginated: bool = False
     page_size: int = 100
+    page_query_param: str | None = None
+    page_start: int = 1
+    page_increment: int = 1
+    max_pages: int | None = None
+    retryable_statuses: frozenset[int] = frozenset()
+    item_tag: str = "item"
 
 
 _PRESETS: dict[str, _Preset] = {
@@ -64,6 +198,8 @@ _PRESETS: dict[str, _Preset] = {
         feed_paths=["/googlefeed.xml"],
         page_patterns=[
             re.compile(r"successfactors\.(?:eu|com)"),
+            re.compile(r"sapsf\.(?:cn|eu|com)"),
+            re.compile(r"jobs\.hr\.cloud\.sap"),
             re.compile(r"rmkcdn\.successfactors\.com"),
             re.compile(r"jobs2web\.com"),
         ],
@@ -77,6 +213,36 @@ _PRESETS: dict[str, _Preset] = {
         feed_ns={"tt": "https://teamtailor.com/locations"},
         paginated=True,
         page_size=100,
+        # Teamtailor occasionally emits a transient 400 from an otherwise
+        # healthy feed. Keep this provider-specific: a generic HTTP 400 is a
+        # permanent request error and must still fail fast.
+        retryable_statuses=frozenset({400}),
+    ),
+    "wp_job_manager": _Preset(
+        feed_paths=["/?feed=job_feed"],
+        page_patterns=[
+            re.compile(r"/wp-content/plugins/wp-job-manager/", re.IGNORECASE),
+            re.compile(r"\bjob_manager_ajax_filters\b", re.IGNORECASE),
+        ],
+        feed_ns={},
+        paginated=True,
+        page_size=10,
+        page_query_param="paged",
+    ),
+    "governmentjobs": _Preset(
+        feed_paths=[],
+        page_patterns=[],
+        feed_ns={},
+    ),
+    "hr_manager": _Preset(
+        feed_paths=[],
+        page_patterns=[],
+        feed_ns={},
+    ),
+    "zoho_recruit": _Preset(
+        feed_paths=[],
+        page_patterns=[],
+        feed_ns={},
     ),
 }
 
@@ -87,6 +253,11 @@ _G_NS = "http://base.google.com/ns/1.0"
 
 # Location suffix in title, e.g. " (Tempe, AZ, US, 85288)"
 _TITLE_LOCATION_RE = re.compile(r"\s*\([^)]+,\s*[^)]+\)\s*$")
+_TITLE_LOCATION_VALUE_RE = re.compile(r"\s*\((?P<location>[^()]+,\s*[^()]+)\)\s*$")
+_DESCRIPTION_LOCATION_RE = re.compile(
+    r"<(?:strong|b)\b[^>]*>\s*Location\s*:?\s*</(?:strong|b)>\s*([^<]+)",
+    re.IGNORECASE,
+)
 
 
 # ── Item parsers ────────────────────────────────────────────────────────
@@ -103,6 +274,14 @@ def _text(item: ET.Element, tag: str) -> str | None:
 def _g(item: ET.Element, tag: str) -> str | None:
     """Get text from a Google Base namespace child element."""
     child = item.find(f"{{{_G_NS}}}{tag}")
+    if child is not None and child.text:
+        return child.text.strip()
+    return None
+
+
+def _governmentjobs(item: ET.Element, tag: str) -> str | None:
+    """Get text from a NEOGOV JobListing namespace child element."""
+    child = item.find(f"{{{_GOVERNMENTJOBS_NS}}}{tag}")
     if child is not None and child.text:
         return child.text.strip()
     return None
@@ -125,6 +304,15 @@ def _tt_all(item: ET.Element, tag: str) -> list[str]:
     return results
 
 
+def _sf_description_location(description: str) -> str | None:
+    """Read a labelled location from a SuccessFactors HTML description."""
+    match = _DESCRIPTION_LOCATION_RE.search(description)
+    if not match:
+        return None
+    location = " ".join(html.unescape(match.group(1)).split())
+    return location or None
+
+
 def _parse_sf_item(item: ET.Element) -> DiscoveredJob | None:
     """Parse a SuccessFactors RSS item (Google Base namespace)."""
     link = _text(item, "link")
@@ -134,16 +322,42 @@ def _parse_sf_item(item: ET.Element) -> DiscoveredJob | None:
 
     raw_desc = _text(item, "description")
     description = html.unescape(raw_desc) if raw_desc else None
+    # Some SuccessFactors tenants populate the Google feed's description
+    # with the job title only. Treat that placeholder as missing so the
+    # configuration tooling can require detail-page enrichment instead of
+    # incorrectly classifying the feed as self-contained rich data.
+    if description and title:
+        plain_description = re.sub(r"<[^>]+>", " ", description)
+        plain_description = " ".join(plain_description.split()).casefold()
+        plain_title = " ".join(html.unescape(title).split()).casefold()
+        if plain_description == plain_title:
+            description = None
 
     location = _g(item, "location")
+    strip_title_location = location is not None
+    if not location and description:
+        description_location = _sf_description_location(description)
+        if description_location:
+            location = description_location
+            title_location = _TITLE_LOCATION_VALUE_RE.search(title or "")
+            if title_location:
+                candidate = " ".join(title_location.group("location").split())
+                description_key = description_location.casefold()
+                candidate_key = candidate.casefold()
+                if candidate_key == description_key or candidate_key.startswith(
+                    f"{description_key},"
+                ):
+                    location = candidate
+                    strip_title_location = True
     locations = [location] if location else None
 
-    if title and location:
+    if title and strip_title_location:
         cleaned = _TITLE_LOCATION_RE.sub("", title)
         if cleaned:
             title = cleaned
 
     job_id = _text(item, "guid")
+    date_posted = _text(item, "pubDate")
     expiration_date = _g(item, "expiration_date")
     employer = _g(item, "employer")
     job_function = _g(item, "job_function")
@@ -163,7 +377,94 @@ def _parse_sf_item(item: ET.Element) -> DiscoveredJob | None:
         title=title,
         description=description,
         locations=locations,
+        date_posted=date_posted,
         metadata=metadata or None,
+    )
+
+
+def _sf_legacy_xml_identity(feed_url: str) -> tuple[str, str] | None:
+    """Return the strict ``(origin, company)`` for a legacy XML export."""
+
+    try:
+        parsed = urlparse(feed_url)
+        port = parsed.port
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=6)
+    except (TypeError, ValueError):
+        return None
+    if (
+        parsed.scheme.casefold() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or parsed.fragment
+        or parsed.path.rstrip("/").casefold() != "/career"
+        or not pairs
+        or any(key not in _SF_LEGACY_XML_QUERY_KEYS for key, _value in pairs)
+    ):
+        return None
+    params: dict[str, str] = {}
+    for key, value in pairs:
+        if key in params:
+            return None
+        params[key] = value
+    company = normalize_successfactors_company(params.get("company"))
+    if (
+        company is None
+        or params.get("career_ns") != "job_listing_summary"
+        or params.get("resultType") != "XML"
+    ):
+        return None
+    return f"https://{parsed.hostname.casefold()}", company
+
+
+def _sf_legacy_xml_value(item: ET.Element, tag: str) -> str | None:
+    container = item.find(tag)
+    if container is None:
+        return None
+    value = container.find("value")
+    if value is None or not value.text:
+        return None
+    return value.text.strip() or None
+
+
+def _parse_sf_legacy_xml_item(
+    item: ET.Element,
+    *,
+    origin: str,
+    company: str,
+) -> DiscoveredJob | None:
+    """Parse the full-description XML export used by older SF tenants."""
+
+    job_id = _text(item, "ReqId")
+    title = _text(item, "JobTitle")
+    if not job_id or not job_id.isdigit() or not title:
+        return None
+    city = _sf_legacy_xml_value(item, "filter8")
+    state = _sf_legacy_xml_value(item, "filter7")
+    location = ", ".join(value for value in (city, state) if value)
+    if not location:
+        location = _sf_legacy_xml_value(item, "filter6")
+    job_url = f"{origin}/sfcareer/jobreqcareer?{urlencode({'jobId': job_id, 'company': company})}"
+    metadata = {
+        key: value
+        for key, value in {
+            "id": job_id,
+            "category": _sf_legacy_xml_value(item, "filter1"),
+            "travel_required": _sf_legacy_xml_value(item, "filter2"),
+            "experience_level": _sf_legacy_xml_value(item, "filter3"),
+            "site": _sf_legacy_xml_value(item, "filter6"),
+            "approved_work_states": _sf_legacy_xml_value(item, "mfield2"),
+        }.items()
+        if value
+    }
+    return DiscoveredJob(
+        url=job_url,
+        title=title,
+        description=_text(item, "Job-Description"),
+        locations=[location] if location else None,
+        job_location_type=normalize_job_location_type(_sf_legacy_xml_value(item, "filter4")),
+        metadata=metadata,
     )
 
 
@@ -218,6 +519,13 @@ def _parse_tt_item(item: ET.Element) -> DiscoveredJob | None:
         elif lower in ("none", "onsite", "on-site"):
             job_location_type = "onsite"
 
+    # Teamtailor permits fully remote postings without assigning a physical
+    # location. Preserve explicit structured locations when present, but use
+    # the provider's remote status as the location fallback so these jobs do
+    # not lose the required location field.
+    if not locations and job_location_type == "remote":
+        locations.append("Remote")
+
     date_posted = _text(item, "pubDate")
     department = _tt(item, "department")
     role = _tt(item, "role")
@@ -252,7 +560,8 @@ def _parse_generic_item(item: ET.Element) -> DiscoveredJob | None:
     raw_desc = _text(item, "description")
     description = html.unescape(raw_desc) if raw_desc else None
     date_posted = _text(item, "pubDate")
-    guid = _text(item, "guid")
+    guid = _text(item, "guid") or _text(item, "JobID")
+    location = _text(item, "location") or _text(item, "Location")
 
     metadata: dict = {}
     if guid:
@@ -262,16 +571,839 @@ def _parse_generic_item(item: ET.Element) -> DiscoveredJob | None:
         url=link,
         title=title,
         description=description,
+        locations=[location] if location else None,
         date_posted=date_posted,
         metadata=metadata or None,
     )
 
 
-_PARSERS: dict[str, type[None] | object] = {
+def _parse_generic_title_employment_location_item(
+    item: ET.Element,
+) -> DiscoveredJob | None:
+    """Parse a strict ``title | [employment type |] location`` summary.
+
+    Some first-party feeds use ``description`` as a compact set of listing
+    fields rather than as the job description.  Opt-in parsing prevents that
+    summary from being stored as low-quality description HTML while retaining
+    its useful location and optional employment type.  The title prefix and
+    non-empty location are required so a publisher format change fails the
+    whole monitor run instead of silently writing shifted fields.
+    """
+    job = _parse_generic_item(item)
+    if job is None:
+        return None
+
+    title = " ".join(html.unescape(job.title or "").split())
+    summary = " ".join(html.unescape(_text(item, "description") or "").split())
+    if not title:
+        raise ValueError("RSS structured summary item omitted its title")
+
+    prefix = f"{title} | "
+    if not summary.startswith(prefix):
+        raise ValueError("RSS structured summary did not start with the item title")
+    fields = [value.strip() for value in summary[len(prefix) :].split(" | ")]
+    if not fields or len(fields) > 2 or any(not value for value in fields):
+        raise ValueError(
+            "RSS structured summary must contain an optional employment type and a location"
+        )
+
+    if len(fields) == 2:
+        employment_type, location = fields
+    else:
+        employment_type, location = None, fields[0]
+
+    job.title = title
+    job.description = None
+    job.locations = [location]
+    job.employment_type = employment_type
+    return job
+
+
+def _sf_rmk_list(value: object) -> list[str] | None:
+    """Return a bounded list of non-empty RMK response strings."""
+    if not isinstance(value, list) or len(value) > 100:
+        return None
+    result = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return result or None
+
+
+def _sf_rmk_job(row: object, *, origin: str, brand: str, locale: str) -> DiscoveredJob:
+    """Convert one validated Recruiting Marketing search row."""
+    if not isinstance(row, dict) or not isinstance(row.get("response"), dict):
+        raise ValueError("SuccessFactors RMK returned an invalid job row")
+    data = row["response"]
+    row_brand = data.get("brandUrl")
+    job_id = data.get("id")
+    title = data.get("unifiedStandardTitle")
+    url_title = data.get("unifiedUrlTitle") or data.get("urlTitle")
+    if (
+        row_brand != brand
+        or not isinstance(job_id, str)
+        or not job_id.isdigit()
+        or not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(url_title, str)
+        or not url_title.strip()
+    ):
+        raise ValueError("SuccessFactors RMK returned an inconsistent job identity")
+
+    encoded_title = quote(html.unescape(url_title.strip()), safe="%-._~")
+    locations = _sf_rmk_list(data.get("filter1"))
+    employment_types = _sf_rmk_list(data.get("filter4"))
+    metadata: dict[str, object] = {"id": job_id, "brand": brand}
+    optional_lists = {
+        "job_function": "filter2",
+        "business_unit": "businessUnit_obj",
+        "division": "division_obj",
+        "currency": "currency",
+    }
+    for key, source_key in optional_lists.items():
+        values = _sf_rmk_list(data.get(source_key))
+        if values:
+            metadata[key] = values
+
+    return DiscoveredJob(
+        url=f"{origin}/{brand}/job/{encoded_title}/{job_id}-{locale}/",
+        title=title.strip(),
+        locations=locations,
+        employment_type=employment_types[0] if employment_types else None,
+        date_posted=(
+            data["unifiedStandardStart"].strip()
+            if isinstance(data.get("unifiedStandardStart"), str)
+            and data["unifiedStandardStart"].strip()
+            else None
+        ),
+        metadata=metadata,
+    )
+
+
+async def _discover_sf_rmk(
+    board: dict,
+    client: httpx.AsyncClient,
+) -> tuple[list[DiscoveredJob], bool]:
+    """Discover every job from a SuccessFactors Recruiting Marketing brand."""
+    board_url = board["board_url"]
+    metadata = board.get("metadata") or {}
+    brand = metadata.get("brand")
+    configured_locale = metadata.get("locale")
+    if not isinstance(brand, str) or _SF_RMK_BRAND_RE.fullmatch(brand) is None:
+        raise ValueError("SuccessFactors RMK brand must be a bounded tenant token")
+    if configured_locale is not None and (
+        not isinstance(configured_locale, str)
+        or _SF_RMK_LOCALE_RE.fullmatch(configured_locale) is None
+    ):
+        raise ValueError("SuccessFactors RMK locale must use ll_CC format")
+
+    try:
+        parsed = urlparse(board_url)
+        port = parsed.port or 443
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid SuccessFactors RMK board URL") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port != 443
+        or not parsed.path.startswith(f"/{brand}/")
+    ):
+        raise ValueError("SuccessFactors RMK board URL must match the configured brand")
+    origin = urlunparse(("https", parsed.netloc, "", "", "", "")).rstrip("/")
+
+    page = await fetch_text_page_with_retry(
+        client,
+        board_url,
+        retries=_SF_RMK_REQUEST_ATTEMPTS if metadata.get("proxy") else 3,
+        end_of_pagination_statuses=(),
+        require_nonempty=True,
+        max_chars=_DETECTION_MAX_CHARS,
+        sleep=_sleep,
+        log_event="rss.rmk_page_backoff",
+    )
+    if page is None:  # pragma: no cover - end statuses are disabled above
+        raise ValueError("SuccessFactors RMK board page is unavailable")
+    csrf_match = _SF_RMK_CSRF_RE.search(page)
+    page_brand_match = _SF_RMK_APP_BRAND_RE.search(page)
+    page_locale_match = _SF_RMK_APP_LOCALE_RE.search(page)
+    if (
+        csrf_match is None
+        or page_brand_match is None
+        or page_brand_match.group(1) != brand
+        or page_locale_match is None
+    ):
+        raise ValueError("SuccessFactors RMK bootstrap metadata is missing or inconsistent")
+    csrf_token = csrf_match.group(1)
+    if _SF_RMK_CSRF_VALUE_RE.fullmatch(csrf_token) is None:
+        raise ValueError("SuccessFactors RMK returned an invalid CSRF token")
+    locale = configured_locale or page_locale_match.group(1)
+    if _SF_RMK_LOCALE_RE.fullmatch(locale) is None:
+        raise ValueError("SuccessFactors RMK page returned an invalid locale")
+
+    api_url = f"{origin}/services/recruiting/v1/jobs"
+    request_headers = {
+        "Content-Type": "application/json",
+        "Referer": board_url,
+        "X-CSRF-Token": csrf_token,
+    }
+    jobs_by_id: dict[str, DiscoveredJob] = {}
+    expected_total: int | None = None
+    processed_rows = 0
+    page_number = 0
+    repeated_rows = False
+    while expected_total is None or processed_rows < expected_total:
+        request_body = json.dumps(
+            {
+                "keywords": "",
+                "locale": locale,
+                "location": "",
+                "pageNumber": page_number,
+                "sortBy": "recent",
+                "brand": brand,
+            },
+            separators=(",", ":"),
+        )
+        response_text = await fetch_text_page_with_retry(
+            client,
+            api_url,
+            method="POST",
+            content=request_body,
+            headers=request_headers,
+            retries=_SF_RMK_REQUEST_ATTEMPTS if metadata.get("proxy") else 3,
+            end_of_pagination_statuses=(),
+            require_nonempty=True,
+            max_chars=5_000_000,
+            sleep=_sleep,
+            log_event="rss.rmk_api_backoff",
+        )
+        if response_text is None:  # pragma: no cover - end statuses are disabled above
+            raise ValueError("SuccessFactors RMK search response is unavailable")
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("SuccessFactors RMK search returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("SuccessFactors RMK search returned an invalid payload")
+        total = payload.get("totalJobs")
+        rows = payload.get("jobSearchResult")
+        if (
+            not isinstance(total, int)
+            or isinstance(total, bool)
+            or not 0 <= total <= MAX_JOBS
+            or not isinstance(rows, list)
+            or len(rows) > _SF_RMK_PAGE_SIZE
+        ):
+            raise ValueError("SuccessFactors RMK search returned invalid pagination data")
+        if expected_total is None:
+            expected_total = total
+        elif total != expected_total:
+            raise ValueError("SuccessFactors RMK total changed during pagination")
+        expected_rows = min(_SF_RMK_PAGE_SIZE, expected_total - processed_rows)
+        if len(rows) != expected_rows:
+            raise ValueError("SuccessFactors RMK returned an inconsistent page size")
+        if not rows:
+            if processed_rows != expected_total:
+                raise ValueError("SuccessFactors RMK pagination ended before the advertised total")
+            break
+
+        processed_rows += len(rows)
+        if expected_total is not None and processed_rows > expected_total:
+            raise ValueError("SuccessFactors RMK pagination exceeded the advertised total")
+        for row in rows:
+            job = _sf_rmk_job(row, origin=origin, brand=brand, locale=locale)
+            job_id = str(job.metadata["id"])
+            existing = jobs_by_id.get(job_id)
+            if existing is not None:
+                if existing != job:
+                    raise ValueError("SuccessFactors RMK repeated a conflicting job")
+                repeated_rows = True
+                continue
+            jobs_by_id[job_id] = job
+        page_number += 1
+
+    if expected_total is None or processed_rows != expected_total:
+        raise ValueError("SuccessFactors RMK result count did not match the advertised total")
+    return list(jobs_by_id.values()), repeated_rows
+
+
+def _zoho_recruit_feed_from_url(url: str) -> tuple[str, str] | None:
+    """Return ``(tenant_identity, feed_url)`` for one strict Zoho careers URL."""
+
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    host_match = _ZOHO_RECRUIT_HOST_RE.fullmatch(host)
+    path_match = _ZOHO_RECRUIT_BOARD_PATH_RE.fullmatch(parsed.path)
+    if (
+        parsed.scheme.casefold() != "https"
+        or host_match is None
+        or path_match is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+
+    tenant_identity = f"{host_match.group('tenant')}.{host_match.group('zone')}"
+    feed_path = f"/jobs/{path_match.group('page')}/rss"
+    return tenant_identity, urlunparse(("https", host, feed_path, "", "", ""))
+
+
+def _parse_zoho_recruit_item(item: ET.Element) -> DiscoveredJob | None:
+    """Parse a Zoho Recruit RSS item and recover its labelled location."""
+
+    link = _text(item, "link")
+    if not link:
+        return None
+
+    raw_desc = _text(item, "description")
+    description = html.unescape(raw_desc) if raw_desc else None
+    location = None
+    if description:
+        match = _ZOHO_RECRUIT_LOCATION_RE.search(description)
+        if match:
+            location = " ".join(
+                LexborHTMLParser(html.unescape(match.group("location"))).text().split()
+            )
+
+    guid = _text(item, "guid")
+    metadata = {"id": guid} if guid else None
+    source_identity = None
+    try:
+        host = (urlparse(link).hostname or "").casefold().rstrip(".")
+    except (TypeError, ValueError):
+        host = ""
+    host_match = _ZOHO_RECRUIT_HOST_RE.fullmatch(host)
+    if host_match is not None and guid and guid.isascii() and guid.isdigit():
+        tenant_identity = f"{host_match.group('tenant')}.{host_match.group('zone')}"
+        source_identity = f"zoho_recruit:{tenant_identity}:{guid}"
+
+    raw_title = _text(item, "title")
+    return DiscoveredJob(
+        url=link,
+        title=html.unescape(raw_title) if raw_title else None,
+        description=description,
+        locations=[location] if location else None,
+        date_posted=_text(item, "pubDate"),
+        metadata=metadata,
+        source_identity=source_identity,
+    )
+
+
+def _hr_manager_customer_from_url(url: str) -> str | None:
+    """Return the tenant alias from one strict HR Manager board URL."""
+
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=2)
+    except (TypeError, ValueError):
+        return None
+    if (
+        parsed.scheme.casefold() != "https"
+        or parsed.hostname is None
+        or parsed.hostname.casefold().rstrip(".") != _HR_MANAGER_BOARD_HOST
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or parsed.path.casefold() != _HR_MANAGER_BOARD_PATH
+        or parsed.fragment
+        or len(pairs) != 1
+        or pairs[0][0].casefold() != "customer"
+    ):
+        return None
+    customer = pairs[0][1].strip().casefold()
+    return customer if _HR_MANAGER_CUSTOMER_RE.fullmatch(customer) else None
+
+
+def _hr_manager_feed_url(customer: str) -> str:
+    """Build the first-party recruitment feed for a validated tenant alias."""
+
+    if _HR_MANAGER_CUSTOMER_RE.fullmatch(customer) is None:
+        raise ValueError("invalid HR Manager customer alias")
+    return (
+        f"https://{_HR_MANAGER_FEED_HOST}/JobPortal.svc/{customer}/"
+        "PositionList/rss/?protype=RecruitmentProject&incads=true"
+    )
+
+
+def _hr_manager_position_data(page: str, customer: str) -> dict[str, dict]:
+    """Parse and validate the tenant-scoped position JSON embedded in the board."""
+
+    document = LexborHTMLParser(page)
+    node = document.css_first(f'input[id$="{_HR_MANAGER_POSITION_LIST_ID_SUFFIX}"]')
+    raw_value = node.attributes.get("value") if node is not None else None
+    if not raw_value:
+        raise ValueError("HR Manager board is missing its position list")
+    try:
+        payload = json.loads(html.unescape(raw_value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("HR Manager position list is invalid JSON") from exc
+
+    position_list = payload.get("PositionList")
+    if not isinstance(position_list, dict):
+        raise ValueError("HR Manager position list payload is missing PositionList")
+    alias = position_list.get("CustomerAlias") or payload.get("CustomerAlias")
+    if not isinstance(alias, str) or alias.casefold() != customer:
+        raise ValueError("HR Manager position list tenant does not match the board URL")
+    status = position_list.get("TransactionStatus") or payload.get("TransactionStatus")
+    if not isinstance(status, dict) or status.get("StatusCode") != 0:
+        raise ValueError("HR Manager position list did not report success")
+    items = position_list.get("Items")
+    if not isinstance(items, list):
+        raise ValueError("HR Manager position list items are missing")
+    advertised_count = position_list.get("PositionCountList")
+    if not isinstance(advertised_count, int) or advertised_count != len(items):
+        raise ValueError("HR Manager position count does not match its embedded items")
+
+    positions: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict) or item.get("ProjectType") != "RecruitmentProject":
+            raise ValueError("HR Manager position list contains an unexpected project type")
+        position_id = item.get("Id")
+        if not isinstance(position_id, int) or position_id <= 0:
+            raise ValueError("HR Manager position has an invalid id")
+        key = str(position_id)
+        if key in positions:
+            raise ValueError("HR Manager position list contains duplicate ids")
+        positions[key] = item
+    return positions
+
+
+def _hr_manager_locations(position: dict) -> list[str] | None:
+    """Return provider-structured workplace/region labels without duplicates."""
+
+    workplace = position.get("WorkPlace")
+    if isinstance(workplace, str) and workplace.strip():
+        return [workplace.strip()]
+
+    values: list[str] = []
+    raw_locations = position.get("PositionLocationMultiSelection")
+    if isinstance(raw_locations, list):
+        for raw in raw_locations:
+            name = raw.get("Name") if isinstance(raw, dict) else None
+            if isinstance(name, str) and name.strip() and name.strip() not in values:
+                values.append(name.strip())
+    if not values:
+        primary = position.get("PositionLocation")
+        name = primary.get("Name") if isinstance(primary, dict) else None
+        if isinstance(name, str) and name.strip():
+            values.append(name.strip())
+    return values or None
+
+
+def _hr_manager_employment_type(position: dict) -> str | None:
+    raw = position.get("CustomList1")
+    value = raw.get("Name") if isinstance(raw, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+async def _discover_hr_manager(
+    board: dict,
+    client: httpx.AsyncClient,
+    *,
+    feed_url: str,
+    preset: _Preset,
+) -> list[DiscoveredJob]:
+    """Join HR Manager's full-description RSS with its tenant-safe location data."""
+
+    metadata = board.get("metadata") or {}
+    customer = metadata.get("customer") or _hr_manager_customer_from_url(board["board_url"])
+    if not isinstance(customer, str) or _HR_MANAGER_CUSTOMER_RE.fullmatch(customer) is None:
+        raise ValueError("HR Manager monitor requires a valid customer alias")
+    page = await fetch_page_text(board["board_url"], client, max_chars=_DETECTION_MAX_CHARS)
+    if not page:
+        raise ValueError("HR Manager board page could not be fetched")
+    positions = _hr_manager_position_data(page, customer)
+
+    jobs: list[DiscoveredJob] = []
+    seen_ids: set[str] = set()
+    async for item in _stream_feed_items(feed_url, preset, client):
+        job = _parse_generic_item(item)
+        if job is None:
+            raise ValueError("HR Manager feed item is missing its job URL")
+        position_id = (job.metadata or {}).get("id")
+        if not isinstance(position_id, str) or position_id not in positions:
+            raise ValueError("HR Manager feed contains a job outside the board position list")
+        if position_id in seen_ids:
+            raise ValueError("HR Manager feed contains duplicate job ids")
+        seen_ids.add(position_id)
+        position = positions[position_id]
+        job.locations = _hr_manager_locations(position)
+        job.employment_type = _hr_manager_employment_type(position)
+        languages = position.get("Languages")
+        if isinstance(languages, list) and languages:
+            code = languages[0].get("Code") if isinstance(languages[0], dict) else None
+            if isinstance(code, str) and re.fullmatch(r"[a-z]{2}", code.casefold()):
+                job.language = code.casefold()
+        job.source_identity = f"hr_manager:{customer}:{position_id}"
+        jobs.append(job)
+        if len(jobs) >= MAX_JOBS:
+            raise ValueError(f"HR Manager feed exceeds the {MAX_JOBS}-job safety cap")
+
+    if seen_ids != set(positions):
+        raise ValueError("HR Manager feed and board position ids do not match")
+    return jobs
+
+
+def _parse_governmentjobs_item(item: ET.Element) -> DiscoveredJob | None:
+    """Parse NEOGOV's RSS extension without dropping its namespaced fields."""
+    link = _text(item, "link")
+    if not link:
+        return None
+
+    sections = [
+        (None, _text(item, "description")),
+        ("Examples of Duties", _governmentjobs(item, "examplesofduties")),
+        ("Qualifications", _governmentjobs(item, "qualifications")),
+        ("Supplemental Information", _governmentjobs(item, "supplementalinformation")),
+    ]
+    description_parts: list[str] = []
+    for heading, raw_value in sections:
+        if not raw_value:
+            continue
+        if heading:
+            description_parts.append(f"<h2>{heading}</h2>")
+        description_parts.append(html.unescape(raw_value))
+
+    job_id = _governmentjobs(item, "jobId")
+    department = _governmentjobs(item, "department")
+    metadata: dict = {}
+    if job_id:
+        metadata["id"] = job_id
+    if department:
+        metadata["department"] = department
+
+    location = _governmentjobs(item, "location")
+    return DiscoveredJob(
+        url=link,
+        title=_text(item, "title"),
+        description="\n".join(description_parts) or None,
+        locations=[location] if location else None,
+        employment_type=_governmentjobs(item, "jobType"),
+        date_posted=_text(item, "pubDate"),
+        metadata=metadata or None,
+    )
+
+
+_PARSERS: dict[str, Callable[[ET.Element], DiscoveredJob | None]] = {
     "successfactors": _parse_sf_item,
     "teamtailor": _parse_tt_item,
+    "governmentjobs": _parse_governmentjobs_item,
+    "zoho_recruit": _parse_zoho_recruit_item,
     "generic": _parse_generic_item,
 }
+
+
+def _sf_detail_candidates(jobs: list[DiscoveredJob], raw_url_filter: object) -> list[DiscoveredJob]:
+    """Apply dispatcher URL-filter semantics before making detail requests.
+
+    The dispatcher still performs the authoritative filtering after discovery.
+    This early pass only prevents each regional board from fetching every job
+    in a shared tenant before irrelevant URLs are removed.
+    """
+    if not raw_url_filter:
+        return jobs
+    if isinstance(raw_url_filter, str):
+        include, exclude = raw_url_filter, None
+    elif isinstance(raw_url_filter, Mapping):
+        include = raw_url_filter.get("include")
+        exclude = raw_url_filter.get("exclude")
+    else:
+        return jobs
+    try:
+        include_re = re.compile(include) if include else None
+        exclude_re = re.compile(exclude) if exclude else None
+    except re.error:
+        return jobs
+    return [
+        job
+        for job in jobs
+        if (include_re is None or include_re.search(job.url))
+        and (exclude_re is None or not exclude_re.search(job.url))
+    ]
+
+
+def _same_https_origin(url: str, origin: str) -> bool:
+    """Restrict optional detail enrichment to the configured feed origin."""
+    try:
+        candidate = urlparse(url)
+        source = urlparse(origin)
+        candidate_port = candidate.port
+        source_port = source.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        candidate.scheme.casefold() == source.scheme.casefold() == "https"
+        and candidate.hostname is not None
+        and source.hostname is not None
+        and candidate.hostname.casefold().rstrip(".") == source.hostname.casefold().rstrip(".")
+        and candidate_port in {None, 443}
+        and source_port in {None, 443}
+        and candidate.username is None
+        and candidate.password is None
+    )
+
+
+def _classify_sf_detail_page(url: str, page: str) -> tuple[LexborHTMLParser, str | None]:
+    document = LexborHTMLParser(page)
+    if document.css_first(_SF_JOB_SELECTOR) is not None:
+        return document, None
+    try:
+        _raise_if_bot_challenge(url, page)
+    except BotChallengeError:
+        return document, "bot_challenge"
+    if not page.lstrip().startswith("<"):
+        return document, "non_html"
+    return document, "missing_job_marker"
+
+
+async def _fetch_sf_detail_document(
+    url: str,
+    client: httpx.AsyncClient,
+) -> LexborHTMLParser:
+    """Fetch and validate a SuccessFactors detail page with bounded retries."""
+    classification = "missing_job_marker"
+    current_url = url
+    redirects = 0
+    visited = {url}
+    for attempt in range(_SF_DETAIL_ATTEMPTS):
+        while True:
+            try:
+                page = await fetch_text_page_with_retry(
+                    client,
+                    current_url,
+                    follow_redirects=False,
+                    retryable_statuses=_SF_DETAIL_RETRYABLE_STATUSES,
+                    end_of_pagination_statuses=(),
+                    require_nonempty=True,
+                    max_chars=_SF_DETAIL_MAX_CHARS + 1,
+                    max_bytes=_SF_DETAIL_MAX_CHARS,
+                    log_event="rss.successfactors_detail_backoff",
+                    sleep=_sleep,
+                )
+            except PaginationFetchError as exc:
+                if exc.last_status not in _SF_DETAIL_REDIRECT_STATUSES or not exc.last_location:
+                    raise
+                redirected = urljoin(current_url, exc.last_location)
+                if not _same_https_origin(redirected, url):
+                    raise RuntimeError(
+                        f"SuccessFactors company enrichment rejected redirect: {redirected}"
+                    ) from exc
+                if redirects >= _SF_DETAIL_MAX_REDIRECTS or redirected in visited:
+                    raise RuntimeError(
+                        f"SuccessFactors company enrichment exceeded redirect cap: {url}"
+                    ) from exc
+                redirects += 1
+                visited.add(redirected)
+                current_url = redirected
+                continue
+            break
+        if page is None:  # Strict terminal status handling makes this unreachable.
+            raise RuntimeError(f"SuccessFactors detail fetch returned no page: {current_url}")
+
+        document, invalid = _classify_sf_detail_page(current_url, page)
+        if invalid is None:
+            return document
+        classification = invalid
+        if attempt < _SF_DETAIL_ATTEMPTS - 1:
+            delay = 0.5 * (2**attempt) * (0.5 + random.random())
+            log.info(
+                "rss.successfactors_detail_invalid_backoff",
+                url=url,
+                attempt=attempt + 1,
+                delay_s=round(delay, 2),
+                classification=classification,
+            )
+            await _sleep(delay)
+
+    raise SuccessFactorsDetailPageError(
+        url,
+        classification=classification,
+        attempts=_SF_DETAIL_ATTEMPTS,
+    )
+
+
+def _sf_detail_fields(metadata: Mapping) -> tuple[dict[str, str], frozenset[str]]:
+    """Return validated detail-property mappings and required metadata keys."""
+    fields: dict[str, str] = {}
+    required: set[str] = set()
+    if metadata.get("fetch_company"):
+        # Backward compatibility: the historic customfield1 enrichment was
+        # optional when a tenant omitted that property.
+        fields["company"] = "customfield1"
+
+    configured = metadata.get("detail_fields")
+    if configured is None:
+        return fields, frozenset(required)
+    if not isinstance(configured, Mapping) or len(configured) > 16:
+        raise ValueError("SuccessFactors detail_fields must be a mapping of at most 16 fields")
+    for metadata_key, property_id in configured.items():
+        if not isinstance(metadata_key, str) or not _SF_METADATA_KEY_RE.fullmatch(metadata_key):
+            raise ValueError(f"Invalid SuccessFactors metadata key: {metadata_key!r}")
+        if not isinstance(property_id, str) or not _SF_DETAIL_FIELD_RE.fullmatch(property_id):
+            raise ValueError(f"Invalid SuccessFactors detail property: {property_id!r}")
+        fields[metadata_key] = property_id
+        required.add(metadata_key)
+    return fields, frozenset(required)
+
+
+async def _enrich_sf_detail_fields(
+    jobs: list[DiscoveredJob],
+    client: httpx.AsyncClient,
+    *,
+    feed_url: str,
+    fields: Mapping[str, str],
+    required_fields: frozenset[str],
+    url_filter: object = None,
+) -> None:
+    """Populate configured SuccessFactors properties from detail pages.
+
+    The Google feed's ``g:employer`` is commonly the generic value
+    ``Careers`` even when one tenant publishes jobs for multiple legal
+    employers or services. Career-site detail pages expose tenant-specific
+    properties such as ``customfield1``, ``dept``, and ``adcode``. Configured
+    ``detail_fields`` are required and fail closed so a tenant markup change
+    cannot silently admit or re-identify another employer's posting.
+    """
+    semaphore = asyncio.Semaphore(_SF_DETAIL_CONCURRENCY)
+
+    async def _one(job: DiscoveredJob) -> None:
+        if not _same_https_origin(job.url, feed_url):
+            raise RuntimeError(f"SuccessFactors detail enrichment rejected URL: {job.url}")
+        async with semaphore:
+            document = await _fetch_sf_detail_document(job.url, client)
+        metadata = dict(job.metadata or {})
+        for metadata_key, property_id in fields.items():
+            selector = f'[data-careersite-propertyid="{property_id}"]'
+            node = document.css_first(selector)
+            value = node.text(strip=True) if node is not None else None
+            if value:
+                metadata[metadata_key] = value
+            elif metadata_key in required_fields:
+                raise RuntimeError(
+                    "SuccessFactors detail enrichment omitted required property "
+                    f"{property_id!r}: {job.url}"
+                )
+        if metadata:
+            job.metadata = metadata
+
+    candidates = _sf_detail_candidates(jobs, url_filter)
+    await asyncio.gather(*(_one(job) for job in candidates))
+
+
+async def _resolve_sf_job_invite_identities(
+    jobs: list[DiscoveredJob],
+    client: httpx.AsyncClient,
+    *,
+    feed_url: str,
+) -> None:
+    """Replace feed aliases with authenticated SuccessFactors detail URLs.
+
+    A SuccessFactors Google feed commonly exposes a title-derived URL and a
+    feed-specific numeric ID.  A no-follow request redirects that alias to a
+    detail URL containing the tenant's stable requisition ID and locale.  The
+    dispatcher can then collapse title and locale variants to ``job-invite``
+    URLs while retaining a deterministic preferred locale's rich feed data.
+
+    This is an explicit, bounded opt-in because it adds one provider request
+    per discovered job.  Any malformed, cross-origin, or non-redirecting
+    response fails the board run rather than silently changing identities.
+    """
+
+    semaphore = asyncio.Semaphore(_SF_DETAIL_CONCURRENCY)
+
+    async def _one(job: DiscoveredJob) -> None:
+        if not _same_https_origin(job.url, feed_url):
+            raise SuccessFactorsJobIdentityError(
+                f"SuccessFactors job identity rejected source URL: {job.url}"
+            )
+
+        response: httpx.Response | None = None
+        async with semaphore:
+            for attempt in range(_SF_DETAIL_ATTEMPTS):
+                try:
+                    response = await client.head(job.url, follow_redirects=False)
+                except httpx.HTTPError as exc:
+                    if attempt >= _SF_DETAIL_ATTEMPTS - 1:
+                        raise SuccessFactorsJobIdentityError(
+                            f"SuccessFactors job identity request failed: {job.url}"
+                        ) from exc
+                else:
+                    if response.status_code in _SF_DETAIL_REDIRECT_STATUSES:
+                        break
+                    if (
+                        response.status_code not in _SF_DETAIL_RETRYABLE_STATUSES
+                        and not is_retryable_status(response.status_code)
+                    ):
+                        raise SuccessFactorsJobIdentityError(
+                            "SuccessFactors job identity expected a redirect "
+                            f"but got HTTP {response.status_code}: {job.url}"
+                        )
+                    if attempt >= _SF_DETAIL_ATTEMPTS - 1:
+                        raise SuccessFactorsJobIdentityError(
+                            "SuccessFactors job identity exhausted retries "
+                            f"after HTTP {response.status_code}: {job.url}"
+                        )
+                delay = 0.5 * (2**attempt) * (0.5 + random.random())
+                await _sleep(delay)
+
+        if response is None:
+            raise SuccessFactorsJobIdentityError(
+                f"SuccessFactors job identity returned no response: {job.url}"
+            )
+        location = response.headers.get("location")
+        if not location:
+            raise SuccessFactorsJobIdentityError(
+                f"SuccessFactors job identity redirect omitted Location: {job.url}"
+            )
+        redirected = urljoin(job.url, location)
+        if not _same_https_origin(redirected, feed_url):
+            raise SuccessFactorsJobIdentityError(
+                f"SuccessFactors job identity rejected redirect: {redirected}"
+            )
+        try:
+            parsed = urlparse(redirected)
+            port = parsed.port
+        except ValueError as exc:
+            raise SuccessFactorsJobIdentityError(
+                f"SuccessFactors job identity redirect was invalid: {redirected}"
+            ) from exc
+        match = _SF_JOB_IDENTITY_RE.fullmatch(parsed.path)
+        if (
+            match is None
+            or parsed.query
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in {None, 443}
+        ):
+            raise SuccessFactorsJobIdentityError(
+                f"SuccessFactors job identity redirect had unexpected shape: {redirected}"
+            )
+
+        metadata = dict(job.metadata or {})
+        feed_id = metadata.get("id")
+        if feed_id is not None:
+            metadata["feed_id"] = feed_id
+        metadata["job_invite_id"] = match.group("job_id")
+        metadata["job_locale"] = match.group("locale")
+        job.metadata = metadata
+        job.url = urlunparse(parsed._replace(query="", fragment=""))
+
+    tasks = [asyncio.create_task(_one(job)) for job in jobs]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 # ── Feed URL helpers ────────────────────────────────────────────────────
@@ -281,6 +1413,48 @@ def _build_feed_url(board_url: str, path: str) -> str:
     """Build a feed URL from a board URL and feed path."""
     parsed = urlparse(board_url)
     return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+def _governmentjobs_agency_from_url(board_url: str) -> str | None:
+    """Return a strict NEOGOV agency tenant from an unfiltered careers URL."""
+    try:
+        parsed = urlparse(board_url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if (
+        parsed.scheme.casefold() != "https"
+        or (parsed.hostname or "").casefold() not in _GOVERNMENTJOBS_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    match = _GOVERNMENTJOBS_BOARD_RE.fullmatch(parsed.path.casefold())
+    return match.group("agency").casefold() if match is not None else None
+
+
+def _governmentjobs_feed_url(agency: str) -> str:
+    return "https://www.governmentjobs.com/SearchEngine/JobsFeed?" + urlencode({"agency": agency})
+
+
+def _governmentjobs_feed_from_config(board_url: str, metadata: Mapping) -> str | None:
+    """Resolve a feed only when URL, tenant config, and endpoint agree."""
+    board_agency = _governmentjobs_agency_from_url(board_url)
+    if board_agency is None:
+        return None
+    configured_agency = metadata.get("agency")
+    if configured_agency is not None and (
+        not isinstance(configured_agency, str) or configured_agency.casefold() != board_agency
+    ):
+        return None
+    expected_feed = _governmentjobs_feed_url(board_agency)
+    configured_feed = metadata.get("feed_url")
+    if configured_feed is not None and configured_feed != expected_feed:
+        return None
+    return expected_feed
 
 
 def _add_pagination(url: str, offset: int, per_page: int) -> str:
@@ -293,49 +1467,370 @@ def _add_pagination(url: str, offset: int, per_page: int) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
+def _add_page_number(url: str, page: int, query_param: str) -> str:
+    """Add a one-based page-number query parameter to a URL."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    params[query_param] = [str(page)]
+    new_query = urlencode({key: values[0] for key, values in params.items()})
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def _generic_paginated_preset(preset: _Preset, metadata: Mapping[str, object]) -> _Preset:
+    """Apply bounded opt-in page-number pagination to a generic RSS feed."""
+    raw_pagination = metadata.get("pagination")
+    if raw_pagination is None:
+        return preset
+    if not isinstance(raw_pagination, Mapping):
+        raise ValueError("RSS generic pagination must be an object")
+
+    unknown_keys = set(raw_pagination) - _GENERIC_PAGINATION_KEYS
+    if unknown_keys:
+        raise ValueError(
+            "RSS generic pagination has unsupported keys: "
+            + ", ".join(sorted(str(key) for key in unknown_keys))
+        )
+
+    required_keys = {"param_name", "page_size", "max_pages"}
+    missing_keys = required_keys - set(raw_pagination)
+    if missing_keys:
+        raise ValueError(
+            "RSS generic pagination is missing required keys: " + ", ".join(sorted(missing_keys))
+        )
+
+    query_param = raw_pagination.get("param_name")
+    if not isinstance(query_param, str) or not _GENERIC_PAGE_QUERY_PARAM_RE.fullmatch(query_param):
+        raise ValueError("RSS generic pagination param_name is invalid")
+
+    def bounded_int(name: str, *, default: int, minimum: int, maximum: int) -> int:
+        value = raw_pagination.get(name, default)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(
+                f"RSS generic pagination {name} must be an integer from {minimum} through {maximum}"
+            )
+        return value
+
+    page_start = bounded_int("start", default=1, minimum=1, maximum=_GENERIC_MAX_PAGE_NUMBER)
+    page_increment = bounded_int(
+        "increment", default=1, minimum=1, maximum=_GENERIC_MAX_PAGE_NUMBER
+    )
+    page_size = bounded_int("page_size", default=100, minimum=1, maximum=_GENERIC_MAX_PAGE_SIZE)
+    max_pages = bounded_int("max_pages", default=1, minimum=1, maximum=_GENERIC_MAX_PAGES)
+    final_page = page_start + (max_pages - 1) * page_increment
+    if final_page > _GENERIC_MAX_PAGE_NUMBER:
+        raise ValueError(
+            "RSS generic pagination start/increment/max_pages exceed the page-number bound"
+        )
+
+    return replace(
+        preset,
+        paginated=True,
+        page_size=page_size,
+        page_query_param=query_param,
+        page_start=page_start,
+        page_increment=page_increment,
+        max_pages=max_pages,
+    )
+
+
+def _validated_feed_url(value: object) -> str:
+    """Return one bounded public HTTP(S) feed URL or fail closed."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > _MAX_FEED_URL_CHARS
+        or any(ord(character) < 0x21 or ord(character) == 0x7F for character in value)
+    ):
+        raise ValueError("RSS feed_url must be a bounded absolute HTTP(S) URL")
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("RSS feed_url must be a bounded absolute HTTP(S) URL") from exc
+    if (
+        parsed.scheme.casefold() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or (port is not None and not 1 <= port <= 65_535)
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "RSS feed_url must be an absolute HTTP(S) URL without credentials or a fragment"
+        )
+    return value
+
+
+def validate_generic_rss_config(metadata: Mapping[str, object]) -> None:
+    """Validate generic RSS extensions shared by runtime and CSV inspection."""
+    if "feed_url" in metadata:
+        _validated_feed_url(metadata["feed_url"])
+    render = metadata.get("render", False)
+    if not isinstance(render, bool):
+        raise ValueError("RSS render must be a boolean")
+    preset_name = metadata.get("preset", "generic")
+    if preset_name != "generic":
+        if (
+            "pagination" in metadata
+            or "description_mode" in metadata
+            or (render and preset_name != "wp_job_manager")
+        ):
+            raise ValueError(
+                "RSS pagination and description_mode are only supported by the generic "
+                "preset; browser rendering is supported by generic and wp_job_manager"
+            )
+        return
+    _generic_paginated_preset(
+        _Preset(feed_paths=[], page_patterns=[], feed_ns={}),
+        metadata,
+    )
+    description_mode = metadata.get("description_mode")
+    if description_mode not in {None, _GENERIC_DESCRIPTION_MODE}:
+        raise ValueError(f"RSS generic description_mode must be {_GENERIC_DESCRIPTION_MODE!r}")
+
+
 # ── Feed fetching ───────────────────────────────────────────────────────
 
 
-async def _fetch_all_items(
+def _feed_head_is_xml(head: bytes, encoding: str | None) -> bool:
+    """Return whether the bounded response prefix looks like XML/RSS."""
+    text = head.decode(encoding or "utf-8", errors="ignore").lstrip("\ufeff \t\r\n").lower()
+    return text.startswith(("<?xml", "<rss", "<feed"))
+
+
+def _feed_parser_items(
+    parser: ET.XMLPullParser,
+    chunk: bytes,
+    *,
+    item_tag: str = "item",
+) -> Iterator[ET.Element]:
+    """Feed one bounded byte chunk and yield completed RSS items."""
+    parser.feed(chunk)
+    events = cast(Iterator[tuple[str, ET.Element]], parser.read_events())
+    for _event, element in events:
+        if element.tag == item_tag or element.tag.endswith(f"}}{item_tag}"):
+            yield element
+
+
+async def _stream_browser_feed_items(
+    feed_url: str,
+    preset: _Preset,
+    page,
+    metadata: Mapping[str, object],
+) -> AsyncIterator[ET.Element]:
+    """Fetch one raw XML response through a real browser navigation.
+
+    Chromium's XML viewer rewrites CDATA into escaped text and comment nodes,
+    so parsing ``page.content()`` would lose structured summaries.  Retain the
+    final main-document ``Response`` and parse its original response bytes.
+    """
+    from src.shared.browser import navigate
+    from src.shared.tdm import check_browser_response
+
+    main_response = None
+
+    def capture_main_response(response) -> None:
+        nonlocal main_response
+        try:
+            is_main_navigation = (
+                response.frame == page.main_frame and response.request.is_navigation_request()
+            )
+        except (AttributeError, TypeError):
+            return
+        if is_main_navigation:
+            main_response = response
+
+    page.on("response", capture_main_response)
+    try:
+        await navigate(page, feed_url, dict(metadata))
+    finally:
+        page.remove_listener("response", capture_main_response)
+
+    if main_response is None:
+        raise PaginationFetchError(
+            feed_url,
+            attempts=1,
+            last_error="BrowserNavigationResponseMissing",
+        )
+    body = await main_response.body()
+    if len(body) > _BROWSER_FEED_MAX_BYTES:
+        raise ValueError(f"RSS browser feed exceeded {_BROWSER_FEED_MAX_BYTES} bytes: {feed_url}")
+    if not _feed_head_is_xml(body[:_SNIFF_BYTES], None):
+        raise RssFeedNotXml(f"feed returned non-XML content: {feed_url}")
+
+    headers = await main_response.all_headers()
+    check_browser_response(
+        headers,
+        body[:_SNIFF_BYTES].decode("utf-8", errors="ignore"),
+        url=feed_url,
+    )
+    parser = ET.XMLPullParser(events=("end",))
+    for item in _feed_parser_items(parser, body, item_tag=preset.item_tag):
+        yield item
+        item.clear()
+    parser.close()
+
+
+async def _stream_feed_items(
     feed_url: str,
     preset: _Preset,
     client: httpx.AsyncClient,
-) -> list[ET.Element]:
-    """Fetch all RSS items, handling pagination for presets that need it."""
-    if not preset.paginated:
-        resp = await client.get(feed_url, follow_redirects=True)
-        resp.raise_for_status()
-        root = _parse_feed(resp.text, feed_url)
-        channel = root.find("channel")
-        return channel.findall("item") if channel is not None else []
+    *,
+    retries: int = 3,
+    base_delay: float = 0.5,
+) -> AsyncIterator[ET.Element]:
+    """Yield feed items without buffering the HTTP body or XML tree.
 
-    # Paginated fetch (Teamtailor-style offset pagination)
-    all_items: list[ET.Element] = []
-    offset = 0
-    page_size = preset.page_size
+    ``httpx.get`` buffers the complete decoded response, and ``ET.fromstring``
+    then builds a second full-size representation. SuccessFactors feeds can
+    exceed hundreds of MiB, so that pair can exhaust a 1 GiB worker before the
+    generic monitor wrapper gets a chance to split the result into batches.
 
-    while True:
-        page_url = _add_pagination(feed_url, offset, page_size)
-        resp = await client.get(page_url, follow_redirects=True)
-        resp.raise_for_status()
+    Status and transport failures retain the crawler's bounded retry policy.
+    Once an item has been yielded, a later transport failure is propagated
+    immediately: the board run remains failed (and therefore cannot tombstone
+    an unseen tail) rather than replaying already-processed batches.
+    """
+    from src.metrics import http_retry_attempts_total, http_retry_host
+    from src.shared.http_retry import PaginationFetchError, is_retryable_status
+    from src.shared.tdm import TDMReservedError
+    from src.shared.tdm import check_response as _tdm_check
 
-        root = _parse_feed(resp.text, page_url)
-        channel = root.find("channel")
-        if channel is None:
-            break
+    host = http_retry_host(feed_url)
+    last_error: BaseException | None = None
+    last_status: int | None = None
+    retried = False
 
-        items = channel.findall("item")
-        all_items.extend(items)
+    for attempt in range(retries):
+        emitted = 0
+        try:
+            async with client.stream("GET", feed_url, follow_redirects=True) as response:
+                last_status = response.status_code
+                if response.status_code != 200:
+                    if (
+                        is_retryable_status(response.status_code)
+                        or response.status_code in preset.retryable_statuses
+                    ):
+                        last_error = None
+                    else:
+                        raise PaginationFetchError(
+                            feed_url,
+                            attempts=attempt + 1,
+                            last_status=response.status_code,
+                        )
+                else:
+                    # RSS/XML cannot carry an HTML meta policy declaration at
+                    # document level; the canonical HTTP header still applies.
+                    _tdm_check(response)
+                    parser = ET.XMLPullParser(events=("end",))
+                    prefix = bytearray()
+                    sniffed = False
+                    capture = (
+                        open_teamtailor_capture(feed_url)
+                        if preset is _PRESETS["teamtailor"]
+                        else open_successfactors_capture(feed_url)
+                        if preset is _PRESETS["successfactors"]
+                        else None
+                    )
+                    try:
+                        async for chunk in response.aiter_bytes(chunk_size=_HTTP_CHUNK_BYTES):
+                            if capture is not None:
+                                try:
+                                    capture.write(chunk)
+                                except (OSError, ValueError) as exc:
+                                    capture.discard()
+                                    capture = None
+                                    log.warning(
+                                        "rss.capture_failed",
+                                        error_type=type(exc).__name__,
+                                    )
+                            if not sniffed:
+                                prefix.extend(chunk)
+                                if len(prefix) < _SNIFF_BYTES:
+                                    continue
+                                head = bytes(prefix[:_SNIFF_BYTES])
+                                if not _feed_head_is_xml(head, response.encoding):
+                                    raise RssFeedNotXml(
+                                        f"feed returned non-XML content: {feed_url}"
+                                    )
+                                chunk = bytes(prefix)
+                                prefix.clear()
+                                sniffed = True
 
-        if len(items) < page_size:
-            break  # Last page
+                            for item in _feed_parser_items(
+                                parser,
+                                chunk,
+                                item_tag=preset.item_tag,
+                            ):
+                                emitted += 1
+                                yield item
+                                # The pull parser's root retains the element shell;
+                                # clear its potentially huge description children.
+                                item.clear()
 
-        offset += page_size
+                        if not sniffed:
+                            if not _feed_head_is_xml(bytes(prefix), response.encoding):
+                                raise RssFeedNotXml(f"feed returned non-XML content: {feed_url}")
+                            for item in _feed_parser_items(
+                                parser,
+                                bytes(prefix),
+                                item_tag=preset.item_tag,
+                            ):
+                                emitted += 1
+                                yield item
+                                item.clear()
 
-        if len(all_items) >= MAX_JOBS:
-            break
+                        parser.close()  # validate that the streamed XML completed
+                        if capture is not None:
+                            try:
+                                capture.commit()
+                            except OSError as exc:
+                                log.warning(
+                                    "rss.capture_failed",
+                                    error_type=type(exc).__name__,
+                                )
+                            finally:
+                                capture.discard()
+                                capture = None
+                    finally:
+                        if capture is not None:
+                            capture.discard()
+                    if retried:
+                        http_retry_attempts_total.labels(host=host, outcome="recovered").inc()
+                    return
+        except (PaginationFetchError, RssFeedNotXml, ET.ParseError, TDMReservedError):
+            raise
+        except httpx.HTTPError as exc:
+            last_error = exc
+            last_status = None
+            if emitted:
+                raise PaginationFetchError(
+                    feed_url,
+                    attempts=attempt + 1,
+                    last_error=type(exc).__name__,
+                ) from exc
 
-    return all_items
+        retried = True
+        http_retry_attempts_total.labels(host=host, outcome="retry").inc()
+        if attempt < retries - 1:
+            delay = base_delay * (2**attempt) * (0.5 + random.random())
+            log.info(
+                "rss.feed_backoff",
+                url=feed_url,
+                attempt=attempt + 1,
+                delay_s=round(delay, 2),
+                last_status=last_status,
+                last_error=type(last_error).__name__ if last_error else None,
+            )
+            await _sleep(delay)
+
+    http_retry_attempts_total.labels(host=host, outcome="exhausted").inc()
+    raise PaginationFetchError(
+        feed_url,
+        attempts=retries,
+        last_status=last_status,
+        last_error=type(last_error).__name__ if last_error else None,
+    )
 
 
 async def _probe_feed(
@@ -349,43 +1844,122 @@ async def _probe_feed(
     approximate (capped at page_size).
     """
     try:
-        resp = await client.get(feed_url, follow_redirects=True)
-        if resp.status_code != 200:
-            return False, None
+        preset = _PRESETS.get(preset_name or "") or _Preset([], [], {})
+        count = 0
+        async for _item in _stream_feed_items(feed_url, preset, client):
+            count += 1
+        return True, count
+    except Exception as exc:
+        from src.shared.tdm import TDMReservedError
 
-        text = resp.text[:2000]
-        if "<rss" not in text:
-            return False, None
-
-        root = ET.fromstring(resp.text)
-        channel = root.find("channel")
-        if channel is None:
-            return False, None
-
-        items = channel.findall("item")
-        return True, len(items)
-    except Exception:
+        if isinstance(exc, TDMReservedError):
+            raise
         return False, None
+
+
+async def _probe_sf_legacy_xml(
+    feed_url: str,
+    client: httpx.AsyncClient,
+) -> tuple[bool, int | None]:
+    preset = _Preset([], [], {}, item_tag="Job")
+    try:
+        count = 0
+        async for _item in _stream_feed_items(feed_url, preset, client):
+            count += 1
+        return True, count
+    except Exception as exc:
+        from src.shared.tdm import TDMReservedError
+
+        if isinstance(exc, TDMReservedError):
+            raise
+        return False, None
+
+
+def _advertised_rss_feed_url(page_url: str, html_text: str) -> str | None:
+    """Return an RSS feed explicitly advertised by a careers page.
+
+    Generic career portals often publish a valid RSS endpoint via
+    ``<link rel="alternate" type="application/rss+xml">`` without using one
+    of the ATS-specific paths known to this monitor. Prefer that first-party
+    declaration over guessing provider routes. When an HTTPS page advertises
+    an HTTP URL on the same host, upgrade it to HTTPS to avoid mixed-content
+    legacy links such as older recruitment portals still emit.
+    """
+
+    if not html_text:
+        return None
+    try:
+        links = LexborHTMLParser(html_text).css("link")
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        page = urlparse(page_url)
+        page_port = page.port or ({"http": 80, "https": 443}.get(page.scheme))
+    except ValueError:
+        return None
+    if page.scheme not in {"http", "https"} or not page.hostname or page_port is None:
+        return None
+    for link in links:
+        attrs = link.attributes
+        rel = {token.casefold() for token in (attrs.get("rel") or "").split()}
+        media_type = (attrs.get("type") or "").split(";", 1)[0].strip().casefold()
+        href = (attrs.get("href") or "").strip()
+        if "alternate" not in rel or media_type != "application/rss+xml" or not href:
+            continue
+
+        try:
+            candidate = urlparse(urljoin(page_url, href))
+            candidate_port = candidate.port or ({"http": 80, "https": 443}.get(candidate.scheme))
+        except ValueError:
+            continue
+        if (
+            candidate.scheme not in {"http", "https"}
+            or not candidate.hostname
+            or candidate_port is None
+            or candidate.username is not None
+            or candidate.password is not None
+            or candidate.hostname.casefold() != (page.hostname or "").casefold()
+        ):
+            continue
+        if page.scheme == "https" and candidate.scheme == "http":
+            # Keep the trusted page origin rather than carrying an explicitly
+            # advertised port across the scheme upgrade.
+            if candidate.port not in {None, 80}:
+                continue
+            candidate = candidate._replace(scheme="https", netloc=page.netloc)
+            candidate_port = page_port
+        if candidate.scheme != page.scheme or candidate_port != page_port:
+            continue
+        return urlunparse(candidate)
+    return None
 
 
 # ── Discover ────────────────────────────────────────────────────────────
 
 
-async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[DiscoveredJob]:
-    """Fetch job listings from an RSS feed."""
+def _feed_config(board: dict) -> tuple[str, str, _Preset] | None:
+    """Resolve a board into ``(preset_name, feed_url, preset)``."""
     board_url = board["board_url"]
     metadata = board.get("metadata") or {}
-
+    validate_generic_rss_config(metadata)
     preset_name = metadata.get("preset", "generic")
     preset = _PRESETS.get(preset_name)
 
     # Determine feed URL: explicit config > derive from preset > fallback
     feed_url = metadata.get("feed_url")
-    if not feed_url and preset:
+    if preset_name == "governmentjobs":
+        feed_url = _governmentjobs_feed_from_config(board_url, metadata)
+    if preset_name == "hr_manager" and not feed_url:
+        customer = metadata.get("customer") or _hr_manager_customer_from_url(board_url)
+        if isinstance(customer, str) and _HR_MANAGER_CUSTOMER_RE.fullmatch(customer):
+            feed_url = _hr_manager_feed_url(customer)
+    if not feed_url and preset and preset.feed_paths:
         feed_url = _build_feed_url(board_url, preset.feed_paths[0])
     if not feed_url:
         log.error("rss.no_feed_url", board_url=board_url, preset=preset_name)
-        return []
+        return None
+    feed_url = _validated_feed_url(feed_url)
 
     if preset is None:
         # Generic fallback — non-paginated, standard parser
@@ -394,24 +1968,467 @@ async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[Disc
             page_patterns=[],
             feed_ns={},
         )
+    if preset_name == "generic":
+        preset = _generic_paginated_preset(preset, metadata)
+    if preset_name == "successfactors" and metadata.get("variant") == "legacy_xml":
+        identity = _sf_legacy_xml_identity(feed_url)
+        configured_company = normalize_successfactors_company(metadata.get("company"))
+        if identity is None or (
+            configured_company is not None and configured_company != identity[1]
+        ):
+            raise ValueError("Invalid or inconsistent SuccessFactors legacy XML config")
+        preset = _Preset(
+            feed_paths=[],
+            page_patterns=[],
+            feed_ns={},
+            item_tag="Job",
+        )
+    return preset_name, feed_url, preset
 
-    items = await _fetch_all_items(feed_url, preset, client)
 
-    parser = _PARSERS.get(preset_name, _parse_generic_item)
+async def _discover_generic_browser_stream(
+    *,
+    feed_url: str,
+    preset: _Preset,
+    metadata: Mapping[str, object],
+    pw,
+) -> AsyncIterator[list[DiscoveredJob] | MonitorResult]:
+    """Traverse a generic feed in one affine real-browser context."""
+    from src.shared.browser import open_page
+
+    if pw is None:
+        raise RuntimeError("RSS browser rendering requires an available browser backend")
+    parser = (
+        _parse_generic_title_employment_location_item
+        if metadata.get("description_mode") == _GENERIC_DESCRIPTION_MODE
+        else _parse_generic_item
+    )
     jobs: list[DiscoveredJob] = []
-    for item in items:
-        parsed = parser(item)
-        if parsed:
+    total_jobs = 0
+    page_number = preset.page_start
+    pages_fetched = 0
+    seen_page_urls: set[str] = set()
+
+    async with open_page(
+        pw,
+        dict(metadata),
+        use_proxy=bool(metadata.get("proxy")),
+        target_url=feed_url,
+    ) as page:
+        while True:
+            if preset.paginated and preset.page_query_param:
+                page_url = _add_page_number(feed_url, page_number, preset.page_query_param)
+            else:
+                page_url = feed_url
+            page_items = 0
+            page_urls: set[str] = set()
+            async for item in _stream_browser_feed_items(
+                page_url,
+                preset,
+                page,
+                metadata,
+            ):
+                page_items += 1
+                parsed = parser(item)
+                if parsed is None:
+                    continue
+                page_urls.add(parsed.url)
+                jobs.append(parsed)
+                total_jobs += 1
+
+                if total_jobs >= MAX_JOBS:
+                    log.warning(
+                        "rss.truncated",
+                        feed=feed_url,
+                        total=total_jobs,
+                        cap=MAX_JOBS,
+                    )
+                    yield truncated_rich_result(jobs)
+                    return
+                if len(jobs) >= _STREAM_BATCH:
+                    yield jobs
+                    jobs = []
+
+            pages_fetched += 1
+            if preset.paginated and preset.page_query_param:
+                if page_items >= preset.page_size and not (page_urls - seen_page_urls):
+                    raise PaginationFetchError(
+                        page_url,
+                        attempts=1,
+                        last_error="RepeatedPaginatedFeedPage",
+                    )
+                seen_page_urls.update(page_urls)
+
+            if not preset.paginated or page_items < preset.page_size:
+                break
+            if preset.max_pages is not None and pages_fetched >= preset.max_pages:
+                raise PaginationFetchError(
+                    page_url,
+                    attempts=1,
+                    last_error=f"PaginatedFeedPageLimitExceeded({preset.max_pages})",
+                )
+            page_number += preset.page_increment
+
+    if jobs:
+        yield jobs
+
+
+async def discover_stream(
+    board: dict, client: httpx.AsyncClient, pw=None
+) -> AsyncIterator[list[DiscoveredJob] | MonitorResult]:
+    """Yield bounded parsed-job batches across streamed RSS pages."""
+    metadata = board.get("metadata") or {}
+    if metadata.get("preset") == "successfactors" and metadata.get("variant") == "rmk":
+        rmk_jobs, repeated_rows = await _discover_sf_rmk(board, client)
+        for start in range(0, len(rmk_jobs), _STREAM_BATCH):
+            yield rmk_jobs[start : start + _STREAM_BATCH]
+        if repeated_rows:
+            from src.core.monitor import MonitorResult
+
+            yield MonitorResult(truncated=True)
+        return
+    if metadata.get("preset") == "successfactors" and metadata.get("variant") == "legacy":
+        from src.core.monitors._successfactors_legacy import discover_legacy_stream
+
+        async for batch in discover_legacy_stream(board, client):
+            yield batch
+        return
+
+    config = _feed_config(board)
+    if config is None:
+        return
+    preset_name, feed_url, preset = config
+    if metadata.get("render"):
+        from src.shared.browser import retry_proxy_origin_blocks
+
+        async def collect_browser_batches() -> list[list[DiscoveredJob] | MonitorResult]:
+            # Keep each attempt atomic. A later paginated request can be the
+            # first one blocked by the origin; yielding an earlier page before
+            # retrying would replay that page into the caller.
+            return [
+                batch
+                async for batch in _discover_generic_browser_stream(
+                    feed_url=feed_url,
+                    preset=preset,
+                    metadata=metadata,
+                    pw=pw,
+                )
+            ]
+
+        batches = await retry_proxy_origin_blocks(
+            collect_browser_batches,
+            dict(metadata),
+            event="rss.browser_origin_block_retry",
+        )
+        for batch in batches:
+            yield batch
+        return
+    if preset_name == "hr_manager":
+        hr_manager_jobs = await _discover_hr_manager(
+            board,
+            client,
+            feed_url=feed_url,
+            preset=preset,
+        )
+        for start in range(0, len(hr_manager_jobs), _STREAM_BATCH):
+            yield hr_manager_jobs[start : start + _STREAM_BATCH]
+        return
+    detail_fields, required_detail_fields = (
+        _sf_detail_fields(metadata) if preset_name == "successfactors" else ({}, frozenset())
+    )
+    if preset_name == "successfactors" and metadata.get("variant") == "legacy_xml":
+        identity = _sf_legacy_xml_identity(feed_url)
+        if identity is None:  # Validated by _feed_config; retained for type narrowing.
+            raise ValueError("Invalid SuccessFactors legacy XML feed URL")
+        origin, company = identity
+        parser = lambda item: _parse_sf_legacy_xml_item(  # noqa: E731
+            item,
+            origin=origin,
+            company=company,
+        )
+    else:
+        if metadata.get("description_mode") == _GENERIC_DESCRIPTION_MODE:
+            parser = _parse_generic_title_employment_location_item
+        else:
+            parser = _PARSERS.get(preset_name, _parse_generic_item)
+    resolve_job_invite_identity = metadata.get("resolve_job_invite_identity", False)
+    if not isinstance(resolve_job_invite_identity, bool):
+        raise ValueError("RSS resolve_job_invite_identity must be a boolean")
+    if resolve_job_invite_identity and preset_name != "successfactors":
+        raise ValueError("RSS resolve_job_invite_identity requires the successfactors preset")
+    jobs: list[DiscoveredJob] = []
+    total_jobs = 0
+    offset = 0
+    page_number = preset.page_start
+    pages_fetched = 0
+    seen_page_urls: set[str] = set()
+
+    while True:
+        if preset.paginated and preset.page_query_param:
+            page_url = _add_page_number(feed_url, page_number, preset.page_query_param)
+        elif preset.paginated:
+            page_url = _add_pagination(feed_url, offset, preset.page_size)
+        else:
+            page_url = feed_url
+        page_items = 0
+        page_urls: set[str] = set()
+        async for item in _stream_feed_items(page_url, preset, client):
+            page_items += 1
+            parsed = parser(item)
+            if parsed is None:
+                continue
+            page_urls.add(parsed.url)
             jobs.append(parsed)
+            total_jobs += 1
 
-    if len(jobs) > MAX_JOBS:
-        log.warning("rss.truncated", feed=feed_url, total=len(jobs), cap=MAX_JOBS)
+            if resolve_job_invite_identity and total_jobs > _SF_JOB_IDENTITY_MAX_JOBS:
+                raise SuccessFactorsJobIdentityError(
+                    "SuccessFactors job identity exceeded bounded feed cap "
+                    f"({_SF_JOB_IDENTITY_MAX_JOBS})"
+                )
+
+            if total_jobs >= MAX_JOBS:
+                log.warning("rss.truncated", feed=feed_url, total=total_jobs, cap=MAX_JOBS)
+                if detail_fields:
+                    await _enrich_sf_detail_fields(
+                        jobs,
+                        client,
+                        feed_url=feed_url,
+                        fields=detail_fields,
+                        required_fields=required_detail_fields,
+                        url_filter=metadata.get("url_filter"),
+                    )
+                if resolve_job_invite_identity:
+                    await _resolve_sf_job_invite_identities(
+                        jobs,
+                        client,
+                        feed_url=feed_url,
+                    )
+                yield truncated_rich_result(jobs)
+                return
+            if len(jobs) >= _STREAM_BATCH:
+                if detail_fields:
+                    await _enrich_sf_detail_fields(
+                        jobs,
+                        client,
+                        feed_url=feed_url,
+                        fields=detail_fields,
+                        required_fields=required_detail_fields,
+                        url_filter=metadata.get("url_filter"),
+                    )
+                if resolve_job_invite_identity:
+                    await _resolve_sf_job_invite_identities(
+                        jobs,
+                        client,
+                        feed_url=feed_url,
+                    )
+                yield jobs
+                jobs = []
+
+        pages_fetched += 1
+
+        if preset.paginated and preset.page_query_param:
+            if page_items >= preset.page_size and not (page_urls - seen_page_urls):
+                raise PaginationFetchError(
+                    page_url,
+                    attempts=1,
+                    last_error="RepeatedPaginatedFeedPage",
+                )
+            seen_page_urls.update(page_urls)
+
+        if not preset.paginated or page_items < preset.page_size:
+            break
+        if preset.max_pages is not None and pages_fetched >= preset.max_pages:
+            raise PaginationFetchError(
+                page_url,
+                attempts=1,
+                last_error=f"PaginatedFeedPageLimitExceeded({preset.max_pages})",
+            )
+        offset += preset.page_size
+        page_number += preset.page_increment
+
+    if jobs:
+        if detail_fields:
+            await _enrich_sf_detail_fields(
+                jobs,
+                client,
+                feed_url=feed_url,
+                fields=detail_fields,
+                required_fields=required_detail_fields,
+                url_filter=metadata.get("url_filter"),
+            )
+        if resolve_job_invite_identity:
+            await _resolve_sf_job_invite_identities(
+                jobs,
+                client,
+                feed_url=feed_url,
+            )
+        yield jobs
+
+
+async def discover(
+    board: dict, client: httpx.AsyncClient, pw=None
+) -> list[DiscoveredJob] | MonitorResult:
+    """Fetch job listings while retaining the non-streaming public API."""
+    from src.core.monitor import MonitorResult
+
+    metadata = board.get("metadata") or {}
+    if metadata.get("preset") == "successfactors" and metadata.get("variant") == "legacy":
+        from src.core.monitors._successfactors_legacy import discover_legacy
+
+        return await discover_legacy(board, client)
+
+    jobs: list[DiscoveredJob] = []
+    was_truncated = False
+    async for batch in discover_stream(board, client, pw=pw):
+        if isinstance(batch, MonitorResult):
+            jobs.extend((batch.jobs_by_url or {}).values())
+            was_truncated = was_truncated or bool(batch.truncated)
+        else:
+            jobs.extend(batch)
+
+    if was_truncated:
         return truncated_rich_result(jobs)
-
     return jobs
 
 
 # ── Can Handle (auto-detection) ─────────────────────────────────────────
+
+
+def _embedded_legacy_boards(page: str) -> list[SuccessFactorsLegacyBoard]:
+    """Return unfiltered legacy SuccessFactors boards linked by a wrapper page.
+
+    Some companies render their own job-search shell while linking applications
+    to a legacy SuccessFactors tenant.  Those links include login/session query
+    parameters that the strict public board parser intentionally rejects.  Parse
+    only anchor destinations, allow the known wrapper parameters, and reduce the
+    result back to the strict host + company identity before probing it.
+    """
+
+    if not page:
+        return []
+    document = LexborHTMLParser(page)
+    boards: list[SuccessFactorsLegacyBoard] = []
+    seen: set[SuccessFactorsLegacyBoard] = set()
+    for anchor in document.css("a[href]"):
+        href = anchor.attributes.get("href")
+        if not href:
+            continue
+        try:
+            parsed = urlparse(html.unescape(href))
+            port = parsed.port
+            pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=16)
+        except (TypeError, ValueError):
+            continue
+        if (
+            parsed.scheme.casefold() != "https"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in {None, 443}
+            or parsed.fragment
+            or parsed.path.rstrip("/").casefold() != "/career"
+        ):
+            continue
+        if not pairs or any(name not in _SF_WRAPPER_QUERY_KEYS for name, _value in pairs):
+            continue
+        params: dict[str, str] = {}
+        duplicate = False
+        for name, value in pairs:
+            if name in params:
+                duplicate = True
+                break
+            params[name] = value
+        if duplicate:
+            continue
+        company = normalize_successfactors_company(params.get("company"))
+        career_company = normalize_successfactors_company(params.get("career_company"))
+        if (
+            company is None
+            or ("career_company" in params and career_company is None)
+            or (career_company is not None and career_company != company)
+            or params.get("career_ns") not in {None, "", "job_listing_summary"}
+            or params.get("navBarLevel") not in {None, "", "JOB_SEARCH"}
+        ):
+            continue
+        canonical = urlunparse(
+            (
+                "https",
+                parsed.netloc,
+                "/career",
+                "",
+                urlencode({"company": company}),
+                "",
+            )
+        )
+        board = successfactors_legacy_board_from_url(canonical)
+        if board is not None and board not in seen:
+            boards.append(board)
+            seen.add(board)
+    return boards
+
+
+async def _probe_legacy_board(
+    legacy_board: SuccessFactorsLegacyBoard,
+    client: httpx.AsyncClient,
+) -> dict | None:
+    """Probe a legacy board, following safe same-company migrations."""
+
+    from src.core.monitors._successfactors_legacy import (
+        SuccessFactorsLegacyRedirect,
+        probe_legacy,
+    )
+    from src.shared.tdm import TDMReservedError
+
+    probe_board = legacy_board
+    migrated_location: str | None = None
+    for _hop in range(3):
+        try:
+            return await probe_legacy(probe_board, client)
+        except SuccessFactorsLegacyRedirect as exc:
+            redirected_board = successfactors_legacy_board_from_url(exc.location)
+            if (
+                redirected_board is not None
+                and redirected_board.company == probe_board.company
+                and redirected_board != probe_board
+            ):
+                probe_board = redirected_board
+                continue
+            migrated_location = exc.location
+            break
+        except TDMReservedError:
+            raise
+        except Exception:
+            log.debug(
+                "rss.successfactors_legacy_probe_failed",
+                url=legacy_board.listing_url,
+                exc_info=True,
+            )
+            break
+
+    if migrated_location:
+        try:
+            redirected = urlparse(migrated_location)
+            if (
+                redirected.scheme.casefold() == "https"
+                and redirected.hostname
+                and redirected.username is None
+                and redirected.password is None
+                and redirected.port in {None, 443}
+            ):
+                feed = f"https://{redirected.hostname}/googlefeed.xml"
+                found, count = await _probe_feed(feed, client, "successfactors")
+                if found:
+                    migrated: dict = {
+                        "preset": "successfactors",
+                        "variant": "feed",
+                        "feed_url": feed,
+                    }
+                    if count is not None:
+                        migrated["jobs"] = count
+                    return migrated
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
@@ -419,10 +2436,166 @@ async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None)
     if client is None:
         return None
 
+    # Zoho Recruit career sites expose a same-tenant, full-description RSS
+    # endpoint. Probe it directly before downloading the multi-megabyte HTML
+    # application shell; a valid empty feed is authoritative board evidence.
+    zoho_recruit = _zoho_recruit_feed_from_url(url)
+    if zoho_recruit is not None:
+        tenant, feed = zoho_recruit
+        found, count = await _probe_feed(feed, client, "zoho_recruit")
+        if found:
+            result: dict = {
+                "preset": "zoho_recruit",
+                "tenant": tenant,
+                "feed_url": feed,
+            }
+            if count is not None:
+                result["jobs"] = count
+            log.info(
+                "rss.zoho_recruit_detected",
+                url=url,
+                tenant=tenant,
+                jobs=count,
+            )
+            return result
+
+    legacy_xml_identity = _sf_legacy_xml_identity(url)
+    if legacy_xml_identity is not None:
+        found, count = await _probe_sf_legacy_xml(url, client)
+        if found:
+            result: dict = {
+                "preset": "successfactors",
+                "variant": "legacy_xml",
+                "feed_url": url,
+                "company": legacy_xml_identity[1],
+            }
+            if count is not None:
+                result["jobs"] = count
+            return result
+
+    # Talent Recruiter / HR Manager boards expose the complete tenant job list
+    # in one hidden JSON field and full descriptions in a provider-owned RSS
+    # endpoint. Validate both sources and require exact count parity so a stale
+    # demo feed or cross-tenant URL cannot be accepted as the requested board.
+    hr_manager_customer = _hr_manager_customer_from_url(url)
+    if hr_manager_customer is not None:
+        page = await fetch_page_text(url, client, max_chars=_DETECTION_MAX_CHARS)
+        if page:
+            try:
+                positions = _hr_manager_position_data(page, hr_manager_customer)
+                feed = _hr_manager_feed_url(hr_manager_customer)
+                found, count = await _probe_feed(feed, client, "hr_manager")
+            except ValueError:
+                log.debug("rss.hr_manager_probe_failed", url=url, exc_info=True)
+            else:
+                if found and count == len(positions):
+                    log.info(
+                        "rss.hr_manager_detected",
+                        url=url,
+                        customer=hr_manager_customer,
+                        jobs=count,
+                    )
+                    return {
+                        "preset": "hr_manager",
+                        "customer": hr_manager_customer,
+                        "feed_url": feed,
+                        "jobs": count,
+                    }
+
+    # NEOGOV publishes a first-party RSS feed keyed by the strict tenant in
+    # /careers/<agency>. Probe it before fetching the JS-heavy careers shell;
+    # a valid zero-item RSS document is authoritative empty-board evidence.
+    governmentjobs_agency = _governmentjobs_agency_from_url(url)
+    if governmentjobs_agency is not None:
+        feed = _governmentjobs_feed_url(governmentjobs_agency)
+        found, count = await _probe_feed(feed, client, "governmentjobs")
+        if found:
+            result: dict = {
+                "preset": "governmentjobs",
+                "agency": governmentjobs_agency,
+                "feed_url": feed,
+            }
+            if count is not None:
+                result["jobs"] = count
+            log.info(
+                "rss.governmentjobs_detected",
+                url=url,
+                agency=governmentjobs_agency,
+                jobs=count,
+            )
+            return result
+
+    # Legacy SAP-hosted tenants use a case-sensitive company identity and a
+    # static DWR listing protocol. Probe this strict direct shape before the
+    # general HTML/feed path. Some of these URLs redirect to a migrated CSB
+    # site; in that case prefer the redirected origin's existing Google feed.
+    legacy_board = successfactors_legacy_board_from_url(url)
+    if legacy_board is not None:
+        legacy_result = await _probe_legacy_board(legacy_board, client)
+        if legacy_result is not None:
+            return legacy_result
+
     # 1. Fetch page HTML once for all preset pattern checks
-    html_text = await fetch_page_text(url, client)
+    # Large corporate wrapper pages can place the actual ATS application link
+    # after the generic 500 kB probe cap (Liebherr is currently about 1 MB).
+    html_text = await fetch_page_text(url, client, max_chars=_DETECTION_MAX_CHARS)
+
+    embedded_boards = _embedded_legacy_boards(html_text or "")
+    if len(embedded_boards) == 1:
+        embedded_board = embedded_boards[0]
+        embedded_result = await _probe_legacy_board(embedded_board, client)
+        if embedded_result is not None:
+            log.info(
+                "rss.successfactors_wrapper_detected",
+                url=url,
+                host=embedded_board.host,
+                company=embedded_board.company,
+            )
+            return embedded_result
+    elif embedded_boards:
+        log.info(
+            "rss.successfactors_wrapper_ambiguous",
+            url=url,
+            identities=len(embedded_boards),
+        )
+
+    # WP Job Manager pages also advertise WordPress's site-wide post feed.
+    # Prefer the provider-specific jobs feed when its plugin markers are
+    # present, otherwise auto-detection would silently monitor blog posts.
+    wp_job_manager = _PRESETS["wp_job_manager"]
+    wp_job_manager_page = bool(
+        html_text and any(pattern.search(html_text) for pattern in wp_job_manager.page_patterns)
+    )
+    if wp_job_manager_page:
+        feed = _build_feed_url(url, wp_job_manager.feed_paths[0])
+        found, count = await _probe_feed(feed, client, "wp_job_manager")
+        if found:
+            result: dict = {"preset": "wp_job_manager", "feed_url": feed}
+            if count is not None:
+                result["jobs"] = count
+            log.info(
+                "rss.detected_in_page",
+                url=url,
+                preset="wp_job_manager",
+                jobs=count,
+            )
+            return result
+
+    advertised_feed = (
+        None if wp_job_manager_page else _advertised_rss_feed_url(url, html_text or "")
+    )
+    if advertised_feed:
+        found, count = await _probe_feed(advertised_feed, client, "generic")
+        if found:
+            result: dict = {"preset": "generic", "feed_url": advertised_feed}
+            if count is not None:
+                result["jobs"] = count
+            log.info("rss.detected_advertised_feed", url=url, feed=advertised_feed, jobs=count)
+            return result
 
     for preset_name, preset in _PRESETS.items():
+        if preset_name == "wp_job_manager":
+            continue
         detected = False
         if html_text and preset.page_patterns:
             detected = any(p.search(html_text) for p in preset.page_patterns)
@@ -434,6 +2607,8 @@ async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None)
                 found, count = await _probe_feed(feed, client, preset_name)
                 if found:
                     result: dict = {"preset": preset_name, "feed_url": feed}
+                    if preset_name == "successfactors":
+                        result["variant"] = "feed"
                     if count is not None:
                         result["jobs"] = count
                     log.info(
@@ -446,11 +2621,15 @@ async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None)
 
     # 2. Blind feed probe as fallback — try all presets' feed paths
     for preset_name, preset in _PRESETS.items():
+        if preset_name == "wp_job_manager":
+            continue
         for path in preset.feed_paths:
             feed = _build_feed_url(url, path)
             found, count = await _probe_feed(feed, client, preset_name)
             if found:
                 result = {"preset": preset_name, "feed_url": feed}
+                if preset_name == "successfactors":
+                    result["variant"] = "feed"
                 if count is not None:
                     result["jobs"] = count
                 log.info(
@@ -464,4 +2643,48 @@ async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None)
     return None
 
 
-register("rss", discover, cost=10, can_handle=can_handle, rich=True)
+async def save_raw(
+    artifact_dir: Path,
+    board_url: str,
+    metadata: dict,
+    client: httpx.AsyncClient,
+) -> None:
+    if metadata.get("preset") == "successfactors" and metadata.get("variant") == "rmk":
+        return
+    if metadata.get("preset") == "successfactors" and metadata.get("variant") == "legacy":
+        from src.shared.successfactors import successfactors_legacy_board_from_metadata
+
+        identity = successfactors_legacy_board_from_metadata(metadata)
+        if identity is None:
+            identity = successfactors_legacy_board_from_url(board_url)
+        if identity is not None:
+            await save_text_response(
+                artifact_dir,
+                client,
+                identity.listing_url,
+                filename="response.html",
+                follow_redirects=False,
+            )
+        return
+    config = _feed_config({"board_url": board_url, "metadata": metadata})
+    if config is None:
+        return
+    _preset_name, feed, _preset = config
+    await save_text_response(
+        artifact_dir,
+        client,
+        feed,
+        filename="response.xml",
+        follow_redirects=True,
+    )
+
+
+register(
+    "rss",
+    discover,
+    cost=10,
+    can_handle=can_handle,
+    rich=True,
+    stream=discover_stream,
+    save_raw=save_raw,
+)

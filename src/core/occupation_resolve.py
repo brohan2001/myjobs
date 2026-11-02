@@ -132,7 +132,8 @@ def match_occupation(raw: str) -> str | None:
     best_len = 0
 
     for alias, slug in aliases.items():
-        if len(alias) > best_len and _word_boundary_match(alias, normalized):
+        # The substring test is a cheap filter: the regex can only match where the alias appears verbatim.
+        if len(alias) > best_len and alias in normalized and _word_boundary_match(alias, normalized):
             best_slug = slug
             best_len = len(alias)
 

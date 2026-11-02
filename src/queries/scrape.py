@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.workspace._compat import auto_skip_crawler_types
+from src.core.static_registry import auto_skip_crawler_types
 
 
 def _build_skip_no_scrape_predicate(board_alias: str = "jb") -> str:
@@ -171,31 +171,20 @@ SET employment_type = COALESCE($2, employment_type),
 WHERE id = $1
 """
 
-# A board's ``metadata->>'rescrape_policy'`` controls whether scheduled
-# re-scrapes happen after a successful scrape:
-#
-#   "never" -> set next_scrape_at = NULL (one-shot per posting; cost saver
-#              for boards behind metered transports, e.g. proxy-routed
-#              WAF'd hosts like Starbucks). The first scrape still runs.
-#   absent/other -> existing behaviour (re-scrape on the usual cadence).
-#
-# Relisted jobs (gone -> seen again) still re-scrape once because
-# ``_enqueue_scrapes_for_relisted`` sets ``next_scrape_at = now()``
-# directly; "never" only suppresses the post-success scheduling tail.
+# A posting is scraped once. Re-scraping every posting daily (jobseek's default) re-fetched
+# ~400k pages a day and starved board checks; descriptions rarely change and the monitor
+# already detects removals. Relisted jobs (gone -> seen again) re-scrape once because
+# ``_enqueue_scrapes_for_relisted`` sets ``next_scrape_at = now()`` directly.
+# $2 is the page's posting date (kept when the page has none); $3 is the D27 tech verdict on the
+# scraped title (NULL leaves it unchanged).
 _RECORD_SCRAPE_SUCCESS = """
 UPDATE job_posting jp
 SET scrape_failures  = 0,
     last_scraped_at  = now(),
-    next_scrape_at   = CASE
-        WHEN NOT jp.is_active THEN NULL
-        WHEN (SELECT metadata->>'rescrape_policy' FROM job_board WHERE id = jp.board_id) = 'never'
-            THEN NULL
-        ELSE now() + (COALESCE(
-            (SELECT scrape_interval_hours FROM job_board WHERE id = jp.board_id),
-            24
-        ) || ' hours')::interval
-    END,
-    leased_until     = NULL
+    next_scrape_at   = NULL,
+    leased_until     = NULL,
+    posted_at        = COALESCE($2::timestamptz, jp.posted_at),
+    is_tech          = COALESCE($3::boolean, jp.is_tech)
 WHERE jp.id = $1
 """
 

@@ -1,0 +1,6 @@
+[Unit]
+Description=myjobs nightly Postgres dump
+
+[Service]
+Type=oneshot
+ExecStart=%h/myjobs/deploy/laptop/backup.sh

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,7 +27,8 @@ from src.config import settings
 from src.core.monitors import api_monitor_types, monitor_needs_browser
 from src.core.scrapers import scraper_needs_browser
 from src.db import close_all_pools, create_local_pool
-from src.redis_queue import close_redis, enqueue_monitor, remove_monitor
+from src.priority import apply_india_priority, base_interval
+from src.redis_queue import close_redis, enqueue_monitor, get_redis, remove_monitor
 from src.shared.logging import setup_logging
 
 _API_MONITOR_TYPES = api_monitor_types()
@@ -40,15 +42,20 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 # ---------------------------------------------------------------------------
 
 _UPSERT_COMPANIES = """
-INSERT INTO company (slug, name, website, tier)
-SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::int[])
-  AS c(slug, name, website, tier)
+INSERT INTO company (slug, name, website, tier, extras)
+SELECT slug, name, website, tier, tags::jsonb
+FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::text[])
+  AS c(slug, name, website, tier, tags)
 ON CONFLICT (slug) DO UPDATE SET
     name    = COALESCE(EXCLUDED.name,    company.name),
     website = COALESCE(EXCLUDED.website, company.website),
     tier    = EXCLUDED.tier,
+    extras  = COALESCE(company.extras, '{}'::jsonb) || EXCLUDED.extras,
     updated_at = now()
 """
+
+# Optional registry tags in companies.csv, stored in company.extras.
+_COMPANY_TAG_COLUMNS = ("country", "hq_city", "company_type")
 
 # Generate a fresh UUID on first insert; reuse existing on conflict.
 # ON CONFLICT (board_url) so we don't need a Supabase-assigned ID.
@@ -97,11 +104,32 @@ ON CONFLICT (board_url) DO UPDATE SET
     updated_at             = now()
 """
 
+# A board whose URL changed in the registry (same slug, e.g. an ATS move fixed upstream) keeps its
+# row: move it to the new URL and give it a fresh start, so the upsert below updates it instead of
+# colliding on the unique board_slug.
+_MOVE_CHANGED_URLS = """
+UPDATE job_board jb
+SET board_url = b.board_url, board_status = 'active', is_enabled = true,
+    consecutive_failures = 0, gone_at = NULL, last_error = NULL, updated_at = now()
+FROM unnest($1::text[], $2::text[]) AS b(board_slug, board_url)
+WHERE jb.board_slug = b.board_slug
+  AND jb.board_url <> b.board_url
+  AND NOT EXISTS (SELECT 1 FROM job_board o WHERE o.board_url = b.board_url)
+"""
+
 _DISABLE_REMOVED_BOARDS = """
 UPDATE job_board
 SET is_enabled = false, board_status = 'disabled', updated_at = now()
 WHERE board_url != ALL($1::text[])
   AND is_enabled = true
+"""
+
+# A disabled board is never checked again, so its postings would stay "active" forever (28k did on
+# 2026-10-15). They come back through the relisted path if the board is re-enabled.
+_DEACTIVATE_DISABLED_BOARD_POSTINGS = """
+UPDATE job_posting jp SET is_active = false, updated_at = now()
+FROM job_board b
+WHERE jp.board_id = b.id AND jp.is_active AND NOT b.is_enabled
 """
 
 _FETCH_DISABLED_BOARDS_FOR_REDIS_CLEANUP = """
@@ -130,6 +158,9 @@ def _int_or(val: str | None, default: int) -> int:
         return int(val)
     except (ValueError, TypeError):
         return default
+
+
+# Slow board types (browser, HTML, sitemap crawls) are checked less often so the D30 budget keeps up (D33).
 
 
 def _compute_throttle_key(monitor_type: str, board_url: str) -> str:
@@ -165,6 +196,7 @@ async def sync_companies(conn, companies: pl.DataFrame, dry_run: bool) -> None:
     names: list[str] = []
     websites: list[str | None] = []
     tiers: list[int] = []
+    tags: list[str] = []
 
     for row in companies.iter_rows(named=True):
         enabled = row.get("enabled", "true")
@@ -174,16 +206,18 @@ async def sync_companies(conn, companies: pl.DataFrame, dry_run: bool) -> None:
         names.append(row["name"])
         websites.append(_or_none(row.get("website")))
         tiers.append(_int_or(row.get("tier"), 2))
+        tags.append(json.dumps({k: row[k] for k in _COMPANY_TAG_COLUMNS if row.get(k)}))
 
     if dry_run:
         log.info("sync.companies.dry_run", count=len(slugs))
         return
 
-    await conn.execute(_UPSERT_COMPANIES, slugs, names, websites, tiers)
+    await conn.execute(_UPSERT_COMPANIES, slugs, names, websites, tiers, tags)
     log.info("sync.companies.upserted", count=len(slugs))
 
 
-async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
+async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> Callable[[], Awaitable[None]] | None:
+    """Write boards to Postgres; return the Redis step, to run once that transaction has committed."""
     if len(boards) == 0:
         return
 
@@ -266,7 +300,7 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
         crawler_types.append(mon_type)
         metadatas.append(json.dumps(metadata_obj) if metadata_obj else "{}")
         metadata_objs.append(metadata_obj)
-        check_intervals.append("60")
+        check_intervals.append(str(base_interval(mon_type, mon_browser)))
         scrape_intervals.append("24")
         throttle_keys.append(_compute_throttle_key(mon_type, row["board_url"]))
         monitor_browser_flags.append("1" if mon_browser else "0")
@@ -279,6 +313,9 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
     if not board_urls:
         log.info("sync.boards.all_skipped", skipped=skipped)
         return
+
+    moved = await conn.execute(_MOVE_CHANGED_URLS, board_slugs_list, board_urls)
+    log.info("sync.boards.url_changed", result=moved)
 
     # Upsert boards into local Postgres (generates UUIDs on first insert)
     await conn.execute(
@@ -298,56 +335,68 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
 
     # Disable boards no longer in the CSV
     await conn.execute(_DISABLE_REMOVED_BOARDS, board_urls)
+    stale = await conn.execute(_DEACTIVATE_DISABLED_BOARD_POSTINGS)
+    log.info("sync.postings.deactivated_for_disabled_boards", result=stale)
 
     # Fetch IDs that Postgres just assigned
     id_rows = await conn.fetch(_FETCH_BOARD_IDS, board_urls)
     url_to_ids: dict[str, tuple] = {r["board_url"]: (r["id"], r["company_id"]) for r in id_rows}
 
-    # Enqueue each board into Redis
-    redis_enqueued = 0
-    for i, board_url in enumerate(board_urls):
-        ids = url_to_ids.get(board_url)
-        if not ids:
-            log.warning("sync.board.missing_id", board_url=board_url)
-            continue
-
-        board_id, company_id = ids
-        mon_type = crawler_types[i]
-        mon_browser = monitor_browser_flags[i] == "1"
-
-        config = {
-            "board_url": board_url,
-            "crawler_type": mon_type,
-            "company_id": str(company_id),
-            "metadata": metadatas[i],
-            "check_interval_minutes": check_intervals[i],
-            "scrape_interval_hours": scrape_intervals[i],
-            "throttle_key": throttle_keys[i],
-            "monitor_needs_browser": monitor_browser_flags[i],
-            "scraper_needs_browser": scraper_browser_flags[i],
-        }
-        await enqueue_monitor(
-            throttle_keys[i],
-            str(board_id),
-            time.time(),
-            config,
-            browser=mon_browser,
-            first_time=True,
-        )
-        redis_enqueued += 1
-
-    # Purge Redis for disabled boards
     orphan_rows = await conn.fetch(_FETCH_DISABLED_BOARDS_FOR_REDIS_CLEANUP)
-    for row in orphan_rows:
-        domain = row["throttle_key"] or ""
-        if domain:
-            await remove_monitor(domain, row["board_id"])
 
-    log.info(
-        "sync.boards.redis",
-        redis_enqueued=redis_enqueued,
-        redis_orphans_removed=len(orphan_rows),
-    )
+    # Redis runs after the commit: a worker that claims a new board before its row is visible fails it
+    # with a foreign-key error (ibm-careers, 2026-11-02).
+    async def push_to_redis() -> None:
+        # Enqueue each board into Redis
+        redis_enqueued = 0
+        for i, board_url in enumerate(board_urls):
+            ids = url_to_ids.get(board_url)
+            if not ids:
+                log.warning("sync.board.missing_id", board_url=board_url)
+                continue
+
+            board_id, company_id = ids
+            mon_type = crawler_types[i]
+            mon_browser = monitor_browser_flags[i] == "1"
+
+            config = {
+                "board_url": board_url,
+                "crawler_type": mon_type,
+                "company_id": str(company_id),
+                "metadata": metadatas[i],
+                "check_interval_minutes": check_intervals[i],
+                "scrape_interval_hours": scrape_intervals[i],
+                "throttle_key": throttle_keys[i],
+                "monitor_needs_browser": monitor_browser_flags[i],
+                "scraper_needs_browser": scraper_browser_flags[i],
+            }
+            # A board already on its recurring schedule keeps its due time: re-adding it as first-time would make
+            # every board due at once after each worker restart.
+            wtype = "browser" if mon_browser else "simple"
+            scheduled = await get_redis().zscore(f"monitors_{wtype}:{throttle_keys[i]}", str(board_id))
+            await enqueue_monitor(
+                throttle_keys[i],
+                str(board_id),
+                time.time(),
+                config,
+                browser=mon_browser,
+                first_time=scheduled is None,
+            )
+            redis_enqueued += 1
+
+        # Purge Redis for disabled boards
+        for row in orphan_rows:
+            domain = row["throttle_key"] or ""
+            if domain:
+                await remove_monitor(domain, row["board_id"])
+
+        log.info(
+            "sync.boards.redis",
+            redis_enqueued=redis_enqueued,
+            redis_orphans_removed=len(orphan_rows),
+        )
+
+    return push_to_redis
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +419,11 @@ async def run_sync(dry_run: bool = False) -> None:
         async with local_pool.acquire() as conn:
             async with conn.transaction():
                 await sync_companies(conn, companies, dry_run)
-                await sync_boards(conn, boards, dry_run)
+                push_to_redis = await sync_boards(conn, boards, dry_run)
+                if not dry_run:
+                    await apply_india_priority(conn)  # D36: sync just wrote base intervals
+        if push_to_redis is not None:
+            await push_to_redis()
     finally:
         await close_all_pools()
         await close_redis()

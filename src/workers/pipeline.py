@@ -36,6 +36,7 @@ from src.metrics import (
     tasks_total,
     worker_heartbeat_ts,
 )
+from src.priority import priority_loop
 from src.redis_queue import (
     BoardWork,
     ScrapeWork,
@@ -240,7 +241,7 @@ def _resolve_scraper(
     ``scraper_config`` wins over the auto-configured default, preserving
     board-level overrides.
     """
-    from src.workspace._compat import auto_scraper_type
+    from src.core.static_registry import auto_scraper_type
 
     explicit = metadata.get("scraper_type")
     if explicit:
@@ -375,7 +376,9 @@ async def _discovery_worker(
         while not shutdown_event.is_set():
             worker_heartbeat_ts.labels(worker_id=str(worker_id)).set_to_current_time()
             try:
-                work = await claim_work(browser=browser)
+                # With every monitor slot taken, a claimed monitor would just wait: take a scrape instead.
+                busy = monitor_semaphore is not None and monitor_semaphore.locked()
+                work = await claim_work(browser=browser, scrapes_only=busy)
             except Exception:
                 worker_log.warning("pipeline.claim_error", exc_info=True)
                 with contextlib.suppress(TimeoutError):
@@ -570,6 +573,11 @@ async def _process_monitor_work(
         # Reschedule in Redis with next check time
         check_interval = int(config.get("check_interval_minutes", "60"))
         next_check_at = time.time() + check_interval * 60
+        if not success:
+            # A failing board follows its backoff (up to a day) instead of retrying every interval (D37).
+            backoff_at = await local_pool.fetchval("SELECT next_check_at FROM job_board WHERE id = $1", board_id)
+            if backoff_at is not None:
+                next_check_at = max(next_check_at, backoff_at.timestamp())
         await reschedule_task(domain, board_id, "monitor", next_check_at, browser=browser)
 
         # Emit the success/failure rollup for monitor tasks so Grafana
@@ -882,9 +890,12 @@ async def _process_scrape_work(
         status = "succeeded" if success else "failed"
         tasks_total.labels(kind="scrape", status=status).inc()
 
-        # Reschedule in Redis
-        next_scrape_at = time.time() + scrape_work.scrape_interval_hours * 3600
-        await reschedule_task(domain, posting_id, "scrape", next_scrape_at, browser=browser)
+        # Scraped once on success (see _RECORD_SCRAPE_SUCCESS); a failure retries after the interval.
+        if success:
+            await complete_task(domain, posting_id, "scrape", browser=browser)
+        else:
+            next_scrape_at = time.time() + scrape_work.scrape_interval_hours * 3600
+            await reschedule_task(domain, posting_id, "scrape", next_scrape_at, browser=browser)
 
         # Lifecycle anchor: emit ``posting.scraped`` only on success so an
         # operator with the posting_id can confirm "yes, this URL completed
@@ -957,6 +968,9 @@ async def run_pipeline(
     """
     concurrency = settings.discovery_concurrency
     monitor_cap = settings.monitor_concurrency
+    if browser:
+        # Each browser coroutine owns a Playwright driver and launches a Chromium per board, so cap both (D30)
+        concurrency = monitor_cap = settings.browser_monitor_concurrency
     monitor_sem = asyncio.Semaphore(monitor_cap) if monitor_cap > 0 else None
     grace_s = max(0, int(settings.shutdown_grace_seconds))
     wtype = "browser" if browser else "simple"
@@ -994,6 +1008,8 @@ async def run_pipeline(
         name="reaper",
     )
     tasks.append(reaper_task)
+    if not browser:
+        tasks.append(asyncio.create_task(priority_loop(local_pool, shutdown_event), name="priority"))
 
     try:
         # Phase 1: wait until either shutdown_event fires or a worker

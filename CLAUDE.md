@@ -1,156 +1,34 @@
-# myjobs — Job Application Automation System
+# myjobs: public feed of the latest tech jobs
 
-Daily pipeline: monitor ~2,900 boards (3,000+ companies) → parse → score → shortlist top 50 → HTML report + web UI.
-Phase 2: `myjobs generate` — Claude API tailors resume bullets + cover letter per job.
+A continuous crawler over ~7,800 company career boards (~6,000 companies) → Postgres → a read-only API and a Next.js feed
+(jseek.co-style). Worldwide, strongest for India, tech jobs only (D27), at least jseek.co's coverage (D28). Per-user features
+come later (D10). It runs on the user's home laptop (D29).
 
-Architecture: jobseek Monitor → Scraper pipeline (vendored `src/core/` + `src/shared/`) feeding existing ranker/renderer/server/generator.
+Read `README.md` (repo map), `docs/DECISIONS.md` and, for production, `docs/DEPLOY.md` before starting work.
 
----
+## Hard rules
+- **Public repo: no personal data in tracked files.** Profiles, resumes and notes live in `private/` (gitignored). The
+  pre-commit hook (gitleaks + `private/pii_patterns.txt`) blocks leaks; don't bypass it.
+- **Never fabricate resume content.** Tailoring may only select and reorder real content.
+- **Branches:** work on `revamp/<phase>` branches in small logical commits; never commit to `main`.
+- **Respect the web:** prefer public ATS APIs and honour robots.txt for site-reading monitors. The portal monitors are allowed
+  (D25); ask before adding a new portal (e.g. Naukri).
+- **Scraper changes** keep `tests/characterization/` green, or update the snapshots deliberately (D5).
+- `src/core/` and `src/shared/` are vendored from jobseek (MIT). Edit them only through the deltas in `docs/UPSTREAM.md`.
+- **No bloat:** keep the codebase short and readable. Cut code nothing uses, but list the removals and confirm them with the
+  user first.
 
-## Running the system
-
+## Commands
 ```bash
-pip install -e .                    # install (once)
-python -m playwright install chromium  # one-time, ~150 MB (for DOM/render boards)
-
-myjobs run                          # full daily run: monitor → scrape → rank → report
-myjobs run --board anthropic-careers  # debug: run a single board only
-myjobs show --top 20                # top jobs in terminal
-myjobs show --us-only               # US/remote only
-myjobs show --new-grad              # entry-level / ≤2 yrs exp
-myjobs show --role backend          # filter by role category
-myjobs serve                        # live web UI at http://localhost:8080
-myjobs open-report                  # open today's HTML report
-myjobs apply <job_id>               # mark as applied
-myjobs history --days 30            # application history
-myjobs stats
-myjobs update-h1b                   # sync H1-B petition counts
-myjobs verify-api                   # test ANTHROPIC_API_KEY
-
-# Company management (reads/writes data/companies.csv + data/boards.csv)
-myjobs company list
-myjobs company add --name "Stripe" --slug stripe --ats greenhouse --tier 1
-myjobs company disable old-company
-
-# Rebuild the CSV config from jobseek source data
-python scripts/build_csvs.py --dry-run  # preview only
-python scripts/build_csvs.py            # write data/companies.csv + data/boards.csv
-
-# Monitor smoke test (verify Playwright + proxy paths)
-python scripts/probe_jobseek_monitors.py
+./scripts/dev.sh             # local: DBs + migrations + worker + API :8090 + web :3000
+myjobs worker | crawl | serve | sync | stats | health | boards <company|ats> | company add|list|disable
+python3 -m pytest -q         # all tests, no network (asyncio_mode=auto)
+python scripts/jseek_parity.py --api <url>   # coverage gaps against jseek.co
+git push laptop <branch> && ssh rohan@192.168.29.132 '~/myjobs/deploy/laptop/setup.sh'   # deploy
 ```
-
----
-
-## Phase 2 — Resume generation
-
-Requires `ANTHROPIC_API_KEY` in `.env` (copy `.env.example`). Run `myjobs verify-api` first.
-
-```bash
-myjobs generate              # top 10 jobs from today
-myjobs generate --top 20
-myjobs generate --days 3     # look back 3 days
-```
-
-Output: `output/YYYY-MM-DD/applications/{company}_{title}.md`
-
----
-
-## Proxy setup (optional)
-
-Boards with `"proxy": true` in their monitor_config (e.g. Cisco, NVIDIA, Qualcomm) may be blocked from datacenter IPs. To enable proxy:
-
-```bash
-# In .env:
-PROXY_PROVIDER=webshare
-WEBSHARE_PROXY_URL=http://user:pass@host:port
-```
-
-Without proxy, these boards will fail loudly but non-fatally — the rest of the run continues.
-
----
-
-## Architecture
-
-```
-Pipeline flow per daily run:
-  1. Sync data/companies.csv + data/boards.csv → SQLite companies + boards tables
-  2. Start shared Playwright if any board has render:true / monitor_type=accenture
-  3. monitor_one_stream for all ~2,900 boards (concurrency=20)
-     - Rich monitors (greenhouse/lever/ashby/...): return full DiscoveredJob data
-     - URL-only monitors (dom/sitemap/...): return URL sets only
-  4. scrape_one for URL-only boards (concurrency=10) → updates raw_jobs payload
-  5. normalize_to_jobs_row (raw_jobs → jobs table shape)
-  6. parse_signals → score_job → mark_shortlisted → render_report
-
-Key source files:
-  src/core/          # vendored from jobseek — 41 monitors + 16 scrapers (do not edit)
-  src/shared/        # vendored support layer — http, browser, proxy, etc. (do not edit)
-  src/pipeline.py    # orchestrator — bridges jobseek monitors to our DB
-  src/normalize.py   # DiscoveredJob/JobContent dict → jobs table row
-  src/companies.py   # CSV loaders (Company + Board dataclasses)
-  src/database.py    # SQLite helpers — jobs, companies, boards, raw_jobs tables
-  src/ranker.py      # scoring (untouched)
-  src/renderer.py    # HTML report (untouched)
-  src/server.py      # web UI (untouched)
-  src/ai/generator.py # Claude API integration (untouched)
-  data/companies.csv  # ~2,900 companies (generated by scripts/build_csvs.py)
-  data/boards.csv     # ~3,169 boards (generated by scripts/build_csvs.py)
-```
-
----
-
-## Database inspection
-
-```bash
-sqlite3 jobs.db ".tables"
-sqlite3 jobs.db "SELECT * FROM daily_runs ORDER BY run_date DESC LIMIT 5;"
-sqlite3 jobs.db "SELECT c.name, COUNT(*) FROM jobs j JOIN companies c ON j.company_id=c.id GROUP BY c.name ORDER BY COUNT(*) DESC LIMIT 20;"
-sqlite3 jobs.db "SELECT company_name, title, total_score, visa_signal, salary_min_usd, salary_max_usd FROM jobs j JOIN companies c ON j.company_id=c.id WHERE status='shortlisted' ORDER BY total_score DESC LIMIT 20;"
-
-# Jobs with salary data
-sqlite3 jobs.db "SELECT title, salary_min_usd, salary_max_usd FROM jobs WHERE salary_min_usd IS NOT NULL ORDER BY salary_min_usd DESC LIMIT 20;"
-
-# Board health
-sqlite3 jobs.db "SELECT board_slug, consecutive_failures, last_error FROM boards WHERE consecutive_failures > 0 ORDER BY consecutive_failures DESC LIMIT 20;"
-```
-
----
-
-## Testing
-
-```bash
-pytest tests/ -v
-pytest tests/test_parsers.py    # normalize + monitor registry + raw_jobs cycle
-pytest tests/test_database.py  # DB helpers including boards + raw_jobs
-```
-
----
 
 ## Code style
-
-- Logging: `get_logger(__name__)` from `src/logger.py` — never use `print()`
-- Vendored code (`src/core/`, `src/shared/`) uses `structlog` — routed through our logger
-- Tests: `asyncio_mode="auto"` in pyproject.toml — no `@pytest.mark.asyncio` needed
-
----
-
-## Gitignored
-
-`jobs.db`, `.env`, `output/*/`, `scripts/scraping_status.json`
-
----
-
-## Adding a new company
-
-Companies are configured in `data/companies.csv` + `data/boards.csv`. Use the CLI:
-
-```bash
-myjobs company add --name "Acme" --slug acme --ats greenhouse --tier 2
-```
-
-Or edit `data/companies.json` then re-run `scripts/build_csvs.py` to regenerate the CSVs.
-
-For ATS types not supported by jobseek monitors (rare), you can add a custom row directly to `data/boards.csv` with the appropriate `monitor_type` and `scraper_type` from `src/core/monitors/` and `src/core/scrapers/`.
-
-Available monitor types: greenhouse, lever, ashby, workday, smartrecruiters, workable, oracle_hcm, sitemap, dom, nextdata, api_sniffer, eightfold, icims, taleo, jobvite, bamboohr, and more (see `src/core/monitors/`).
+- Config in `src/config.py` (pydantic-settings, `.env`). Logging: `get_logger(__name__)` from `src/logger.py`; never `print()`.
+- Schema changes go in a new alembic migration in `src/migrations/versions/`.
+- Record non-obvious choices in `docs/DECISIONS.md`.
+- Delegation to agy (D17): briefs go in `delegation/<phase>-<NN>-<slug>.md` (`delegation/TEMPLATE.md`); verify the work with tests.

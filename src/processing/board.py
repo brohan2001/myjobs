@@ -16,7 +16,8 @@ import asyncpg
 import httpx
 import structlog
 
-from src.core.description_store import content_hash
+from src.core.hashing import content_hash
+from src.core.tech_gate import drop_at_monitor
 from src.core.enum_normalize import normalize_employment_type
 from src.core.monitors import BoardGoneError, api_monitor_types
 from src.core.scrapers import enrich_description
@@ -33,6 +34,7 @@ from src.metrics import (
 from src.processing.cpu import (
     BatchResult,
     JobCPUResult,
+    _coerce_datetime,
     _build_locales,
     _build_titles,
     _coerce_locations,
@@ -40,6 +42,7 @@ from src.processing.cpu import (
     _error_message,
     _extract_experience_fields,
     _extract_salary_fields,
+    _rich_row_unchanged,
     _parse_metadata,
     _resolve_locations_sync,
     _resolve_occupation_seniority,
@@ -55,6 +58,8 @@ from src.processing.scrape import (
 )
 from src.queries.monitor import (
     _BATCH_UPDATE_RICH_CONTENT,
+    _FILL_POSTED_AT,
+    _SET_POSTED_AT,
     _BLAST_RADIUS_FLOOR_DEFAULT,
     _COUNT_BOARD_ACTIVE_AND_MISSING,
     _CREATE_RICH_UPDATES_TEMP,
@@ -85,6 +90,8 @@ from src.queries.scrape import (
 from src.redis_queue import enqueue_scrape as _enqueue_scrape
 from src.shared.html_normalize import normalize_description_html
 from src.shared.langdetect import detect_all_languages, detect_language
+from src.shared.robots import RobotsDisallowedError
+from src.shared.robots import ensure_allowed as ensure_robots_allowed
 from src.shared.tdm import TDMReservedError
 
 log = structlog.get_logger()
@@ -286,7 +293,7 @@ async def _delist_board_postings(conn: asyncpg.Connection, board_id: str) -> int
 
     Used by the three silent-delist paths that bypass the normal
     ``_MARK_GONE_BY_TIMESTAMP`` flow: empty-check threshold reached,
-    BoardGoneError (upstream 404), and 5-strike failure auto-disable.
+    BoardGoneError (upstream 404), and a board failing for 5 checks and a day.
     Without these paths emitting the matching ``gone`` counter, the
     Grafana panel showed ``new >> gone`` even when the DB was balanced.
 
@@ -487,23 +494,24 @@ async def _mark_gone_with_guards(
 # ``last_success_at`` so transient outages back off without data loss;
 # only boards that have been failing past this window get delisted.
 _DELIST_AFTER_FAILURE_AGE = timedelta(hours=24)
+_DELIST_AFTER_FAILURES = 5
 
 
-async def _maybe_delist_after_disable(
+async def _maybe_delist_after_failures(
     conn: asyncpg.Connection,
     board_id: str,
     last_success_at: datetime | None,
     board_log: structlog.stdlib.BoundLogger,
 ) -> int:
-    """Delist a 5-strike-disabled board's postings ONLY if the board
-    has been silent past ``_DELIST_AFTER_FAILURE_AGE``. Returns the
-    count of rows flipped (0 if the recency gate skipped the delist).
+    """Delist a failing board's postings ONLY if the board has been
+    silent past ``_DELIST_AFTER_FAILURE_AGE``. Returns the count of
+    rows flipped (0 if the recency gate skipped the delist).
     """
     # asyncpg returns timezone-aware timestamps for TIMESTAMPTZ
     now = datetime.now(tz=UTC)
     if last_success_at is not None and now - last_success_at < _DELIST_AFTER_FAILURE_AGE:
         board_log.warning(
-            "batch.monitor.five_strike_disable_kept_active",
+            "batch.monitor.failing_board_kept_active",
             last_success_age_s=int((now - last_success_at).total_seconds()),
             reason="recent success — likely transient outage",
         )
@@ -711,6 +719,7 @@ async def _process_one_board_streaming(
 
         total_discovered = 0
         total_processed = 0
+        non_tech_dropped = 0
         total_new = 0
         total_relisted = 0
         batch_count = 0
@@ -718,6 +727,9 @@ async def _process_one_board_streaming(
         # gone-detection (#3216). The MAX_JOBS cap means the unseen tail
         # would otherwise be tombstoned by _MARK_GONE_BY_TIMESTAMP.
         any_truncated = False
+
+        # Honour the site's robots.txt for monitors that read company sites (not ATS APIs).
+        await ensure_robots_allowed(effective_http, board_url, crawler_type)
 
         async for result in _batch.monitor_one_stream(
             board_url, crawler_type, metadata, effective_http, pw=pw
@@ -749,6 +761,11 @@ async def _process_one_board_streaming(
             for raw in result.urls:
                 u = _canonicalize_url(raw)
                 reason = _classify_job_url(u, board_url)
+                if reason is None:
+                    job = result.jobs_by_url.get(raw) if result.jobs_by_url else None
+                    if drop_at_monitor(u, job.title if job else None):
+                        reason = "non_tech"  # D27: never stored or scraped
+                        non_tech_dropped += 1
                 if reason is not None:
                     drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
                     continue
@@ -856,6 +873,10 @@ async def _process_one_board_streaming(
                                     "id": row["id"],
                                     "url": row["url"],
                                     "r2_hash": int(r2h) if r2h is not None else None,
+                                    "desc_hash": row["desc_hash"],
+                                    "titles": row["titles"],
+                                    "locations_raw": row["locations_raw"],
+                                    "employment_type": row["employment_type"],
                                 }
                             )
                         elif action == "foreign":
@@ -891,6 +912,16 @@ async def _process_one_board_streaming(
                         stub_new_urls = list(new_urls)
 
                     if chunk_jobs:
+                        new_set = set(new_urls)
+                        dated = [
+                            (u, dt)
+                            for u, j in chunk_jobs.items()
+                            if u not in new_set and (dt := _coerce_datetime(j.date_posted)) is not None
+                        ]
+                        if dated:
+                            await conn.execute(
+                                _FILL_POSTED_AT, board_id, [u for u, _ in dated], [dt for _, dt in dated]
+                            )
                         new_jobs = [chunk_jobs[u] for u in rich_new_urls]
 
                         if new_jobs:
@@ -951,6 +982,7 @@ async def _process_one_board_streaming(
                                             t_ids,
                                             occ_id,
                                             sen_id,
+                                            _coerce_locations(j.locations),
                                         )
                                     )
                                     r2_staging.append((j, t_ids))
@@ -994,6 +1026,13 @@ async def _process_one_board_streaming(
                                     source_url=j.url,
                                     path="rich",
                                 )
+                            posted = [
+                                (pid, dt)
+                                for j, _t_ids, pid in inserted_rich
+                                if (dt := _coerce_datetime(j.date_posted)) is not None
+                            ]
+                            if posted:
+                                await conn.executemany(_SET_POSTED_AT, posted)
                             if n_rich_dedup:
                                 monitor_dedup_total.labels(path="rich").inc(n_rich_dedup)
                                 board_log.info(
@@ -1061,6 +1100,13 @@ async def _process_one_board_streaming(
                             for _, j, _ in update_triples:
                                 j.description = normalize_description_html(j.description)
                                 enrich_description(j)
+                            # A board re-lists mostly the same jobs every check; skip the extraction and
+                            # writes for rows whose stored content is unchanged.
+                            stored = {item["id"]: item for item in touched}
+                            update_triples = [
+                                t for t in update_triples if not _rich_row_unchanged(t[1], stored.get(t[0]))
+                            ]
+                            for _, j, _ in update_triples:
                                 if not j.language and j.description:
                                     j.language = detect_language(j.description)
 
@@ -1142,6 +1188,7 @@ async def _process_one_board_streaming(
                                         t_ids,
                                         occ_id,
                                         sen_id,
+                                        _coerce_locations(j.locations),
                                     )
                                 )
                             await conn.copy_records_to_table("_rich_updates", records=records)
@@ -1235,7 +1282,8 @@ async def _process_one_board_streaming(
             )
 
         # After all batches: mark gone postings
-        if total_processed == 0:
+        # A board whose jobs were all non-tech is alive, not empty (D27).
+        if total_processed == 0 and non_tech_dropped == 0:
             # Nothing reached _DIFF_BATCH — either the monitor yielded 0 URLs
             # or every discovered URL was filtered out as implausible. Treat
             # both as an empty check so we don't mark every active posting
@@ -1253,7 +1301,7 @@ async def _process_one_board_streaming(
             try:
                 async with pool.acquire() as conn, conn.transaction():
                     rows = await conn.fetch(_RECORD_EMPTY_CHECK, board_id)
-                    if rows and rows[0]["board_status"] == "gone":
+                    if rows and rows[0]["delist"]:
                         empty_gone_count = await _delist_board_postings(conn, board_id)
             except (asyncpg.PostgresError, ConnectionError):
                 board_log.exception("batch.monitor.empty_check_failed")
@@ -1262,9 +1310,7 @@ async def _process_one_board_streaming(
                 # see ``_delist_board_postings`` docstring.
                 if empty_gone_count:
                     _emit_gone_counter(empty_gone_count)
-                    board_log.warning("batch.monitor.board_gone", gone=empty_gone_count)
-                    with contextlib.suppress(Exception):
-                        await _batch.get_redis().delete("cache:platform-stats")
+                    board_log.warning("batch.monitor.empty_board_delisted", delisted=empty_gone_count)
             return True, elapsed
 
         # Mark as gone any active posting not seen during this monitor run.
@@ -1344,10 +1390,6 @@ async def _process_one_board_streaming(
         if elapsed >= _SLOW_MONITOR_SECONDS:
             board_log.warning("batch.monitor.slow", duration_s=round(elapsed, 2))
 
-        if total_new or gone_count:
-            with contextlib.suppress(Exception):
-                await _batch.get_redis().delete("cache:platform-stats")
-
         return True, elapsed
 
     except TDMReservedError as exc:
@@ -1376,10 +1418,19 @@ async def _process_one_board_streaming(
         # Return success-shaped: the run was not a failure.
         return True, elapsed
 
+    except RobotsDisallowedError as exc:
+        # Site asks generic crawlers to stay out: clean skip, like the TDM opt-out
+        # (no failure strike, no tombstoning). Counted so coverage loss is visible.
+        elapsed = monotonic() - t0
+        board_log.info("batch.monitor.robots_disallowed", url=exc.url, duration_s=round(elapsed, 2))
+        tasks_total.labels(kind="monitor", status="robots_disallowed").inc()
+        loc_resolver.drain_location_misses()
+        return True, elapsed
+
     except BoardGoneError as exc:
         # Upstream confirmed the board no longer exists (404 from
         # greenhouse/lever/recruitee/ashby per-board API). Skip the
-        # 5-strike `_RECORD_FAILURE` ramp and disable in one shot —
+        # `_RECORD_FAILURE` backoff and disable in one shot —
         # otherwise the Redis monitor task keeps re-firing the dead
         # endpoint every cycle until sync removes it (which only runs
         # on CSV pushes). See issue #2215.
@@ -1402,8 +1453,6 @@ async def _process_one_board_streaming(
         else:
             if board_gone_count:
                 _emit_gone_counter(board_gone_count)
-                with contextlib.suppress(Exception):
-                    await _batch.get_redis().delete("cache:platform-stats")
         # Re-raise so the worker can drop the Redis task instead of
         # rescheduling — otherwise the dead board keeps cycling.
         raise
@@ -1415,35 +1464,25 @@ async def _process_one_board_streaming(
         tasks_total.labels(kind="monitor", status="failed").inc()
         # Discard stale location misses from this failed board
         loc_resolver.drain_location_misses()
-        # A 5-strike failure flips ``is_enabled=false`` + ``board_status='disabled'``.
-        # _FETCH_DUE_BOARDS won't pick the board again, so active postings
-        # would otherwise sit orphaned (``is_active=true``, never to be
-        # refreshed or marked gone). Detect the transition (the pre-fetch
-        # row was ``is_enabled=true``, so any post-update ``false`` is a
-        # fresh disable) and gate the delist on ``last_success_at`` so a
-        # provider outage doesn't mass-tombstone postings that would all
-        # come back on recovery.
+        # A failing board stays enabled and backs off (D37). After 5 failures in a row its postings are
+        # delisted, gated on ``last_success_at`` so a provider outage doesn't tombstone postings that
+        # would all come back on recovery. The delist only touches still-active postings, so repeating it
+        # on later failures is cheap and catches boards whose 5th failure came within the gate.
         failure_gone_count = 0
         try:
             async with pool.acquire() as conn, conn.transaction():
                 row = await conn.fetchrow(_RECORD_FAILURE, board_id, error_msg)
-                just_disabled = row is not None and not row["is_enabled"]
-                if just_disabled:
-                    failure_gone_count = await _maybe_delist_after_disable(
+                if row is not None and row["consecutive_failures"] >= _DELIST_AFTER_FAILURES:
+                    failure_gone_count = await _maybe_delist_after_failures(
                         conn, board_id, row["last_success_at"], board_log
                     )
                     if failure_gone_count:
-                        board_log.warning(
-                            "batch.monitor.five_strike_disable",
-                            gone=failure_gone_count,
-                        )
+                        board_log.warning("batch.monitor.failing_board_delisted", gone=failure_gone_count)
         except (asyncpg.PostgresError, ConnectionError):
             board_log.exception("batch.monitor.record_failure_failed")
         else:
             if failure_gone_count:
                 _emit_gone_counter(failure_gone_count)
-                with contextlib.suppress(Exception):
-                    await _batch.get_redis().delete("cache:platform-stats")
         return False, elapsed
     finally:
         if pw and pw_owned:
@@ -1623,7 +1662,7 @@ async def dry_run_single_board(
         if enrich_fields:
             scraper_type = "json-ld"
         else:
-            from src.workspace._compat import auto_scraper_type
+            from src.core.static_registry import auto_scraper_type
 
             auto = auto_scraper_type(crawler_type, metadata)
             if auto and auto[0] != "skip":
