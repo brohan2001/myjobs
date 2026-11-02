@@ -554,7 +554,8 @@ def _parse_findjobs_job(raw: dict, site: str) -> DiscoveredJob | None:
         description=raw.get("jobDescription"),
         locations=locations,
         job_location_type=raw.get("remoteType"),
-        date_posted=raw.get("postedDate"),
+        # myjobs delta: the search API sends "Posted 3 days ago" as postedDateText, not postedDate.
+        date_posted=raw.get("postedDate") or raw.get("postedDateText"),
         metadata=metadata or None,
     )
 
@@ -577,7 +578,8 @@ def _parse_jobsearch_job(raw: dict) -> DiscoveredJob | None:
         url=url,
         title=raw.get("title"),
         locations=locations,
-        date_posted=raw.get("postedDate"),
+        # myjobs delta: the search API sends "Posted 3 days ago" as postedDateText, not postedDate.
+        date_posted=raw.get("postedDate") or raw.get("postedDateText"),
     )
 
 
