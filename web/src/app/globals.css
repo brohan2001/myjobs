@@ -384,6 +384,40 @@ a {
   color: var(--mute);
 }
 
+/* A company's own post date is solid green; a crawl time is muted and underlined (dotted). */
+.when-posted {
+  color: var(--moss);
+}
+
+.when-seen,
+.when-unknown {
+  color: var(--mute);
+  font-weight: 400;
+}
+
+.when.when-seen {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.when.when-posted::before {
+  content: "● ";
+}
+
+.when.when-seen::before {
+  content: "○ ";
+}
+
+.when-legend {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--mute);
+}
+
+.when-legend .when-posted {
+  font-weight: 700;
+}
+
 .is-fresh .when {
   color: var(--clay);
 }
@@ -745,7 +779,7 @@ a {
   /* One line per job: when · title · company and place · tags. */
   .row {
     display: grid;
-    grid-template-columns: 64px 1fr;
+    grid-template-columns: 118px 1fr;
     column-gap: 12px;
     align-items: baseline;
     padding: 7px 10px;
@@ -754,6 +788,7 @@ a {
     margin: 0;
     font-size: 13px;
     text-align: left;
+    white-space: nowrap;
   }
   .row .body {
     grid-column: 2;

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from email.utils import parsedate_to_datetime
 
 from src.core.enum_normalize import normalize_employment_type
@@ -269,9 +270,39 @@ def _coerce_locations(val: object | None) -> list[str] | None:
     return [text] if text else None
 
 
-def _coerce_datetime(val: object | None) -> datetime | None:
-    """Normalize common monitor/scraper timestamp formats for timestamptz columns."""
-    if val is None:
+# Day-first and month-name formats seen in ATS feeds. A slashed date is read US-style (month first), as Workday and
+# SuccessFactors write it; a dotted one day-first (European).
+_DATE_FORMATS = (
+    "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d", "%d.%m.%Y", "%d-%m-%Y",
+    "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y", "%d-%b-%Y", "%Y-%m-%d %H:%M:%S",
+)
+_RELATIVE = re.compile(r"(?:posted\s+)?(?:(today|just posted|just now)|(yesterday)|(\d+)\s+(minute|hour|day|week)s?\s+ago)$")
+_EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
+# "Posted more than 1 month ago", "30+ days ago": no date, but the job is old.
+_VAGUE_OLD = re.compile(r"more than \d+|over \d+|\d+\+\s*(day|week|month)")
+
+
+def _vague_old_date(val: object) -> bool:
+    """True for a date text that only says the job is old ("Posted more than 1 month ago", "30+ days ago")."""
+    return isinstance(val, str) and bool(_VAGUE_OLD.search(val.lower()))
+
+
+def _coerce_datetime(val: object | None, now: datetime | None = None) -> datetime | None:
+    """A publish date from a monitor or scraper value, or None if it can't be read or isn't plausible.
+
+    Accepts datetimes, ISO and RFC 2822 strings, epoch seconds or milliseconds (also as digit strings),
+    common US, European and month-name dates, and relative text ("Posted 3 Days Ago", "today"). "30+ days
+    ago" has no date, so it is None. A date before 2000 or more than a day ahead is None.
+    """
+    now = now or datetime.now(UTC)
+    parsed = _parse_datetime(val, now)
+    if parsed is None or parsed < _EARLIEST or parsed > now + timedelta(days=1):
+        return None
+    return parsed
+
+
+def _parse_datetime(val: object | None, now: datetime) -> datetime | None:
+    if val is None or isinstance(val, bool):
         return None
     if isinstance(val, datetime):
         return val if val.tzinfo is not None else val.replace(tzinfo=UTC)
@@ -279,7 +310,7 @@ def _coerce_datetime(val: object | None) -> datetime | None:
         return datetime.combine(val, time.min, tzinfo=UTC)
     if isinstance(val, (int, float)):
         with contextlib.suppress(Exception):
-            return datetime.fromtimestamp(val, tz=UTC)
+            return datetime.fromtimestamp(val / 1000 if val > 1e11 else val, tz=UTC)
         return None
     if not isinstance(val, str):
         return None
@@ -287,26 +318,35 @@ def _coerce_datetime(val: object | None) -> datetime | None:
     raw = val.strip()
     if not raw:
         return None
+    if raw.isdigit():
+        return _parse_datetime(int(raw), now)
 
     candidates = [raw]
     if raw.endswith("Z"):
         candidates.append(raw[:-1] + "+00:00")
     if raw.endswith(" UTC"):
         candidates.append(raw[:-4] + "+00:00")
-
     for candidate in candidates:
         with contextlib.suppress(ValueError):
             parsed = datetime.fromisoformat(candidate)
             return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
-    with contextlib.suppress(ValueError):
-        parsed_date = date.fromisoformat(raw)
-        return datetime.combine(parsed_date, time.min, tzinfo=UTC)
-
     with contextlib.suppress(Exception):
         parsed = parsedate_to_datetime(raw)
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
+    for fmt in _DATE_FORMATS:
+        with contextlib.suppress(ValueError):
+            return datetime.strptime(raw, fmt).replace(tzinfo=UTC)
+
+    m = _RELATIVE.match(" ".join(raw.lower().split()))
+    if m:
+        if m.group(1):
+            return now
+        if m.group(2):
+            return now - timedelta(days=1)
+        unit = {"minute": "minutes", "hour": "hours", "day": "days", "week": "weeks"}[m.group(4)]
+        return now - timedelta(**{unit: int(m.group(3))})
     return None
 
 

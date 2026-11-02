@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { formatAtsName } from "@/lib/ats";
-import { formatSalary, relativeTime } from "@/lib/format";
+import { formatSalary, jobWhen } from "@/lib/format";
 import { orderLocations } from "@/lib/locations";
 import { RATES } from "@/lib/rates";
 import { Job } from "@/lib/types";
@@ -27,11 +27,10 @@ export function JobRow({
   onFocus,
   onOpen,
 }: JobRowProps) {
-  // Freshness check (< 60 minutes). listed_at is the ATS's posting date when it gives one,
-  // otherwise when we first saw the job; null when its age is unknown (a board's first crawl).
-  const isFresh = job.listed_at !== null && Date.now() - new Date(job.listed_at).getTime() < 3_600_000;
-
-  const timeString = relativeTime(job.listed_at);
+  // A company's post date, our crawler's first sighting, or unknown (a board's first crawl).
+  const when = jobWhen(job);
+  // Fresh (< 60 minutes) only when the company says so: a crawl time can't vouch for a job's age.
+  const isFresh = when.kind === "posted" && Date.now() - new Date(job.listed_at!).getTime() < 3_600_000;
 
   // Formatted location
   let locationText = "Remote";
@@ -69,11 +68,8 @@ export function JobRow({
         }
       }}
     >
-      <p
-        className="when"
-        title={job.posted_at ? "Posted by the company" : job.listed_at ? "First seen by our crawler" : "Already open when we first crawled this board"}
-      >
-        {timeString}
+      <p className={`when when-${when.kind}`} title={when.title}>
+        {when.text}
       </p>
       <div className="body">
         <a

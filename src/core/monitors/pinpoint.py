@@ -152,7 +152,6 @@ def _parse_job(posting: dict) -> DiscoveredJob | None:
         locations=_build_location(posting),
         employment_type=employment_type,
         job_location_type=job_location_type,
-        date_posted=posting.get("deadline_at"),
         base_salary=_parse_salary(posting),
         metadata=metadata or None,
     )
