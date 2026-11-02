@@ -419,3 +419,11 @@ WHERE taxonomy_miss.status = 'pending'
 # The ATS's own publish date for a newly inserted rich posting (feed's "posted X ago").
 _SET_POSTED_AT = "UPDATE job_posting SET posted_at = $2 WHERE id = $1::uuid"
 
+# Jobs stored before posted_at existed (migration 0012), or by a monitor that only later gave a date, get their publish
+# date from the next crawl that has one. Only this board's rows with no date yet are touched.
+_FILL_POSTED_AT = """
+UPDATE job_posting p SET posted_at = v.posted_at
+FROM unnest($2::text[], $3::timestamptz[]) AS v(source_url, posted_at)
+WHERE p.source_url = v.source_url AND p.board_id = $1::uuid AND p.posted_at IS NULL
+"""
+

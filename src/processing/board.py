@@ -58,6 +58,7 @@ from src.processing.scrape import (
 )
 from src.queries.monitor import (
     _BATCH_UPDATE_RICH_CONTENT,
+    _FILL_POSTED_AT,
     _SET_POSTED_AT,
     _BLAST_RADIUS_FLOOR_DEFAULT,
     _COUNT_BOARD_ACTIVE_AND_MISSING,
@@ -911,6 +912,16 @@ async def _process_one_board_streaming(
                         stub_new_urls = list(new_urls)
 
                     if chunk_jobs:
+                        new_set = set(new_urls)
+                        dated = [
+                            (u, dt)
+                            for u, j in chunk_jobs.items()
+                            if u not in new_set and (dt := _coerce_datetime(j.date_posted)) is not None
+                        ]
+                        if dated:
+                            await conn.execute(
+                                _FILL_POSTED_AT, board_id, [u for u, _ in dated], [dt for _, dt in dated]
+                            )
                         new_jobs = [chunk_jobs[u] for u in rich_new_urls]
 
                         if new_jobs:
