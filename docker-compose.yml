@@ -1,19 +1,27 @@
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: crawler
       POSTGRES_PASSWORD: crawler
       POSTGRES_DB: crawler
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Resource budget (D30): with myjobs.slice that is 4 threads and ~6 GB in all
+    cpus: 1.0
+    mem_limit: 768m
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    cpus: 0.25
+    # 256m was too small: a 429k-task scrape backlog got Redis OOM-killed on 2026-10-31
+    mem_limit: 512m
 
 volumes:
   pgdata:

@@ -1,8 +1,6 @@
 """Crawler settings — pydantic-settings based configuration.
 
 All settings are read from environment variables (and .env / .env.local files).
-Scoring/keyword constants live in src/scoring_config.py so they don't conflict
-with this Settings class.
 """
 
 from __future__ import annotations
@@ -17,6 +15,8 @@ class Settings(BaseSettings):
     # ``monitor_config`` / ``scraper_config`` (``data/boards.csv``).
     proxy_provider: str = "none"  # none | webshare | decodo
     webshare_proxy_url: str = ""
+    webshare_proxy_urls: list[str] = []
+    webshare_proxy_canary_slot: int | None = None
     decodo_proxy_url: str = ""
 
     # SSRF guard
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Redis (local instance)
     redis_url: str = "redis://localhost:6379/0"
-    redis_max_connections: int = 60
+    redis_max_connections: int = 200  # per process: one per coroutine plus each in-flight lease heartbeat
     throttle_delay_default: float = 2.0
     throttle_delay_ats: float = 0.5
 
@@ -38,17 +38,24 @@ class Settings(BaseSettings):
     # Graceful drain on SIGTERM/SIGINT
     shutdown_grace_seconds: int = 30
 
+    # Public API
+    api_rate_limit_per_minute: int = 120
+    api_cors_origins: str = ""  # comma-separated; empty = same-origin only
+    admin_token: str = ""  # bearer token for /api/admin/*; empty disables the admin routes (D31)
+
     log_level: str = "INFO"
     worker_id_prefix: str = ""
-    crawler_db_pool_max: int = 10
-    metrics_port: int = 9091
+    crawler_db_pool_max: int = 20
 
     # Pipeline concurrency (per-instance)
-    discovery_concurrency: int = 20
-    monitor_concurrency: int = 5
+    discovery_concurrency: int = 80  # per process; the work waits on the network and per-domain delays, not CPU
+    monitor_concurrency: int = 40  # per process; the other 40 coroutines keep page scrapes moving
+    browser_monitor_concurrency: int = 6  # one Chromium each: ~20 crashed launches and blew the memory budget (D30)
     raw_buffer_size: int = 10
     done_buffer_size: int = 10
     writeback_concurrency: int = 5
+    # Share of claims that try page scrapes before board checks, so a check backlog can't starve them
+    scrape_claim_share: float = 0.3
     cpu_threads: int = 1
 
     model_config = SettingsConfigDict(env_file=(".env", ".env.local"), extra="ignore")

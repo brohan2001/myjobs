@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, time
 from email.utils import parsedate_to_datetime
 
 from src.core.enum_normalize import normalize_employment_type
+from src.core.hashing import content_hash
 from src.core.experience_extract import extract_experience
 from src.core.location_resolve import LocationResolver
 from src.core.occupation_resolve import match_occupation
@@ -164,6 +165,25 @@ def _extract_experience_fields(html: str | None) -> tuple[int | None, int | None
     return result.min_years, result.max_years
 
 
+def _rich_row_unchanged(job, stored: dict | None) -> bool:
+    """True when a re-listed rich job matches what is stored, so its update can be skipped.
+
+    Compares the description hash and every listing field the rich update would write
+    (``_BATCH_UPDATE_RICH_CONTENT``). A ``None`` location list keeps the stored one there, so it counts as equal.
+    """
+    if not stored or stored.get("desc_hash") is None:
+        return False
+    desc = _coerce_text(job.description)
+    if not desc or content_hash(desc) != stored["desc_hash"]:
+        return False
+    if _build_titles(_coerce_text(job.title), job.localizations) != list(stored.get("titles") or []):
+        return False
+    locations = _coerce_locations(job.locations)
+    if locations is not None and locations != list(stored.get("locations_raw") or []):
+        return False
+    return normalize_employment_type(_coerce_text(job.employment_type)) == stored.get("employment_type")
+
+
 def _resolve_locations_sync(
     resolver: LocationResolver,
     locations: list[str] | None,
@@ -184,7 +204,9 @@ def _resolve_locations_sync(
     loc_ids: list[int] = []
     loc_types: list[str] = []
     for r in results:
-        if r.location_id is not None:
+        # Keep location-less "Remote"/"Hybrid" entries as NULL ids so the work
+        # mode survives (the feed's remote filter reads location_types).
+        if r.location_id is not None or r.location_type in ("remote", "hybrid"):
             loc_ids.append(r.location_id)
             loc_types.append(r.location_type)
     return loc_ids or None, loc_types or None
@@ -407,6 +429,7 @@ def _process_jobs_cpu(
             t_ids,
             occ_id,
             sen_id,
+            _coerce_locations(j.locations),
         )
 
         r2_staging_args = dict(

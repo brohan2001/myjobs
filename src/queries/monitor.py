@@ -95,6 +95,7 @@ UPDATE job_board
 SET board_status = 'gone', gone_at = now(),
     is_enabled = false,
     lease_owner = NULL, leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
 """
@@ -110,10 +111,13 @@ SET consecutive_failures = 0,
     last_non_empty_at = now(),
     lease_owner = NULL,
     leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
 """
 
+# An empty board stays enabled (D34): after 6 empty checks its postings are delisted, but it keeps being checked
+# and turns active again when jobs come back. Only a 404/410 (_RECORD_BOARD_GONE) disables a board.
 _RECORD_EMPTY_CHECK = """
 UPDATE job_board
 SET consecutive_failures = 0,
@@ -122,56 +126,35 @@ SET consecutive_failures = 0,
     next_check_at = now() + (check_interval_minutes || ' minutes')::interval,
     empty_check_count = empty_check_count + 1,
     board_status = CASE
-        WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 6
-        THEN 'gone'
         WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 3
         THEN 'suspect'
         ELSE board_status
     END,
-    gone_at = CASE
-        WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 6
-        THEN now()
-        ELSE gone_at
-    END,
-    is_enabled = CASE
-        WHEN last_non_empty_at IS NOT NULL AND empty_check_count + 1 >= 6
-        THEN false
-        ELSE is_enabled
-    END,
     lease_owner = NULL,
     leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
-RETURNING board_status
+RETURNING (last_non_empty_at IS NOT NULL AND empty_check_count >= 6) AS delist
 """
 
-# RETURNING ``last_success_at`` + the post-update ``is_enabled`` lets
-# the Python caller detect the single transition from enabled →
-# disabled and apply a recency gate before delisting. The board record
-# the caller already holds (from ``_FETCH_DUE_BOARDS``) is guaranteed
-# ``is_enabled=true`` (otherwise it wouldn't have been claimed), so
-# any post-update ``is_enabled=false`` is a fresh transition — no need
-# for a fragile ``consecutive_failures = N`` equality check that breaks
-# the moment ops manually re-enables a board without zeroing the
-# counter. Without this hand-off, 5-strike disables left active
-# postings stranded on a board the scheduler never polls again — a
-# phantom-active bleed that also dropped the corresponding ``gone``
-# Prometheus counter on the floor.
+# A failing board is never disabled (D37): it backs off (5 * 2^n minutes, capped at a day) and keeps
+# retrying. RETURNING ``consecutive_failures`` + ``last_success_at`` lets the caller delist its postings
+# once it has failed 5 times in a row and has had no success for a day.
 _RECORD_FAILURE = """
 UPDATE job_board
 SET consecutive_failures = consecutive_failures + 1,
     last_error = $2,
     next_check_at = now() + LEAST(
-        (5 * pow(2, consecutive_failures)) || ' minutes',
+        (5 * pow(2, LEAST(consecutive_failures, 9))) || ' minutes',
         '1440 minutes'
     )::interval,
-    is_enabled = CASE WHEN consecutive_failures + 1 >= 5 THEN false ELSE is_enabled END,
-    board_status = CASE WHEN consecutive_failures + 1 >= 5 THEN 'disabled' ELSE board_status END,
     lease_owner = NULL,
     leased_until = NULL,
+    last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
-RETURNING is_enabled, last_success_at
+RETURNING consecutive_failures, last_success_at, next_check_at
 """
 
 _DIFF_BATCH = """
@@ -206,7 +189,10 @@ touched AS (
   WHERE job_posting.board_id = $2
     AND job_posting.is_active = true
     AND job_posting.source_url = d.url
-  RETURNING job_posting.id, job_posting.source_url, job_posting.description_r2_hash
+  -- The stored content lets the caller skip re-extracting rows that haven't changed.
+  RETURNING job_posting.id, job_posting.source_url, job_posting.description_r2_hash,
+            (SELECT max(ds.hash) FROM descriptions ds WHERE ds.posting_id = job_posting.id) AS desc_hash,
+            job_posting.titles, job_posting.locations_raw, job_posting.employment_type
 ),
 relisted AS (
   UPDATE job_posting
@@ -255,15 +241,18 @@ new_urls AS (
     WHERE jp.source_url = d.url
   )
 )
-SELECT 'touched' AS action, id::text, source_url AS url, description_r2_hash FROM touched
+SELECT 'touched' AS action, id::text, source_url AS url, description_r2_hash,
+       desc_hash, titles, locations_raw, employment_type FROM touched
 UNION ALL
-SELECT 'relisted' AS action, id::text, source_url AS url, description_r2_hash FROM relisted
+SELECT 'relisted' AS action, id::text, source_url AS url, description_r2_hash,
+       NULL::bigint, NULL::text[], NULL::text[], NULL::text FROM relisted
 UNION ALL
 -- id is NULL for foreign rows: the owning board's id has no meaning
 -- for the calling board, and the Python layer only counts this action.
-SELECT 'foreign' AS action, NULL::text, source_url AS url, NULL::bigint FROM foreign_touched
+SELECT 'foreign' AS action, NULL::text, source_url AS url, NULL::bigint,
+       NULL::bigint, NULL::text[], NULL::text[], NULL::text FROM foreign_touched
 UNION ALL
-SELECT 'new', NULL, url, NULL::bigint FROM new_urls
+SELECT 'new', NULL, url, NULL::bigint, NULL::bigint, NULL::text[], NULL::text[], NULL::text FROM new_urls
 """
 
 _MARK_GONE = """
@@ -333,14 +322,14 @@ INSERT INTO job_posting
      location_ids, location_types,
      salary_min, salary_max, salary_currency, salary_period, salary_eur,
      experience_min, experience_max, technology_ids,
-     occupation_id, seniority_id)
+     occupation_id, seniority_id, locations_raw)
 VALUES ($1, $2, $3, $4,
         now(), now(),
         true, $5, $6,
         $7, $8,
         $9, $10, $11, $12, $13,
         $14, $15, $16,
-        $17, $18)
+        $17, $18, $19)
 ON CONFLICT (source_url) DO NOTHING
 RETURNING id
 """
@@ -354,14 +343,14 @@ INSERT INTO job_posting
      location_ids, location_types,
      salary_min, salary_max, salary_currency, salary_period, salary_eur,
      experience_min, experience_max, technology_ids,
-     occupation_id, seniority_id)
+     occupation_id, seniority_id, locations_raw)
 VALUES ($1, $2, $3, $4,
         now(), now(), now(),
         true, $5, $6,
         $7, $8,
         $9, $10, $11, $12, $13,
         $14, $15, $16,
-        $17, $18)
+        $17, $18, $19)
 ON CONFLICT (source_url) DO NOTHING
 RETURNING id
 """
@@ -376,7 +365,8 @@ CREATE TEMP TABLE _rich_updates (
     salary_currency text, salary_period text, salary_eur integer,
     experience_min integer, experience_max integer,
     technology_ids integer[],
-    occupation_id integer, seniority_id integer
+    occupation_id integer, seniority_id integer,
+    locations_raw text[]
 ) ON COMMIT DROP
 """
 
@@ -391,7 +381,8 @@ SET employment_type = u.employment_type,
     experience_min = u.experience_min, experience_max = u.experience_max,
     technology_ids = COALESCE(u.technology_ids, jp.technology_ids),
     occupation_id = COALESCE(u.occupation_id, jp.occupation_id),
-    seniority_id = COALESCE(u.seniority_id, jp.seniority_id)
+    seniority_id = COALESCE(u.seniority_id, jp.seniority_id),
+    locations_raw = COALESCE(u.locations_raw, jp.locations_raw)
 FROM _rich_updates u
 WHERE jp.id = u.id
 """
@@ -423,3 +414,16 @@ ON CONFLICT (taxonomy, raw_value) DO UPDATE SET
     last_seen_at = now()
 WHERE taxonomy_miss.status = 'pending'
 """
+
+
+# The ATS's own publish date for a newly inserted rich posting (feed's "posted X ago").
+_SET_POSTED_AT = "UPDATE job_posting SET posted_at = $2 WHERE id = $1::uuid"
+
+# Jobs stored before posted_at existed (migration 0012), or by a monitor that only later gave a date, get their publish
+# date from the next crawl that has one. Only this board's rows with no date yet are touched.
+_FILL_POSTED_AT = """
+UPDATE job_posting p SET posted_at = v.posted_at
+FROM unnest($2::text[], $3::timestamptz[]) AS v(source_url, posted_at)
+WHERE p.source_url = v.source_url AND p.board_id = $1::uuid AND p.posted_at IS NULL
+"""
+

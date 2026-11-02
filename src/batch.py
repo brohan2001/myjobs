@@ -1,14 +1,14 @@
 """Batch processor — backward-compatibility re-export hub.
 
 This module re-exports symbols from the processing/ and queries/ sub-packages
-so that existing callers (tests, workspace CLI, processing/board.py's
+so that existing callers (tests, processing/board.py's
 ``_BatchLookups`` proxy) continue to work via ``from src.batch import ...``.
 
 Business logic lives in:
 - src/processing/board.py  — monitor processing (streaming)
 - src/processing/scrape.py — scrape processing
 - src/processing/cpu.py    — CPU-bound work
-- src/processing/r2_stage.py — R2 staging helpers
+- src/processing/r2_stage.py — description change detection
 - src/queries/             — SQL queries
 """
 
@@ -155,7 +155,6 @@ from src.queries.scrape import (  # noqa: F401
     _UPDATE_ENRICH_CONTENT,
     _UPDATE_JOB_CONTENT,
 )
-from src.shared.redis import get_redis  # noqa: F401
 
 # ── Backward-compatible module-level singletons ──────────────────────
 # Forward reads/writes of mutable singleton variables to src.queries.lookups

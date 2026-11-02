@@ -1,0 +1,44 @@
+# Third-party notices
+
+## jobseek (colophon-group/jobseek)
+
+Large parts of this repository are derived from jobseek
+(https://github.com/colophon-group/jobseek), used under the MIT License:
+
+- `src/core/`, `src/shared/`, `src/lua/`, `src/processing/`,
+  `src/queries/`, `src/redis_queue.py`, `src/migrations/versions/0001`–`0005`
+- Board rows in `data/boards.csv` and company rows in `data/companies.csv`
+  taken from jobseek's crawler data (`apps/crawler/data/`)
+
+The core is vendored at upstream commit `cf71baa` (2026-10-14); `docs/UPSTREAM.md` lists what was copied and
+the few local modifications.
+
+```
+MIT License
+
+Copyright (c) 2025 Viktor Shcherbakov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## GeoNames
+
+Location data loaded by `scripts/load_geonames.py` comes from GeoNames (https://www.geonames.org),
+licensed under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/).
+The data isn't stored in this repository; it's downloaded at load time.

@@ -9,22 +9,17 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx[socks]>=0.27.0",
     "playwright>=1.44.0",
-    "beautifulsoup4>=4.12.3",
-    "lxml>=5.2.2",
     "typer>=0.12.3",
     "rich>=13.7.1",
-    "jinja2>=3.1.4",
-    "python-dotenv>=1.0.1",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
-    "anthropic>=0.49.0",
-    "ddgs>=9.0.0",
-    "pdfplumber>=0.11.0",
     "structlog>=24.4",
     "selectolax>=0.4.7",
     "fast-langdetect>=0.3",
     "pypdf>=6.10.2",
     "jmespath>=1.0",
+    "defusedxml>=0.7.1",
+    "nh3>=0.2.17",
     # jobseek pipeline stack
     "asyncpg>=0.29",
     "redis[asyncio]>=5.0",
@@ -33,15 +28,21 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "prometheus-client>=0.20",
     "polars>=1.0",
+    "psutil>=5.9",  # /api/admin/system
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "fakeredis[lua]>=2.26"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+"src" = ["lua/*.lua"]
+
 [project.scripts]
 myjobs = "src.cli:myjobs_main"
-crawler = "src.cli:crawler_main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

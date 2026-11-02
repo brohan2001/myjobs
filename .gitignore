@@ -1,8 +1,6 @@
 jobs.db
 .env
 .history/
-output/*/
-!output/.gitkeep
 .claude/
 __pycache__/
 *.py[cod]
@@ -14,3 +12,7 @@ build/
 .pytest_cache/
 .DS_Store
 *.log
+private/
+jobs.db-*
+scripts/scraping_status.json
+output/

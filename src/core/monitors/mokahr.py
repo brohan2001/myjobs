@@ -1,6 +1,8 @@
 """Mokahr ATS monitor.
 
-Mokahr (app.mokahr.com) is a Chinese ATS used by companies like ZTE.
+Mokahr is a Chinese ATS used by companies like ZTE. Tenants normally use
+``app.mokahr.com``, but the same SPA and API can also be served from a
+company-owned custom domain.
 The API encrypts responses with AES-128-CBC using a per-response key
 (``necromancer``) and a per-site IV embedded in the SPA HTML.
 
@@ -8,27 +10,81 @@ Config keys:
     org_id   — organisation slug (e.g. "zte")
     site_id  — numeric site ID (e.g. 47588)
     locale   — API locale (default "zh-CN")
+    partitions — optional bounded list of additional official Mokahr sites
+                 for the same organisation. Each item contains an exact
+                 ``board_url`` and ``site_id``. Jobs are unioned by the
+                 provider ID, with the primary board and then partition list
+                 order acting as the deterministic source preference.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
+from dataclasses import dataclass
 from html import unescape
+from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
 
-from src.core.monitors import DiscoveredJob, register
+from src.core.monitors import BoardGoneError, DiscoveredJob, register
 from src.shared.truncation import truncated_rich_result
+
+if TYPE_CHECKING:
+    from src.core.monitor import MonitorResult
 
 log = structlog.get_logger()
 
-_API_URL = "https://app.mokahr.com/api/outer/ats-apply/website/jobs/v2"
-_DETAIL_URL = "https://app.mokahr.com/api/outer/ats-apply/website/job"
-_PAGE_SIZE = 20
+_SNAPSHOT_ATTEMPTS = 2
+_SNAPSHOT_RETRY_DELAY = 1.0
+
+
+class _SnapshotChanged(ValueError):
+    """A Mokahr site changed while its paginated snapshot was collected."""
+
+
+_DEFAULT_ORIGIN = "https://app.mokahr.com"
+_LIST_PATH = "/api/outer/ats-apply/website/jobs/v2"
+_PAGE_SIZE = 50
 _MAX_JOBS = 50_000
+_MAX_PARTITIONS = 16
+_ROUTE_RE = re.compile(r"(?:social|campus)[_-](?:recruitment|apply)", re.IGNORECASE)
+_ORG_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_SITE_ID_RE = re.compile(r"[1-9]\d{0,11}")
+_JOB_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_LOCALE_RE = re.compile(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{2,8}){0,2}")
+_OPEN_STATUS = "open"
+_INACTIVE_STATUSES = frozenset({"closed", "pause"})
+_CLOSED_PAGE_TITLE_RE = re.compile(
+    r"<title[^>]*>\s*当前网页已关停\s*</title>",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Partition:
+    """One authenticated Mokahr site participating in a board union."""
+
+    page_url: str
+    origin: str
+    path: str
+    org_id: str
+    site_id: int
+
+
+@dataclass(slots=True)
+class _PartitionResult:
+    """Validated active inventory from one provider site."""
+
+    jobs_by_id: dict[str, DiscoveredJob]
+    advertised_total: int
+    inactive_total: int
+    truncated: bool = False
+
 
 # Mokahr commitment values pass through unchanged — the central
 # :func:`src.core.enum_normalize.normalize_employment_type` map handles
@@ -84,7 +140,12 @@ def _decrypt(data_b64: str, key_str: str, iv_str: str) -> dict:
     return json.loads(plaintext)
 
 
-async def _get_init_data(page_url: str, client: httpx.AsyncClient) -> dict | None:
+async def _get_init_data(
+    page_url: str,
+    client: httpx.AsyncClient,
+    *,
+    raise_on_404: bool = False,
+) -> dict | None:
     """Return the SPA's parsed ``init-data`` payload, or ``None`` on failure.
 
     The payload exposes the AES IV (``aesIv``) plus rich auxiliary data
@@ -94,8 +155,12 @@ async def _get_init_data(page_url: str, client: httpx.AsyncClient) -> dict | Non
     map to produce human-readable city names.
     """
     resp = await client.get(page_url, follow_redirects=True)
+    if resp.status_code == 404 and raise_on_404:
+        raise BoardGoneError("Mokahr board page returned 404", url=str(resp.url))
     if resp.status_code != 200:
         return None
+    if raise_on_404 and _CLOSED_PAGE_TITLE_RE.search(resp.text):
+        raise BoardGoneError("Mokahr board page is explicitly shut down", url=str(resp.url))
     m = re.search(r'id="init-data"[^>]*value="([^"]*)"', resp.text)
     if not m:
         return None
@@ -199,8 +264,199 @@ def _parse_salary(detail: dict) -> dict | None:
     }
 
 
-def _build_board_url(org_id: str, site_id: int, path: str = "social-recruitment") -> str:
-    return f"https://app.mokahr.com/{path}/{org_id}/{site_id}"
+def _origin(url: str) -> str | None:
+    """Return a normalized, public-facing HTTPS origin or ``None``.
+
+    Custom Mokahr hosts become API origins, so reject credentials, cleartext
+    HTTP, and non-standard ports rather than reflecting an untrusted netloc
+    into subsequent requests.
+    """
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        return None
+    return f"https://{host}"
+
+
+def _parse_board_route(url: str) -> tuple[str, str, int] | None:
+    """Return ``(path, org_id, site_id)`` for an exact Mokahr SPA route."""
+    if _origin(url) is None:
+        return None
+    parsed = urlsplit(url)
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        len(segments) != 3
+        or _ROUTE_RE.fullmatch(segments[0]) is None
+        or _ORG_ID_RE.fullmatch(segments[1]) is None
+        or _SITE_ID_RE.fullmatch(segments[2]) is None
+    ):
+        return None
+    return segments[0], segments[1], int(segments[2])
+
+
+def _build_board_url(
+    org_id: str,
+    site_id: int,
+    path: str = "social-recruitment",
+    origin: str = _DEFAULT_ORIGIN,
+) -> str:
+    return f"{origin.rstrip('/')}/{path}/{org_id}/{site_id}"
+
+
+def _site_id(value: object, *, field: str) -> int:
+    """Return a strictly bounded numeric Mokahr site ID."""
+    if isinstance(value, str) and _SITE_ID_RE.fullmatch(value):
+        value = int(value)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or _SITE_ID_RE.fullmatch(str(value)) is None
+    ):
+        raise ValueError(f"{field} must be a positive bounded Mokahr site ID")
+    return value
+
+
+def _partition(
+    board_url: str,
+    org_id: str,
+    site_id: int,
+    *,
+    require_route: bool,
+) -> _Partition:
+    """Build one exact source partition and reject contradictory routes."""
+    if not isinstance(board_url, str) or not board_url or len(board_url) > 2_048:
+        raise ValueError("Mokahr partition board_url must be non-empty bounded text")
+    origin = _origin(board_url)
+    if origin is None:
+        raise ValueError("Mokahr board URL must use a trusted HTTPS origin")
+    route = _parse_board_route(board_url)
+    if route is None:
+        if require_route:
+            raise ValueError("Additional Mokahr partitions require an exact recruitment route")
+        path = "campus-recruitment" if "campus" in board_url.lower() else "social-recruitment"
+    else:
+        path, route_org_id, route_site_id = route
+        if route_org_id != org_id or route_site_id != site_id:
+            raise ValueError("Mokahr board route identity does not match configured org_id/site_id")
+    return _Partition(
+        page_url=_build_board_url(org_id, site_id, path, origin),
+        origin=origin,
+        path=path,
+        org_id=org_id,
+        site_id=site_id,
+    )
+
+
+def _configured_partitions(
+    board_url: str, config: dict, org_id: str, site_id: int
+) -> list[_Partition]:
+    """Return the primary site plus a bounded, unique list of official sites."""
+    partitions = [_partition(board_url, org_id, site_id, require_route=False)]
+    raw_partitions = config.get("partitions", [])
+    if not isinstance(raw_partitions, list):
+        raise ValueError("mokahr partitions must be a list")
+    if len(raw_partitions) + 1 > _MAX_PARTITIONS:
+        raise ValueError(f"mokahr supports at most {_MAX_PARTITIONS} source partitions")
+
+    for index, raw in enumerate(raw_partitions):
+        if not isinstance(raw, dict) or set(raw) != {"board_url", "site_id"}:
+            raise ValueError("each mokahr partition must contain exactly board_url and site_id")
+        partition_board_url = raw.get("board_url")
+        if not isinstance(partition_board_url, str):
+            raise ValueError("Mokahr partition board_url must be text")
+        partition_site_id = _site_id(raw.get("site_id"), field=f"partitions[{index}].site_id")
+        partitions.append(
+            _partition(
+                partition_board_url,
+                org_id,
+                partition_site_id,
+                require_route=True,
+            )
+        )
+
+    seen_sites: set[int] = set()
+    seen_pages: set[str] = set()
+    for source in partitions:
+        if source.site_id in seen_sites or source.page_url in seen_pages:
+            raise ValueError("mokahr source partitions must have unique site identities")
+        seen_sites.add(source.site_id)
+        seen_pages.add(source.page_url)
+    return partitions
+
+
+def _validated_init_data(init_data: dict | None, source: _Partition) -> tuple[str, dict[int, str]]:
+    """Authenticate the SPA bootstrap against the exact configured source."""
+    if not isinstance(init_data, dict):
+        raise RuntimeError(f"Could not parse Mokahr init-data from {source.page_url}")
+    iv = init_data.get("aesIv")
+    if not isinstance(iv, str) or len(iv) != 16 or not iv.isascii():
+        raise RuntimeError(f"Could not extract a valid AES IV from {source.page_url}")
+
+    org = init_data.get("org")
+    if not isinstance(org, dict) or org.get("id") != source.org_id:
+        raise ValueError("Mokahr init-data organisation does not match configured org_id")
+    bootstrap_site_id = _site_id(
+        init_data.get("siteId"),
+        field="Mokahr init-data siteId",
+    )
+    org_site_id = _site_id(org.get("siteId"), field="Mokahr init-data org.siteId")
+    if bootstrap_site_id != source.site_id or org_site_id != source.site_id:
+        raise ValueError("Mokahr init-data site identity does not match configured site_id")
+
+    site_type = org.get("type")
+    expected_type = "camp" if source.path.lower().startswith("campus") else "social"
+    if site_type is not None and site_type != expected_type:
+        raise ValueError("Mokahr init-data site type does not match the configured route")
+    return iv, _build_city_name_map(init_data)
+
+
+def _validated_list_payload(
+    envelope: object,
+    iv: str,
+    source: _Partition,
+) -> tuple[list[dict], int]:
+    """Decrypt and validate one authoritative Mokahr listing page."""
+    if not isinstance(envelope, dict):
+        raise ValueError("Mokahr listing envelope must be an object")
+    data_b64 = envelope.get("data")
+    key = envelope.get("necromancer")
+    if not isinstance(data_b64, str) or not data_b64 or not isinstance(key, str) or not key:
+        raise ValueError("Mokahr listing envelope is missing encryption fields")
+    try:
+        payload = _decrypt(data_b64, key, iv)
+    except Exception as exc:
+        raise ValueError("Mokahr listing payload could not be decrypted") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Mokahr listing payload must be an object")
+    if payload.get("success") is not True or payload.get("code") != 0:
+        raise ValueError(
+            "Mokahr listing API rejected the request "
+            f"(code={payload.get('code')!r}, msg={payload.get('msg')!r})"
+        )
+
+    inner = payload.get("data")
+    if not isinstance(inner, dict):
+        raise ValueError("Mokahr listing payload is missing data")
+    raw_jobs = inner.get("jobs")
+    stats = inner.get("jobStats")
+    if not isinstance(raw_jobs, list) or any(not isinstance(job, dict) for job in raw_jobs):
+        raise ValueError("Mokahr listing jobs must be a list of objects")
+    if not isinstance(stats, dict) or stats.get("orgId") != source.org_id:
+        raise ValueError("Mokahr listing statistics do not authenticate the organisation")
+    total = stats.get("total")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ValueError("Mokahr listing statistics contain an invalid total")
+    return raw_jobs, total
 
 
 def _lookup_city_name(cid: int | None, city_name_map: dict[int, str] | None) -> str:
@@ -280,8 +536,15 @@ def _parse_locations(job: dict, city_name_map: dict[int, str] | None = None) -> 
     return parts or None
 
 
-def _job_url(org_id: str, site_id: int, job_id: str) -> str:
-    return f"https://app.mokahr.com/social-recruitment/{org_id}/{site_id}#/job/{job_id}"
+def _job_url(
+    org_id: str,
+    site_id: int,
+    job_id: str,
+    *,
+    origin: str = _DEFAULT_ORIGIN,
+    path: str = "social-recruitment",
+) -> str:
+    return f"{origin.rstrip('/')}/{path}/{org_id}/{site_id}#/job/{job_id}"
 
 
 def _parse_metadata(job: dict) -> dict:
@@ -314,7 +577,7 @@ def _parse_metadata(job: dict) -> dict:
 def _parse_experience(job: dict) -> dict | None:
     """Pack Mokahr's ``minExperience``/``maxExperience`` into ``extras``.
 
-    Both fields are optional integers (years). Returned shape mirrors
+    Both fields are optional numbers (years). Returned shape mirrors
     the ``ExperienceRange`` used by
     :func:`src.core.experience_extract.extract_experience` — ``min_years``
     + ``max_years`` (the latter ``None`` for open-ended).
@@ -325,14 +588,20 @@ def _parse_experience(job: dict) -> dict | None:
         return None
     out: dict = {}
     if isinstance(raw_min, (int, float)):
-        out["min_years"] = int(raw_min)
+        out["min_years"] = float(raw_min)
     if isinstance(raw_max, (int, float)):
-        out["max_years"] = int(raw_max)
+        out["max_years"] = float(raw_max)
     return out or None
 
 
 def _parse_job(
-    job: dict, org_id: str, site_id: int, city_name_map: dict[int, str] | None = None
+    job: dict,
+    org_id: str,
+    site_id: int,
+    city_name_map: dict[int, str] | None = None,
+    *,
+    origin: str = _DEFAULT_ORIGIN,
+    path: str = "social-recruitment",
 ) -> DiscoveredJob | None:
     job_id = job.get("id")
     title = job.get("title")
@@ -344,6 +613,8 @@ def _parse_job(
     published = job.get("publishedAt")
 
     metadata = _parse_metadata(job)
+    metadata["provider_id"] = str(job_id)
+    metadata["provider_site_id"] = site_id
     base_salary = _parse_salary(job)
     experience = _parse_experience(job)
     extras: dict = {}
@@ -351,7 +622,7 @@ def _parse_job(
         extras["experience"] = experience
 
     return DiscoveredJob(
-        url=_job_url(org_id, site_id, job_id),
+        url=_job_url(org_id, site_id, job_id, origin=origin, path=path),
         title=title,
         description=job.get("jobDescription"),
         locations=_parse_locations(job, city_name_map),
@@ -363,94 +634,273 @@ def _parse_job(
     )
 
 
-async def discover(board: dict, client: httpx.AsyncClient, pw=None) -> list[DiscoveredJob]:
-    """Fetch all jobs from Mokahr's encrypted API."""
+async def _fetch_list_page(
+    source: _Partition,
+    client: httpx.AsyncClient,
+    iv: str,
+    locale: str,
+    offset: int,
+    *,
+    limit: int | None = None,
+) -> tuple[list[dict], int]:
+    """Fetch one page with authoritative statistics enabled."""
+    page_limit = _PAGE_SIZE if limit is None else limit
+    body = {
+        "orgId": source.org_id,
+        "siteId": source.site_id,
+        "limit": page_limit,
+        "offset": offset,
+        # Every page carries the total. Treating later pages as uncounted was
+        # the source of silent partial-success and mass gone-detection risk.
+        "needStat": True,
+        "locale": locale,
+    }
+    resp = await client.post(f"{source.origin}{_LIST_PATH}", json=body)
+    resp.raise_for_status()
+    try:
+        envelope = resp.json()
+    except ValueError as exc:
+        raise ValueError("Mokahr listing response is not JSON") from exc
+    return _validated_list_payload(envelope, iv, source)
+
+
+async def _discover_partition(
+    source: _Partition,
+    client: httpx.AsyncClient,
+    locale: str,
+) -> _PartitionResult:
+    """Read one site completely while preserving authoritative count semantics."""
+    init_data = await _get_init_data(source.page_url, client, raise_on_404=True)
+    iv, city_name_map = _validated_init_data(init_data, source)
+
+    expected_total: int | None = None
+    raw_seen = 0
+    inactive_total = 0
+    seen_ids: set[str] = set()
+    active_jobs: dict[str, DiscoveredJob] = {}
+
+    while True:
+        request_limit = min(_PAGE_SIZE, max(_MAX_JOBS - raw_seen, 1))
+        raw_jobs, page_total = await _fetch_list_page(
+            source,
+            client,
+            iv,
+            locale,
+            raw_seen,
+            limit=request_limit,
+        )
+        if expected_total is None:
+            expected_total = page_total
+        elif page_total != expected_total:
+            raise _SnapshotChanged(
+                "Mokahr advertised total changed during pagination "
+                f"for site {source.site_id} ({expected_total} -> {page_total})"
+            )
+
+        assert expected_total is not None
+        raw_limit = min(expected_total, _MAX_JOBS)
+        if expected_total == 0:
+            if raw_jobs:
+                raise ValueError("Mokahr returned jobs while advertising an empty inventory")
+            # A second independently authenticated zero prevents one transient
+            # empty response from authoritatively tombstoning the whole board.
+            confirm_jobs, confirm_total = await _fetch_list_page(
+                source,
+                client,
+                iv,
+                locale,
+                0,
+            )
+            if confirm_total != 0 or confirm_jobs:
+                raise ValueError("Mokahr zero inventory did not converge on confirmation")
+            return _PartitionResult({}, 0, 0)
+
+        if not raw_jobs:
+            raise ValueError(
+                f"Mokahr site {source.site_id} returned an empty page before its total"
+            )
+        if len(raw_jobs) > request_limit or raw_seen + len(raw_jobs) > expected_total:
+            raise ValueError(f"Mokahr site {source.site_id} returned an inconsistent page size")
+
+        for raw in raw_jobs:
+            if raw.get("orgId") != source.org_id:
+                raise ValueError("Mokahr job row does not match the configured organisation")
+            job_id = raw.get("id")
+            if not isinstance(job_id, str) or _JOB_ID_RE.fullmatch(job_id) is None:
+                raise ValueError("Mokahr job row has an invalid provider ID")
+            if job_id in seen_ids:
+                raise _SnapshotChanged(
+                    f"Mokahr site {source.site_id} repeated provider ID {job_id!r}"
+                )
+            seen_ids.add(job_id)
+
+            status = raw.get("status")
+            if not isinstance(status, str):
+                raise ValueError("Mokahr job row is missing an explicit status")
+            normalized_status = status.lower()
+            if normalized_status == _OPEN_STATUS:
+                title = raw.get("title")
+                if not isinstance(title, str) or not title.strip():
+                    raise ValueError("Open Mokahr job row is missing a title")
+                parsed = _parse_job(
+                    raw,
+                    source.org_id,
+                    source.site_id,
+                    city_name_map,
+                    origin=source.origin,
+                    path=source.path,
+                )
+                if parsed is None:
+                    raise ValueError("Open Mokahr job row could not be parsed")
+                active_jobs[job_id] = parsed
+            elif normalized_status in _INACTIVE_STATUSES:
+                inactive_total += 1
+            else:
+                raise ValueError(f"Mokahr job row has unknown status {status!r}")
+
+        raw_seen += len(raw_jobs)
+        log.debug(
+            "mokahr.page",
+            org_id=source.org_id,
+            site_id=source.site_id,
+            offset=raw_seen - len(raw_jobs),
+            fetched=len(raw_jobs),
+            raw_seen=raw_seen,
+            advertised=expected_total,
+            active=len(active_jobs),
+        )
+        if raw_seen >= raw_limit:
+            break
+        if len(raw_jobs) < request_limit:
+            raise ValueError(f"Mokahr site {source.site_id} ended before its advertised total")
+
+    truncated = expected_total > _MAX_JOBS
+    if not truncated and raw_seen != expected_total:
+        raise ValueError(
+            f"Mokahr site {source.site_id} returned {raw_seen} rows for "
+            f"advertised total {expected_total}"
+        )
+    return _PartitionResult(
+        active_jobs,
+        expected_total,
+        inactive_total,
+        truncated=truncated,
+    )
+
+
+async def _discover_once(
+    board: dict, client: httpx.AsyncClient, pw=None
+) -> list[DiscoveredJob] | MonitorResult:
+    """Fetch a complete, active-only union from authenticated Mokahr sites."""
     config = board.get("metadata") or {}
     if isinstance(config, str):
         config = json.loads(config) if config else {}
+    if not isinstance(config, dict):
+        raise ValueError("mokahr monitor config must be an object")
 
     org_id = config.get("org_id")
-    site_id = config.get("site_id")
+    if not isinstance(org_id, str) or _ORG_ID_RE.fullmatch(org_id) is None:
+        raise ValueError("mokahr monitor requires a valid org_id in config")
+    site_id = _site_id(config.get("site_id"), field="mokahr site_id")
     locale = config.get("locale", "zh-CN")
+    if not isinstance(locale, str) or _LOCALE_RE.fullmatch(locale) is None:
+        raise ValueError("mokahr locale must be a bounded language tag")
 
-    if not org_id or not site_id:
-        raise ValueError("mokahr monitor requires org_id and site_id in config")
-
-    # Determine the recruitment path from the board URL.
-    board_url = board.get("board_url", "")
-    m = re.search(r"app\.mokahr\.com/((?:social|campus)[_-](?:recruitment|apply))/", board_url)
-    path = (
-        m.group(1)
-        if m
-        else ("campus-recruitment" if "campus" in board_url else "social-recruitment")
+    sources = _configured_partitions(board.get("board_url", ""), config, org_id, site_id)
+    partition_results = await asyncio.gather(
+        *(_discover_partition(source, client, locale) for source in sources)
     )
 
-    page_url = _build_board_url(org_id, site_id, path)
-    init_data = await _get_init_data(page_url, client)
-    iv = init_data.get("aesIv") if init_data else None
-    if not iv:
-        raise RuntimeError(f"Could not extract AES IV from {page_url}")
-    city_name_map = _build_city_name_map(init_data)
-
-    jobs: list[DiscoveredJob] = []
-    offset = 0
+    # Resolve aliases by stable provider ID, never by title, locale, source
+    # host, or list position. Config order is the fixed source preference, so
+    # response timing and pagination order cannot change the selected alias.
+    selected: dict[str, DiscoveredJob] = {}
     truncated = False
+    contextual_title_differences = 0
+    for result in partition_results:
+        truncated = truncated or result.truncated
+        for provider_id, job in result.jobs_by_id.items():
+            existing = selected.get(provider_id)
+            if existing is None:
+                if len(selected) >= _MAX_JOBS:
+                    truncated = True
+                    continue
+                selected[provider_id] = job
+            elif existing.title != job.title:
+                contextual_title_differences += 1
 
-    while True:
-        if len(jobs) >= _MAX_JOBS:
-            truncated = True
-            log.warning("mokahr.truncated", org_id=org_id, total=len(jobs), cap=_MAX_JOBS)
-            break
-        body = {
-            "orgId": org_id,
-            "siteId": site_id,
-            "limit": _PAGE_SIZE,
-            "offset": offset,
-            "needStat": offset == 0,
-            "locale": locale,
-        }
-        resp = await client.post(_API_URL, json=body)
-        resp.raise_for_status()
-        envelope = resp.json()
-
-        data_b64 = envelope.get("data")
-        key_hex = envelope.get("necromancer")
-        if not data_b64 or not key_hex:
-            log.warning("mokahr.missing_encryption_fields", offset=offset)
-            break
-
-        payload = _decrypt(data_b64, key_hex, iv)
-        inner = payload.get("data", {})
-        raw_jobs = inner.get("jobs", [])
-
-        if not raw_jobs:
-            break
-
-        for raw in raw_jobs:
-            parsed = _parse_job(raw, org_id, site_id, city_name_map)
-            if parsed:
-                jobs.append(parsed)
-
-        log.debug("mokahr.page", offset=offset, fetched=len(raw_jobs), total=len(jobs))
-        offset += _PAGE_SIZE
-
-        if len(raw_jobs) < _PAGE_SIZE:
-            break
-
-    log.info("mokahr.complete", org_id=org_id, site_id=site_id, total=len(jobs))
+    jobs = list(selected.values())
+    log.info(
+        "mokahr.complete",
+        org_id=org_id,
+        partitions=len(sources),
+        advertised=sum(result.advertised_total for result in partition_results),
+        inactive=sum(result.inactive_total for result in partition_results),
+        active_unique=len(jobs),
+        contextual_title_differences=contextual_title_differences,
+        truncated=truncated,
+    )
     if truncated:
         return truncated_rich_result(jobs)
     return jobs
 
 
+async def discover(
+    board: dict, client: httpx.AsyncClient, pw=None
+) -> list[DiscoveredJob] | MonitorResult:
+    """Retry one internally inconsistent multi-partition snapshot from page zero."""
+    for attempt in range(1, _SNAPSHOT_ATTEMPTS + 1):
+        try:
+            return await _discover_once(board, client, pw=pw)
+        except _SnapshotChanged as exc:
+            if attempt == _SNAPSHOT_ATTEMPTS:
+                raise
+            log.warning(
+                "mokahr.snapshot_changed",
+                board_url=board.get("board_url"),
+                attempt=attempt,
+                error=str(exc),
+            )
+            await asyncio.sleep(_SNAPSHOT_RETRY_DELAY)
+    raise AssertionError("unreachable")
+
+
 async def can_handle(url: str, client: httpx.AsyncClient | None = None, pw=None) -> dict | None:
-    """Detect Mokahr from URL pattern."""
-    m = re.search(
-        r"app\.mokahr\.com/(?:social|campus)[_-](?:recruitment|apply)/([\w-]+)/(\d+)", url
-    )
-    if not m:
+    """Detect shared-host and custom-domain Mokahr career sites."""
+    origin = _origin(url)
+    if origin is None:
         return None
-    return {"org_id": m.group(1), "site_id": int(m.group(2))}
+    route = _parse_board_route(url)
+    if route is not None and origin == _DEFAULT_ORIGIN:
+        return {"org_id": route[1], "site_id": route[2]}
+
+    # A route-shaped path is not proof on an arbitrary host. Custom domains
+    # must expose the Mokahr SPA bootstrap, and any route IDs must agree with
+    # that authoritative payload.
+    if client is None:
+        return None
+    try:
+        init_data = await _get_init_data(url, client)
+    except httpx.HTTPError:
+        return None
+    if not init_data or not init_data.get("aesIv"):
+        return None
+    org = init_data.get("org")
+    org_id = org.get("id") if isinstance(org, dict) else None
+    site_id = init_data.get("siteId")
+    if isinstance(site_id, str) and _SITE_ID_RE.fullmatch(site_id):
+        site_id = int(site_id)
+    if (
+        not isinstance(org_id, str)
+        or _ORG_ID_RE.fullmatch(org_id) is None
+        or isinstance(site_id, bool)
+        or not isinstance(site_id, int)
+        or site_id <= 0
+    ):
+        return None
+    if route is not None and (route[1] != org_id or route[2] != site_id):
+        return None
+    return {"org_id": org_id, "site_id": site_id}
 
 
 register("mokahr", discover, cost=10, can_handle=can_handle, rich=True)
