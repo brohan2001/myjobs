@@ -164,3 +164,14 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Why:** the user asked for India-first crawling. On 2026-11-01 the split was 3,682 / 2,398 / 1,131 boards, so board
   checks fall from about 5,850/h to about 3,000/h, and the freed time goes to page fetches.
 - **Trade-off:** when a `no_india` company opens its first India job, it can show up to 12 h late.
+
+## D37: A failing board is never disabled (Default, 2026-11-02)
+- **What:** a failed check backs off 5, 10, 20… minutes, capped at a day, and the worker reschedules the board at that
+  time. The board stays enabled. After 5 failures in a row and a day without a success, its postings are delisted; they
+  come back when a check succeeds again. Only a 404/410 marks a board `gone` (D34); `disabled` now means only removed
+  from `data/boards.csv` or turned off in `/admin`.
+- **Why:** 5 failures in a row (about 2.5 h of trouble) disabled a board for good, with nothing to retry it. On
+  2026-11-02, 337 boards were disabled that way, 188 of them working within the past month. Wipro (6,225 jobs) and
+  HCLTech (11,054) were among them, after one `ReadError` midway through their large feeds. They were the two largest
+  gaps in the jseek parity run (D28), which found 78.2%.
+- **Cost:** a dead board is retried once a day instead of never.

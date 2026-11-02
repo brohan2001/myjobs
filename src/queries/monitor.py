@@ -138,34 +138,23 @@ WHERE id = $1
 RETURNING (last_non_empty_at IS NOT NULL AND empty_check_count >= 6) AS delist
 """
 
-# RETURNING ``last_success_at`` + the post-update ``is_enabled`` lets
-# the Python caller detect the single transition from enabled →
-# disabled and apply a recency gate before delisting. The board record
-# the caller already holds (from ``_FETCH_DUE_BOARDS``) is guaranteed
-# ``is_enabled=true`` (otherwise it wouldn't have been claimed), so
-# any post-update ``is_enabled=false`` is a fresh transition — no need
-# for a fragile ``consecutive_failures = N`` equality check that breaks
-# the moment ops manually re-enables a board without zeroing the
-# counter. Without this hand-off, 5-strike disables left active
-# postings stranded on a board the scheduler never polls again — a
-# phantom-active bleed that also dropped the corresponding ``gone``
-# Prometheus counter on the floor.
+# A failing board is never disabled (D37): it backs off (5 * 2^n minutes, capped at a day) and keeps
+# retrying. RETURNING ``consecutive_failures`` + ``last_success_at`` lets the caller delist its postings
+# once it has failed 5 times in a row and has had no success for a day.
 _RECORD_FAILURE = """
 UPDATE job_board
 SET consecutive_failures = consecutive_failures + 1,
     last_error = $2,
     next_check_at = now() + LEAST(
-        (5 * pow(2, consecutive_failures)) || ' minutes',
+        (5 * pow(2, LEAST(consecutive_failures, 9))) || ' minutes',
         '1440 minutes'
     )::interval,
-    is_enabled = CASE WHEN consecutive_failures + 1 >= 5 THEN false ELSE is_enabled END,
-    board_status = CASE WHEN consecutive_failures + 1 >= 5 THEN 'disabled' ELSE board_status END,
     lease_owner = NULL,
     leased_until = NULL,
     last_checked_at = now(),
     updated_at = now()
 WHERE id = $1
-RETURNING is_enabled, last_success_at
+RETURNING consecutive_failures, last_success_at, next_check_at
 """
 
 _DIFF_BATCH = """

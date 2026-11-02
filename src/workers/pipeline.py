@@ -573,6 +573,11 @@ async def _process_monitor_work(
         # Reschedule in Redis with next check time
         check_interval = int(config.get("check_interval_minutes", "60"))
         next_check_at = time.time() + check_interval * 60
+        if not success:
+            # A failing board follows its backoff (up to a day) instead of retrying every interval (D37).
+            backoff_at = await local_pool.fetchval("SELECT next_check_at FROM job_board WHERE id = $1", board_id)
+            if backoff_at is not None:
+                next_check_at = max(next_check_at, backoff_at.timestamp())
         await reschedule_task(domain, board_id, "monitor", next_check_at, browser=browser)
 
         # Emit the success/failure rollup for monitor tasks so Grafana
