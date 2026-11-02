@@ -18,6 +18,7 @@ from src.core.experience_extract import extract_experience
         ("Experience: &gt;10 YEARS", (10, None)),
         ("Experience : 2–6 Years", (2, 6)),
         ("3 to 5 years of relevant experience", (3, 5)),
+        ("1-3 years’ experience in GMP regulated environment", (1, 3)),
     ],
 )
 def test_extracts(html, want):
