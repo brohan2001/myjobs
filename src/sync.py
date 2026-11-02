@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -215,7 +216,8 @@ async def sync_companies(conn, companies: pl.DataFrame, dry_run: bool) -> None:
     log.info("sync.companies.upserted", count=len(slugs))
 
 
-async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
+async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> Callable[[], Awaitable[None]] | None:
+    """Write boards to Postgres; return the Redis step, to run once that transaction has committed."""
     if len(boards) == 0:
         return
 
@@ -340,55 +342,61 @@ async def sync_boards(conn, boards: pl.DataFrame, dry_run: bool) -> None:
     id_rows = await conn.fetch(_FETCH_BOARD_IDS, board_urls)
     url_to_ids: dict[str, tuple] = {r["board_url"]: (r["id"], r["company_id"]) for r in id_rows}
 
-    # Enqueue each board into Redis
-    redis_enqueued = 0
-    for i, board_url in enumerate(board_urls):
-        ids = url_to_ids.get(board_url)
-        if not ids:
-            log.warning("sync.board.missing_id", board_url=board_url)
-            continue
-
-        board_id, company_id = ids
-        mon_type = crawler_types[i]
-        mon_browser = monitor_browser_flags[i] == "1"
-
-        config = {
-            "board_url": board_url,
-            "crawler_type": mon_type,
-            "company_id": str(company_id),
-            "metadata": metadatas[i],
-            "check_interval_minutes": check_intervals[i],
-            "scrape_interval_hours": scrape_intervals[i],
-            "throttle_key": throttle_keys[i],
-            "monitor_needs_browser": monitor_browser_flags[i],
-            "scraper_needs_browser": scraper_browser_flags[i],
-        }
-        # A board already on its recurring schedule keeps its due time: re-adding it as first-time would make
-        # every board due at once after each worker restart.
-        wtype = "browser" if mon_browser else "simple"
-        scheduled = await get_redis().zscore(f"monitors_{wtype}:{throttle_keys[i]}", str(board_id))
-        await enqueue_monitor(
-            throttle_keys[i],
-            str(board_id),
-            time.time(),
-            config,
-            browser=mon_browser,
-            first_time=scheduled is None,
-        )
-        redis_enqueued += 1
-
-    # Purge Redis for disabled boards
     orphan_rows = await conn.fetch(_FETCH_DISABLED_BOARDS_FOR_REDIS_CLEANUP)
-    for row in orphan_rows:
-        domain = row["throttle_key"] or ""
-        if domain:
-            await remove_monitor(domain, row["board_id"])
 
-    log.info(
-        "sync.boards.redis",
-        redis_enqueued=redis_enqueued,
-        redis_orphans_removed=len(orphan_rows),
-    )
+    # Redis runs after the commit: a worker that claims a new board before its row is visible fails it
+    # with a foreign-key error (ibm-careers, 2026-11-02).
+    async def push_to_redis() -> None:
+        # Enqueue each board into Redis
+        redis_enqueued = 0
+        for i, board_url in enumerate(board_urls):
+            ids = url_to_ids.get(board_url)
+            if not ids:
+                log.warning("sync.board.missing_id", board_url=board_url)
+                continue
+
+            board_id, company_id = ids
+            mon_type = crawler_types[i]
+            mon_browser = monitor_browser_flags[i] == "1"
+
+            config = {
+                "board_url": board_url,
+                "crawler_type": mon_type,
+                "company_id": str(company_id),
+                "metadata": metadatas[i],
+                "check_interval_minutes": check_intervals[i],
+                "scrape_interval_hours": scrape_intervals[i],
+                "throttle_key": throttle_keys[i],
+                "monitor_needs_browser": monitor_browser_flags[i],
+                "scraper_needs_browser": scraper_browser_flags[i],
+            }
+            # A board already on its recurring schedule keeps its due time: re-adding it as first-time would make
+            # every board due at once after each worker restart.
+            wtype = "browser" if mon_browser else "simple"
+            scheduled = await get_redis().zscore(f"monitors_{wtype}:{throttle_keys[i]}", str(board_id))
+            await enqueue_monitor(
+                throttle_keys[i],
+                str(board_id),
+                time.time(),
+                config,
+                browser=mon_browser,
+                first_time=scheduled is None,
+            )
+            redis_enqueued += 1
+
+        # Purge Redis for disabled boards
+        for row in orphan_rows:
+            domain = row["throttle_key"] or ""
+            if domain:
+                await remove_monitor(domain, row["board_id"])
+
+        log.info(
+            "sync.boards.redis",
+            redis_enqueued=redis_enqueued,
+            redis_orphans_removed=len(orphan_rows),
+        )
+
+    return push_to_redis
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +419,11 @@ async def run_sync(dry_run: bool = False) -> None:
         async with local_pool.acquire() as conn:
             async with conn.transaction():
                 await sync_companies(conn, companies, dry_run)
-                await sync_boards(conn, boards, dry_run)
+                push_to_redis = await sync_boards(conn, boards, dry_run)
                 if not dry_run:
                     await apply_india_priority(conn)  # D36: sync just wrote base intervals
+        if push_to_redis is not None:
+            await push_to_redis()
     finally:
         await close_all_pools()
         await close_redis()
