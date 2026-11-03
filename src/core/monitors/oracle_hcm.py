@@ -120,11 +120,15 @@ _ORACLE_JOB_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _ORACLE_FACET_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,256}")
 
 
+# myjobs delta: tenants served on the company's own domain (Dell, 2026-11).
+_CUSTOM_DOMAIN_HOSTS = frozenset({"enterpriseplatform.dell.com"})
+
+
 def _normalize_oracle_host(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     host = value.strip().lower().rstrip(".")
-    return host if _ORACLE_HCM_HOST_RE.fullmatch(host) else None
+    return host if _ORACLE_HCM_HOST_RE.fullmatch(host) or host in _CUSTOM_DOMAIN_HOSTS else None
 
 
 def _normalize_oracle_site(value: object) -> str | None:
