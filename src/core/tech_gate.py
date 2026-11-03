@@ -43,7 +43,7 @@ _TECH_WORDS = re.compile(
     r"\.net|node(?:\.?js)?|data|analytics|machine learning|ml|mlops|ai|artificial intelligence|llm|nlp|"
     r"computer vision|deep learning|scientist|research(?:er)?|cloud|platform|infrastructure|"
     r"security|cyber|network|database|dba|systems?|it|qa|quality assurance|test(?:ing)?|automation|"
-    r"firmware|embedded|hardware|silicon|asic|fpga|vlsi|chip|semiconductor|robotics|"
+    r"apps? develop\w*|applications? develop\w*|firmware|embedded|hardware|silicon|asic|fpga|vlsi|chip|semiconductor|robotics|"
     r"product|designer|design|ux|ui|architect|technical|technology|tech|digital|blockchain|"
     r"salesforce|sap|erp|crm|servicenow"
     r")\b"
@@ -71,15 +71,53 @@ def _mostly_latin(text: str) -> bool:
     return not letters or sum(c.isascii() or "\u00c0" <= c <= "\u024f" for c in letters) / len(letters) >= 0.6
 
 
+# Non-tech roles that outrank any tech word ("Cloud Account Executive", "Security Officer - Nights", "Retail Display
+# Installer – Technology", "Business Development Manager", which the taxonomy reads as engineering-manager) unless the
+# title also names a tech role (_TECH_ROLE). D42.
+_NON_TECH_ROLE = re.compile(
+    r"\b(sales|vendit[ae]|ventas|vendeu[rs]e?|verk(?:ä|ae)ufer\w*|account executive|business development|marketing|partnerships?|telesales|call cent(?:er|re)|"
+    r"customer (?:service|care)|relationship (?:officer|manager|executive)|recruit\w*|talent acquisition|"
+    r"cashier|retail|merchandis\w*|demonstrator|guest advocate|store (?:manager|associate|assistant)|"
+    r"front end\W+(?:entry|specialist|asst|assistant|associate|supervisor|team|clerk|service)|"
+    r"security (?:officer|guard|patrol|shift)|armed|unarmed|"
+    r"mammography|radiolog\w*|sonograph\w*|phlebotom\w*|pharmacy|nurs(?:e|ing)|ct tech|mri tech)\b"
+)
+_TECH_ROLE = re.compile(
+    r"\b(engineer\w*|developer|programmer|software|architect|analy[st]\w*|scien\w*|research\w*|devops|sre|sdet|"
+    r"technologist|designer|pre-?sales|technical sales|marketing cloud|sales and distribution|product (?:manager|owner)|it|"
+    r"information (?:systems? )?security|isso|cyber\w*)\b"
+)
+
+# Titles in Chinese, Japanese, Korean or Cyrillic are judged by these words; other non-Latin titles are kept.
+_JUDGED_SCRIPTS = re.compile(r"[\u0400-\u04ff\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
+_NON_LATIN_TECH_WORDS = re.compile(
+    r"工程师|开发|研发|算法|数据|数智|软件|硬件|芯片|测试|架构|运维|前端|后端|产品经理|项目经理|分析师|解决方案|技术|程序|设计|"
+    r"エンジニア|開発|データ|インフラ|システム|プログラ|セキュリティ|設計|アーキテクト|プロジェクトマネ|"
+    r"개발|엔지니어|데이터|소프트웨어|시스템|보안|프로젝트 매니저|"
+    r"(?i:разработ|розробн|программист|програміст|инженер|інженер|аналитик|аналітик|данн|даних|тестиров|тестуван|"
+    r"архитект|архітект|систем)|(?<!\w)(?:ІТ|ИТ)(?!\w)|"
+    r"(?<![A-Za-z])(?:AI|IT|ML|LLM|DX|QA|SAP|iOS|Android|Java|Python|C\+\+|App|Web)(?![A-Za-z])"
+)
+
+
+# "Addetta/o Vendite (Bojano (CB), IT)": a trailing Italy country code, not the IT department.
+_ITALY = re.compile(r",\s*it\)")
+
+
 def is_tech_title(title: str | None) -> bool:
     """True if the title is a tech-adjacent job.
 
-    Kept when it can't be judged: empty titles, and titles mostly in non-Latin scripts
-    ("下一代推荐大模型算法工程师") that neither the taxonomy nor the keywords can read.
+    Empty titles are kept. Chinese, Japanese, Korean and Cyrillic titles are judged by ``_NON_LATIN_TECH_WORDS``
+    ("下一代推荐大模型算法工程师" stays, "星级咖啡师" goes); titles mostly in other non-Latin scripts are kept,
+    since neither the taxonomy nor the keywords can read them.
     """
-    if not title or not title.strip() or not _mostly_latin(title):
+    if not title or not title.strip():
         return True
-    lowered = title.lower()
+    if not _mostly_latin(title):
+        return not _JUDGED_SCRIPTS.search(title) or bool(_NON_LATIN_TECH_WORDS.search(title))
+    lowered = _ITALY.sub(")", title.lower())
+    if _NON_TECH_ROLE.search(lowered) and not _TECH_ROLE.search(lowered):
+        return False
     slug = match_occupation(title)
     if slug is not None:
         return slug in tech_occupations() or bool(_STRONG_TECH_WORDS.search(lowered))
