@@ -82,6 +82,7 @@ from src.queries.monitor import (
     _INSERT_URL_ONLY_JOBS,
     _MARK_GONE_BY_TIMESTAMP,
     _RECORD_BOARD_GONE,
+    _RECORD_ROBOTS_SKIP,
     _RECORD_EMPTY_CHECK,
     _RECORD_FAILURE,
     _RECORD_SUCCESS_NONEMPTY,
@@ -145,7 +146,7 @@ def _classify_job_url(url: str, board_url: str | None = None) -> str | None:
     Rejection reasons (stable metric label values):
 
     - ``"invalid"`` — empty, malformed, or missing scheme/host.
-    - ``"bare_host"`` — path is empty, ``/``, or a bare hash fragment.
+    - ``"bare_host"`` — path is empty, ``/``, or a bare hash fragment (a ``#!/a/b`` route is a path).
     - ``"board_homepage"`` — host matches the board's own host and the
       path (after ``rstrip("/")``) equals the board's own path, which
       catches hash-only variants like ``.../#0``. The rule is skipped
@@ -161,6 +162,9 @@ def _classify_job_url(url: str, board_url: str | None = None) -> str | None:
         return "invalid"
     if not p.scheme or not p.netloc:
         return "invalid"
+    # A single-page app's hash route ("/#!/jobdetail/<slug>", Persistent) is a job path; "#" or "#0" is not.
+    if "/" in p.fragment.lstrip("!").strip("/"):
+        return None
     path = (p.path or "").rstrip("/")
     if not path:
         return "bare_host"
@@ -301,9 +305,10 @@ class BoardError:
 async def _delist_board_postings(conn: asyncpg.Connection, board_id: str) -> int:
     """Run ``_DELIST_BOARD_POSTINGS`` and return the row count.
 
-    Used by the three silent-delist paths that bypass the normal
+    Used by the silent-delist paths that bypass the normal
     ``_MARK_GONE_BY_TIMESTAMP`` flow: empty-check threshold reached,
-    BoardGoneError (upstream 404), and a board failing for 5 checks and a day.
+    BoardGoneError (upstream 404), a board failing for 5 checks and a day,
+    and a board robots.txt now disallows.
     Without these paths emitting the matching ``gone`` counter, the
     Grafana panel showed ``new >> gone`` even when the DB was balanced.
 
@@ -1440,12 +1445,24 @@ async def _process_one_board_streaming(
         return True, elapsed
 
     except RobotsDisallowedError as exc:
-        # Site asks generic crawlers to stay out: clean skip, like the TDM opt-out
-        # (no failure strike, no tombstoning). Counted so coverage loss is visible.
+        # Site asks generic crawlers to stay out: a clean skip (no failure strike), but the board's postings
+        # can no longer be checked, so they are delisted rather than left active forever (Goldman's
+        # higher.gs.com kept 229 jobs from its last allowed crawl). The board keeps its schedule, so the
+        # postings return if robots.txt allows us again.
         elapsed = monotonic() - t0
         board_log.info("batch.monitor.robots_disallowed", url=exc.url, duration_s=round(elapsed, 2))
         tasks_total.labels(kind="monitor", status="robots_disallowed").inc()
         loc_resolver.drain_location_misses()
+        robots_gone = 0
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute(_RECORD_ROBOTS_SKIP, board_id, str(exc))
+                robots_gone = await _delist_board_postings(conn, board_id)
+        except (asyncpg.PostgresError, ConnectionError):
+            board_log.exception("batch.monitor.robots_record_failed")
+        else:
+            if robots_gone:
+                _emit_gone_counter(robots_gone)
         return True, elapsed
 
     except BoardGoneError as exc:

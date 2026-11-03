@@ -231,3 +231,11 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
   account-executive). Re-gating the live rows dropped ~109k of 602k active jobs. On jseek.co's tech sample it keeps 1,146 of
   1,150 postings; the 4 dropped are a sales specialist role. Kept-sample precision went from ~78% to ~95%. The rest is
   a scattered tail (hotel and hospital roles, "Danish Speaker") not worth more patterns.
+
+## D43: A board robots.txt now disallows keeps its schedule but delists its jobs (Default, 2026-11-03)
+- **What:** when a site-reading monitor hits a robots.txt `Disallow`, the check is a clean skip (no failure strike), but
+  it records `last_checked_at` and the reason in `last_error`, and delists the board's active postings. If robots.txt
+  allows us again, the next crawl brings them back. We don't route around a `Disallow` through a different host, even
+  when that host has no robots.txt (Goldman's `api-higher.gs.com`).
+- **Why:** on 2026-11-03, 18 boards had been skipped this way for days while keeping their old jobs live (Goldman's
+  higher.gs.com: 229 jobs from Oct 23), and they looked stuck because nothing was ever written back.
