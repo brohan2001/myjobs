@@ -100,6 +100,17 @@ SET board_status = 'gone', gone_at = now(),
 WHERE id = $1
 """
 
+# robots.txt now forbids the board: record the skip (not a failure) so it shows in admin, and keep the schedule.
+_RECORD_ROBOTS_SKIP = """
+UPDATE job_board
+SET last_error = $2,
+    next_check_at = now() + (check_interval_minutes || ' minutes')::interval,
+    lease_owner = NULL, leased_until = NULL,
+    last_checked_at = now(),
+    updated_at = now()
+WHERE id = $1
+"""
+
 _RECORD_SUCCESS_NONEMPTY = """
 UPDATE job_board
 SET consecutive_failures = 0,
