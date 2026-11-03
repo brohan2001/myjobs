@@ -89,12 +89,14 @@ async def apply_india_priority(conn: asyncpg.Connection) -> Counter:
 
 # A scrape is queued in Redis only when its job is first seen or relisted. When Redis loses it (a restart without a
 # fresh snapshot, the stale-queue prune), Postgres still says it is due but nothing claims it: 18k Oracle HCM jobs sat
-# unscraped, and so without a description or experience, for weeks.
+# unscraped, and so without a description or experience, for weeks. Only never-scraped jobs: a scraped job's
+# next_scrape_at is set again by the monitor's self-heal (description_r2_hash is always NULL without R2), and
+# re-queueing those would re-scrape every job every 6 h (580k on 2026-11-03).
 _DUE_SCRAPES = """
 SELECT p.id::text AS id, p.source_url AS url, p.description_r2_hash AS r2_hash,
        b.id::text AS board_id, b.metadata, b.crawler_type
 FROM job_posting p JOIN job_board b ON b.id = p.board_id
-WHERE p.is_active AND b.is_enabled AND p.next_scrape_at < now() - interval '1 hour'
+WHERE p.is_active AND b.is_enabled AND p.last_scraped_at IS NULL AND p.next_scrape_at < now() - interval '1 hour'
 """
 _SCRAPE_QUEUES = ("ft_scrapes_simple", "scrapes_simple", "ft_scrapes_browser", "scrapes_browser")
 
