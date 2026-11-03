@@ -14,7 +14,14 @@ from src.core.tech_gate import drop_at_monitor, is_tech_title
     "Associate Product Manager", "Technical Program Manager", "Program Manager", "Engineering Manager",
     "Solutions Architect", "Sales Engineer", "Business Analyst", "Security Engineer", "QA Automation Engineer",
     "Consultant SAP PY", "Incident Response Sr. Consultant (Remote)",  # tech words outrank "consultant"
-    "下一代推荐大模型算法工程师 - TikTok算法",  # non-Latin titles can't be judged, so they're kept
+    "下一代推荐大模型算法工程师 - TikTok算法", "供应链项目经理-芯片", "デリバリーソリューションアーキテクト",
+    "Специалист контрольных систем управления", "Разработчик Java",
+    "נציג/ת מכירות (משרה חלקית)",  # Hebrew, Arabic, Thai… can't be judged, so they're kept
+    # A tech role outranks a non-tech role word (D42).
+    "Sales Engineer - Cloud", "Marketing Data Analyst", "Salesforce Developer", "Pre-Sales Solution Architect",
+    "Information Systems Security Officer (ISSO)", "2027 Technical Sales Intern - Equipment",
+    "SAP SD Consultant (Sales and Distribution)", "Software Engineer, Retail", "Migration Delivery Lead - Marketing Cloud",
+    "Front End Engineer", "Apps Development Group Manager",
 ])
 def test_tech_titles_are_kept(title):
     assert is_tech_title(title)
@@ -26,6 +33,16 @@ def test_tech_titles_are_kept(title):
     "Sales Associate", "Accountant", "HR Business Partner", "Customer Service Representative",
     "Marketing Manager", "Trainee", "Data Entry Operator", "Customer Success Manager",
     "Senior Relationship Executive - MFI South", "Praktikum Werkleitung und Fahrzeugbau Wolfsburg (w/m/d)",
+    # Non-tech role words outrank tech words and the taxonomy's engineering-manager match (D42).
+    "Business Development Manager", "Sales Development Manager", "Cloud Account Executive",
+    "Cortex Cloud Sales Specialist", "Digital Marketing Specialist", "Director, Product Marketing",
+    "FRONT END/CASHIER", "Front End Entry Level", "FRONT END/ASST DEPT LEADER", "Retail Display Installer – Technology", "Product Demonstrator PT",
+    "Security Officer - Nights", "Armed Security Officer", "Data Center Security Officer", "CT Tech - Per Diem",
+    "Mammography Tech PRN", "Relationship Officer - 811 Digital Sales - Digital Banking",
+    # Chinese, Japanese and Korean titles without a tech word.
+    "兼职 | 星级咖啡师（学生兼职）", "医药代表（广州-基石产品线）", "ドミノ・ピザの宅配ドライバー", "배민B마트 광주광산점 일일크루(단기) 모집",
+    "Касиер-продавач (м/ж) - София", "Консультант фінансовий", "Водитель погрузчика, Москва",
+    "Addetta/o Vendite a chiamata (Bojano (CB), IT)", "Assistant Store Manager (Milano (MI), IT)",
 ])
 def test_non_tech_titles_are_dropped(title):
     assert not is_tech_title(title)
