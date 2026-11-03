@@ -21,7 +21,8 @@ Ours, not vendored: `src/core/*_resolve.py`, `salary_extract.py` (+ `salary_inr.
 2. `src/core/monitors/brassring.py`: selectolax's `LexborHTMLParser`, not `selectolax.parser` (removed in selectolax 1.x).
 3. `src/core/monitors/lever.py`: `date_posted` from Lever's `createdAt` (epoch ms). Marked `myjobs delta`.
    `accenture.py`: falls back to `postedDateText` ("Posted 3 days ago"). `pinpoint.py`: no `date_posted`; upstream
-   read `deadline_at`, the application deadline, and Pinpoint publishes no post date.
+   read `deadline_at`, the application deadline, and Pinpoint publishes no post date. `bytedance.py`: `date_posted`
+   from `publish_time` (epoch ms), falling back to `create_time`, which the API stopped sending.
 4. `src/core/monitors/join.py` reads `pageData` or `initialState` (join moved boards from one to the other in
    2026-10). The join `scraper_config` paths in `data/boards.csv` use the same `(a || b).job` fallback.
    `src/core/monitors/nextdata.py`: `pagination.exact_total: false` accepts at least half the advertised total
