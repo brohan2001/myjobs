@@ -15,7 +15,8 @@ from src.core.tech_gate import drop_at_monitor, is_tech_title
     "Solutions Architect", "Sales Engineer", "Business Analyst", "Security Engineer", "QA Automation Engineer",
     "Consultant SAP PY", "Incident Response Sr. Consultant (Remote)",  # tech words outrank "consultant"
     "下一代推荐大模型算法工程师 - TikTok算法", "供应链项目经理-芯片", "デリバリーソリューションアーキテクト",
-    "Специалист контрольных систем управления",  # non-CJK, non-Latin titles can't be judged, so they're kept
+    "Специалист контрольных систем управления", "Разработчик Java",
+    "נציג/ת מכירות (משרה חלקית)",  # Hebrew, Arabic, Thai… can't be judged, so they're kept
     # A tech role outranks a non-tech role word (D42).
     "Sales Engineer - Cloud", "Marketing Data Analyst", "Salesforce Developer", "Pre-Sales Solution Architect",
     "Information Systems Security Officer (ISSO)", "2027 Technical Sales Intern - Equipment",
@@ -40,6 +41,8 @@ def test_tech_titles_are_kept(title):
     "Mammography Tech PRN", "Relationship Officer - 811 Digital Sales - Digital Banking",
     # Chinese, Japanese and Korean titles without a tech word.
     "兼职 | 星级咖啡师（学生兼职）", "医药代表（广州-基石产品线）", "ドミノ・ピザの宅配ドライバー", "배민B마트 광주광산점 일일크루(단기) 모집",
+    "Касиер-продавач (м/ж) - София", "Консультант фінансовий", "Водитель погрузчика, Москва",
+    "Addetta/o Vendite a chiamata (Bojano (CB), IT)", "Assistant Store Manager (Milano (MI), IT)",
 ])
 def test_non_tech_titles_are_dropped(title):
     assert not is_tech_title(title)
