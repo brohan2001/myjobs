@@ -75,7 +75,7 @@ def _mostly_latin(text: str) -> bool:
 # Installer – Technology", "Business Development Manager", which the taxonomy reads as engineering-manager) unless the
 # title also names a tech role (_TECH_ROLE). D42.
 _NON_TECH_ROLE = re.compile(
-    r"\b(sales|account executive|business development|marketing|partnerships?|telesales|call cent(?:er|re)|"
+    r"\b(sales|vendit[ae]|ventas|vendeu[rs]e?|verk(?:ä|ae)ufer\w*|account executive|business development|marketing|partnerships?|telesales|call cent(?:er|re)|"
     r"customer (?:service|care)|relationship (?:officer|manager|executive)|recruit\w*|talent acquisition|"
     r"cashier|retail|merchandis\w*|demonstrator|guest advocate|store (?:manager|associate|assistant)|"
     r"front end\W+(?:entry|specialist|asst|assistant|associate|supervisor|team|clerk|service)|"
@@ -88,28 +88,34 @@ _TECH_ROLE = re.compile(
     r"information (?:systems? )?security|isso|cyber\w*)\b"
 )
 
-# Titles in Chinese, Japanese or Korean are judged by these words; other non-Latin titles are kept.
-_CJK = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
-_CJK_TECH_WORDS = re.compile(
+# Titles in Chinese, Japanese, Korean or Cyrillic are judged by these words; other non-Latin titles are kept.
+_JUDGED_SCRIPTS = re.compile(r"[\u0400-\u04ff\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
+_NON_LATIN_TECH_WORDS = re.compile(
     r"工程师|开发|研发|算法|数据|数智|软件|硬件|芯片|测试|架构|运维|前端|后端|产品经理|项目经理|分析师|解决方案|技术|程序|设计|"
     r"エンジニア|開発|データ|インフラ|システム|プログラ|セキュリティ|設計|アーキテクト|プロジェクトマネ|"
     r"개발|엔지니어|데이터|소프트웨어|시스템|보안|프로젝트 매니저|"
+    r"(?i:разработ|розробн|программист|програміст|инженер|інженер|аналитик|аналітик|данн|даних|тестиров|тестуван|"
+    r"архитект|архітект|систем)|(?<!\w)(?:ІТ|ИТ)(?!\w)|"
     r"(?<![A-Za-z])(?:AI|IT|ML|LLM|DX|QA|SAP|iOS|Android|Java|Python|C\+\+|App|Web)(?![A-Za-z])"
 )
+
+
+# "Addetta/o Vendite (Bojano (CB), IT)": a trailing Italy country code, not the IT department.
+_ITALY = re.compile(r",\s*it\)")
 
 
 def is_tech_title(title: str | None) -> bool:
     """True if the title is a tech-adjacent job.
 
-    Empty titles are kept. Chinese, Japanese and Korean titles are judged by ``_CJK_TECH_WORDS``
+    Empty titles are kept. Chinese, Japanese, Korean and Cyrillic titles are judged by ``_NON_LATIN_TECH_WORDS``
     ("下一代推荐大模型算法工程师" stays, "星级咖啡师" goes); titles mostly in other non-Latin scripts are kept,
     since neither the taxonomy nor the keywords can read them.
     """
     if not title or not title.strip():
         return True
     if not _mostly_latin(title):
-        return not _CJK.search(title) or bool(_CJK_TECH_WORDS.search(title))
-    lowered = title.lower()
+        return not _JUDGED_SCRIPTS.search(title) or bool(_NON_LATIN_TECH_WORDS.search(title))
+    lowered = _ITALY.sub(")", title.lower())
     if _NON_TECH_ROLE.search(lowered) and not _TECH_ROLE.search(lowered):
         return False
     slug = match_occupation(title)
