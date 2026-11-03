@@ -249,3 +249,17 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
   frozen at its sync-time value. A board whose ghost rows outnumbered its live jobs could never delist them. On
   2026-11-03 that left ~37.6k ghost jobs active on the feed (Speechify: 1,499 of 2,237, last seen in May), 98% of them
   undated. A truncating monitor flaps; a board that really shrank reports the same count every check.
+
+## D45: The job page's own date is the last resort, and a date after we first saw a job is a repost (User, 2026-11-04)
+- **What:** when a scrape returns no date, `src/processing/page_date.py` fetches the job page once and reads the
+  posting date from its source, as a person would by searching it for "datePosted": `itemprop`/meta job-date tags,
+  then JSON keys (`datePosted`, `postedDate`, `postingDate`, …). Generic page dates (`datePublished`) don't count.
+  It honours robots.txt, and it stops fetching a host after 20 undated pages and no dated one. Rich boards whose pages
+  carry real dates (80 boards, mostly SuccessFactors) get the one-fetch `page-date` scraper as a
+  `{"enrich": ["date_posted"]}` pass. Every date write, from monitors and scrapes alike, rejects a date later than
+  `first_seen_at` + 1 day.
+- **Why:** after the D44 ghost cleanup, ~25% of visible jobs were still undated, mostly SuccessFactors googlefeed
+  boards whose feed has no date but whose pages do. Sampling old jobs showed SuccessFactors pages often carry a repost
+  date (a job first seen May 21, "posted" Oct 9), so a date after our own first sighting can only be a repost stamp.
+  Boards were enabled only if at least one old job's page date came before its first sighting, which rules out pages
+  that stamp today's date.
