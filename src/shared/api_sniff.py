@@ -929,7 +929,14 @@ def set_body_param(body_str: str, param: str, value: object) -> str:
             fields = parse_qsl(body_str, keep_blank_values=True, max_num_fields=1_024)
         except ValueError:
             return body_str
-        if not fields or param not in {key for key, _value in fields}:
+        keys = {key for key, _value in fields}
+        head, _, rest = param.partition(".")
+        if fields and param not in keys and rest and head in keys:
+            # myjobs delta: "filterCri.paginationStartNo" sets a field inside a JSON-valued form field (zwayam).
+            return urlencode(
+                [(key, set_body_param(current, rest, value) if key == head else current) for key, current in fields]
+            )
+        if not fields or param not in keys:
             return body_str
         return urlencode(
             [(key, str(value) if key == param else current) for key, current in fields]
