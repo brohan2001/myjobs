@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.core.experience_extract import extract_experience
+from src.core.experience_extract import estimate_experience, extract_experience
 
 
 @pytest.mark.parametrize(
@@ -75,3 +75,31 @@ def test_extracts(html, want):
 )
 def test_ignores(html):
     assert extract_experience(html) is None
+
+
+@pytest.mark.parametrize(
+    ("title", "want"),
+    [
+        ("Intern Bachelors Embedded Eng", (0, 1)),
+        ("Graduate Engineer Trainee", (0, 1)),
+        ("SDE-1", (0, 2)),
+        ("Systems Engr I", (0, 2)),
+        ("Associate Product Manager", (0, 2)),
+        ("Software Engr II", (2, 5)),
+        ("Assistant Manager – Business Analyst", (2, 5)),
+        ("Product Manager", (2, 5)),
+        ("Data Engineer III", (4, 8)),
+        ("IN_Senior Associate_ Palantir", (5, None)),
+        ("Sr. Analyst", (5, None)),
+        ("Track Manager", (7, None)),
+        ("Group Product Manager", (7, None)),
+        ("Expert Model-Based Design (MBD) Engineer", (8, None)),
+        ("Engineering Manager", (10, None)),
+        ("Associate Director, Data", (12, None)),
+        ("Software Engineer", None),
+        ("Lead Generation Executive", None),
+    ],
+)
+def test_estimates_from_the_title(title, want):
+    got = estimate_experience(title)
+    assert (got and (got.min_years, got.max_years)) == want

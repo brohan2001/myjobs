@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchJob } from "@/lib/api";
 import { formatAtsName } from "@/lib/ats";
-import { formatSalary, jobWhen } from "@/lib/format";
+import { formatExperience, formatSalary, jobWhen } from "@/lib/format";
 import { RATES } from "@/lib/rates";
 import { formatWorkModes } from "@/lib/work_modes";
 import { Footer } from "@/components/Footer";
@@ -47,6 +47,7 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
 
   const modesText = formatWorkModes(job.work_modes);
 
+  const expText = formatExperience(job.experience);
   const salaryText = formatSalary(job.salary, "native", RATES);
 
   return (
@@ -76,6 +77,11 @@ export default async function JobDetailPage({ params }: JobDetailPageProps) {
           <p className="detail-tags">
             {modesText && <span className="mode">{modesText}</span>}
             {salaryText && <span className="pay">{salaryText}</span>}
+            {expText && (
+              <span className={job.experience?.estimated ? "exp exp-estimated" : "exp"} title={job.experience?.estimated ? "estimated from the title" : "stated in the posting"}>
+                {expText}
+              </span>
+            )}
             {atsName && <span>via {atsName}</span>}
           </p>
           <div className="detail-actions">

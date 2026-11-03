@@ -217,14 +217,6 @@ def test_cursor_non_string_uuid_is_invalid_filter():
         decode_cursor(_b64(["2026-01-01T00:00:00+00:00", 5]))
 
 
-def test_max_years_filter_includes_unstated_experience():
-    from src.api.queries import JobFilters, build_jobs_query
-
-    sql, args = build_jobs_query(JobFilters(max_years=2))
-    assert "(jp.experience_min IS NULL OR jp.experience_min <= $1)" in sql
-    assert args[0] == 2
-
-
 @pytest.mark.parametrize("title, is_job", [
     ("Join our Talent Community!", False),
     ("General Application - Bengaluru", False),
@@ -259,19 +251,19 @@ def test_company_type_filter_rejects_unknown_values():
 
 
 def _too_senior(max_years: int, title: str) -> bool:
-    """Apply the filter's Postgres title regex in Python (\\m and \\M are word edges)."""
+    """Apply the filter's Postgres title regex in Python (\\y is a word edge)."""
     import re
 
-    from src.api.queries import _seniority_cutoff
+    from src.core.experience_extract import estimate_rules_regex, normalize_title
 
-    pattern = _seniority_cutoff(max_years)[0].replace(r"\m", r"\b").replace(r"\M", r"\b")
-    return re.search(pattern, title.lower()) is not None
+    return re.search(estimate_rules_regex(min_above=max_years).replace(r"\y", r"\b"), normalize_title(title)) is not None
 
 
 @pytest.mark.parametrize("title", [
     "Senior Software Engineer", "Sr Software Engineer", "Principal Systems Software Engineer",
     "Senior Platform Software Engineer", "Staff Engineer", "Lead Data Scientist", "Engineering Manager",
-    "Software Engineer III", "MTS 3", "SeniorAdministrator - CheckPoint PPC",
+    "Software Engineer III", "MTS 3", "SeniorAdministrator - CheckPoint PPC", "Track Manager",
+    "Expert Model-Based Design (MBD) Engineer_ECT1", "Test Manager", "IN_Senior Associate_ Palantir",
 ])
 def test_up_to_two_years_excludes_senior_titles(title):
     assert _too_senior(2, title)
@@ -280,21 +272,30 @@ def test_up_to_two_years_excludes_senior_titles(title):
 @pytest.mark.parametrize("title", [
     "Software Engineer", "Software Engineer II - Java", "SDE-1", "Associate Product Manager",
     "Data Analyst", "Java Backend Engineer", "Software Engineer Apprenticeship", "Graduate Engineer Trainee",
+    "Lead Generation Executive",
 ])
 def test_up_to_two_years_keeps_early_career_titles(title):
     assert not _too_senior(2, title)
 
 
 def test_freshers_also_exclude_level_two():
-    assert _too_senior(0, "Software Engineer II - Java") and _too_senior(0, "SDE 2")
+    assert _too_senior(0, "Software Engineer II - Java") and _too_senior(0, "SDE 2") and _too_senior(0, "Software Engr II")
     assert not _too_senior(0, "SDE-1")
+
+
+def test_freshers_need_a_stated_zero_or_an_entry_level_title():
+    from src.api.queries import JobFilters, build_jobs_query
+
+    sql, args = build_jobs_query(JobFilters(max_years=0))
+    assert "(jp.experience_min <= 0 OR (jp.experience_min IS NULL AND translate(lower(jp.titles[1]), '_', ' ') ~ $2))" in sql
+    assert "intern" in args[1] and "senior" not in args[1]
 
 
 def test_max_years_filter_uses_title_and_seniority_tag():
     from src.api.queries import JobFilters, build_jobs_query
 
     sql, args = build_jobs_query(JobFilters(max_years=2))
-    assert "(jp.experience_min IS NULL OR jp.experience_min <= $1)" in sql
-    assert "seniority WHERE slug = ANY($2::text[])" in sql
-    assert "lower(jp.titles[1]) !~ $3" in sql
-    assert "senior" in args[1] and "mid" not in args[1]
+    assert "translate(lower(jp.titles[1]), '_', ' ') !~ $1" in sql
+    assert "(jp.experience_min IS NULL OR jp.experience_min <= $2)" in sql
+    assert "seniority WHERE slug = ANY($3::text[])" in sql
+    assert "senior" in args[2] and "mid" not in args[2]

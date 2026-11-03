@@ -230,3 +230,48 @@ def extract_experience(html: str) -> ExperienceRequirement | None:
         return None
 
     return ExperienceRequirement(min_years=best_min, max_years=best_max)
+
+
+# ── Estimate from the title (D41) ────────────────────────────────────
+#
+# When a posting states no years, its title level gives an estimate, shown as "~0–2 yrs". Rules run most senior first,
+# so the first match is the highest level in the title ("Senior Associate" is senior, "Associate Director" a director).
+# A plain title ("Software Engineer") has no estimate. The jobs filter turns the same rules into Postgres regexes
+# (``estimate_rules_regex``), so they use only syntax both engines read: \b, \s, (?<!…), no inline flags.
+_ROLE = r"(?:engineer|engr|developer|sde|mts|analyst|scientist|specialist|associate|consultant|designer|programmer|tester|administrator|technician)"
+ESTIMATE_RULES: tuple[tuple[str, int, int | None], ...] = (
+    (r"\b(?:director|vp|vice\s+president|chief|head\s+of)\b", 12, None),
+    (r"\b(?:principal|distinguished|fellow)\b|\b(?:engineering|senior|sr\.?|general)\s+manager\b", 10, None),
+    (r"\b(?:architect|expert)\b", 8, None),
+    (r"\b(?:staff|lead|managing)\b(?!\s+generat)|(?<!assistant )(?<!associate )(?<!product )\bmanager\b"
+     r"|\bgroup\s+product\s+manager\b", 7, None),
+    (r"\b(?:senior\w*|sr)\b|" + _ROLE + r"\s*-?\s*(?:iv|4)\b", 5, None),
+    (_ROLE + r"\s*-?\s*(?:iii|3)\b", 4, 8),
+    (_ROLE + r"\s*-?\s*(?:ii|2)\b|\b(?:assistant|associate)\s+manager\b|(?<!associate )\bproduct\s+manager\b", 2, 5),
+    (r"\b(?:intern|internship|trainee|apprentice|apprenticeship|freshers?|new\s+grad|campus)\b", 0, 1),
+    (r"\b(?:junior|jr|associate|entry[- ]level|graduate)\b|" + _ROLE + r"\s*-?\s*(?:i|1)\b", 0, 2),
+)
+_ESTIMATE_RES = tuple((re.compile(p), lo, hi) for p, lo, hi in ESTIMATE_RULES)
+
+
+def normalize_title(title: str) -> str:
+    """Lowercase, with underscores as spaces ("IN_Senior Associate_Tax" has word edges). The filter does the same in SQL."""
+    return title.lower().replace("_", " ")
+
+
+def estimate_experience(title: str | None) -> ExperienceRequirement | None:
+    """The experience a title's level suggests, or None for a title with no level."""
+    if not title:
+        return None
+    t = normalize_title(title)
+    for rx, lo, hi in _ESTIMATE_RES:
+        if rx.search(t):
+            return ExperienceRequirement(min_years=lo, max_years=hi)
+    return None
+
+
+def estimate_rules_regex(min_above: int | None = None, min_at_most: int | None = None) -> str:
+    """One regex (Postgres syntax) matching the titles of the rules whose estimate is above, or at most, a number of years."""
+    parts = [p for p, lo, _ in ESTIMATE_RULES
+             if (min_above is None or lo > min_above) and (min_at_most is None or lo <= min_at_most)]
+    return "|".join(f"(?:{p})" for p in parts).replace(r"\b", r"\y")

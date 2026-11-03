@@ -20,6 +20,12 @@ export interface Salary {
   period: string;
 }
 
+export interface Experience {
+  min_years: number | null;
+  max_years: number | null;
+  estimated: boolean; // true: from the title's level, not stated in the posting (D41)
+}
+
 export interface Job {
   id: string;
   title: string;
@@ -30,6 +36,7 @@ export interface Job {
   work_modes: string[];
   employment_type: string | null;
   salary: Salary | null;
+  experience: Experience | null;
   ats: string;
   listed_at: string | null; // posted_at when the ATS gives one (never later than first_seen_at); null = date unknown
   posted_at: string | null;

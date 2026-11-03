@@ -1,3 +1,5 @@
+import type { Experience } from "./types";
+
 export interface Salary {
   min: number;
   max: number | null;
@@ -91,6 +93,15 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: "€",
   GBP: "£",
 };
+
+/** "3–5 yrs", "5+ yrs", "0–1 yrs"; an estimate from the title gets a "~" (D41). */
+export function formatExperience(exp: Experience | null | undefined): string {
+  if (!exp || exp.min_years === null) return "";
+  const range = exp.max_years !== null && exp.max_years !== exp.min_years
+    ? `${exp.min_years}–${exp.max_years}`
+    : exp.max_years === null ? `${exp.min_years}+` : `${exp.min_years}`;
+  return `${exp.estimated ? "~" : ""}${range} yrs`;
+}
 
 export function formatSalary(
   salary: Salary | null | undefined,

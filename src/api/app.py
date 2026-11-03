@@ -20,6 +20,7 @@ from src.api import admin, queries
 from src.api.locations import LocationIndex, load_location_index
 from src.api.ratelimit import RateLimiter
 from src.config import settings
+from src.core.experience_extract import estimate_experience
 from src.logger import get_logger
 
 log = get_logger(__name__)
@@ -43,6 +44,14 @@ _SECURITY_HEADERS = {
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _experience(row) -> dict | None:
+    """The stated experience, or else the title's estimate (D41)."""
+    if row.get("experience_min") is not None or row.get("experience_max") is not None:
+        return {"min_years": row["experience_min"], "max_years": row["experience_max"], "estimated": False}
+    est = estimate_experience(row.get("title"))
+    return {"min_years": est.min_years, "max_years": est.max_years, "estimated": True} if est else None
 
 
 def serialize_job(row, index: LocationIndex) -> dict:
@@ -83,11 +92,7 @@ def serialize_job(row, index: LocationIndex) -> dict:
         "locations_raw": list(row["locations_raw"] or []),
         "work_modes": sorted({t for t in types if t}),
         "employment_type": row["employment_type"],
-        "experience": (
-            {"min_years": row["experience_min"], "max_years": row["experience_max"]}
-            if row.get("experience_min") is not None or row.get("experience_max") is not None
-            else None
-        ),
+        "experience": _experience(row),
         "salary": salary,
         "ats": row["ats"],
         # An undated backlog job (migration 0013) is listed at the epoch: its age is unknown.
