@@ -463,6 +463,15 @@ a {
   font-weight: 700;
 }
 
+/* Stated experience is plain ink; an estimate from the title is muted (D41, like D39's dates). */
+.exp {
+  color: var(--ink);
+}
+
+.exp-estimated {
+  color: var(--mute);
+}
+
 .tags .pay:empty,
 .tags .mode:empty {
   display: none;

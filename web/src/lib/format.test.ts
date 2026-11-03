@@ -1,6 +1,6 @@
 // Contract for web/src/lib/format.ts — copy to web/src/lib/format.test.ts unchanged.
 import { describe, expect, it } from "vitest";
-import { formatSalary, jobWhen, relativeTime, timeBucket } from "./format";
+import { formatExperience, formatSalary, jobWhen, relativeTime, timeBucket } from "./format";
 
 const NOW = new Date("2026-10-11T12:00:00Z");
 
@@ -61,5 +61,17 @@ describe("formatSalary", () => {
 
   it("returns null when there is no salary", () => {
     expect(formatSalary(null, "native", rates)).toBeNull();
+  });
+});
+
+describe("formatExperience", () => {
+  it.each([
+    [{ min_years: 3, max_years: 5, estimated: false }, "3–5 yrs"],
+    [{ min_years: 5, max_years: null, estimated: false }, "5+ yrs"],
+    [{ min_years: 0, max_years: 2, estimated: true }, "~0–2 yrs"],
+    [{ min_years: 2, max_years: 2, estimated: false }, "2 yrs"],
+    [null, ""],
+  ])("%j → %s", (exp, want) => {
+    expect(formatExperience(exp)).toBe(want);
   });
 });

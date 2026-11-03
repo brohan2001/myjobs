@@ -23,6 +23,7 @@ function makeJob(
     work_modes: ["hybrid"],
     employment_type: "full-time",
     salary: null,
+    experience: null,
     ats: "greenhouse",
     listed_at: firstSeenAt,
     posted_at: null,
