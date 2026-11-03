@@ -320,6 +320,7 @@ algorized,algorized-careers,https://www.algorized.com/careers,sitemap,"{""url_fi
 alibaba,alibaba-careers-lazada,https://www.lazada.com/en/careers/job-search/,api_sniffer,"{""api_url"": ""https://www.lazada.com/en/api/career/"", ""method"": ""POST"", ""json_path"": ""jobs"", ""browser"": true, ""post_data"": ""do=careersiteJobSearch&location_id=&vertical_id=&keyword=&pagesize=1000&page=1"", ""request_headers"": {""x-requested-with"": ""XMLHttpRequest"", ""content-type"": ""application/x-www-form-urlencoded"", ""referer"": ""https://www.lazada.com/en/careers/job-search/""}, ""url_template"": ""https://www.lazada.com/en/careers/job-description/{id}"", ""fields"": {""title"": ""name"", ""locations"": ""location_name"", ""metadata.team"": ""department_name""}}",,
 alibaba,alibaba-careers-trendyol,https://jobs.lever.co/trendyol,lever,,skip,
 alice-and-bob,alice-and-bob-careers,https://jobs.lever.co/alice-bob,lever,"{""token"": ""alice-bob""}",skip,
+alight,alight-careers,https://careers.alight.com/,phenom,,json-ld,
 alika-personal-gmbh,alika-personal-gmbh-join,https://join.com/companies/alika-personalcom,join,"{""slug"": ""alika-personalcom""}",nextdata,"{""path"": ""(props.pageProps.pageData || props.pageProps.initialState).job"", ""fields"": {""title"": ""title"", ""description"": ""description"", ""locations"": ""city.cityName"", ""employment_type"": ""employmentType.googleType"", ""job_location_type"": ""workplaceType"", ""date_posted"": ""createdAt""}}"
 alivedx,alivedx-successfactors,https://jobs.alivedx.com/,rss,"{""preset"": ""successfactors"", ""feed_url"": ""https://jobs.alivedx.com/googlefeed.xml""}",skip,
 alixpartners,alixpartners-greenhouse,https://job-boards.greenhouse.io/alixpartners,greenhouse,"{""token"": ""alixpartners""}",skip,
@@ -1682,6 +1683,7 @@ cognizant,cognizant-careers,https://careers.cognizant.com/global-en/jobs/,sitema
 cogstate,cogstate-greenhouse,https://job-boards.greenhouse.io/cogstateinc,greenhouse,"{""token"": ""cogstateinc""}",skip,
 cohere,cohere-careers,https://jobs.ashbyhq.com/cohere,ashby,,skip,
 cohere-health,cohere-health-greenhouse,https://job-boards.greenhouse.io/coherehealth,greenhouse,"{""token"": ""coherehealth""}",skip,
+cohesity,cohesity-careers,https://cohesity.wd5.myworkdayjobs.com/Cohesity_Careers,workday,,workday,
 cohort,cohort-ashby,https://jobs.ashbyhq.com/cohort,ashby,"{""token"": ""cohort""}",skip,
 coinbase,coinbase-careers,https://job-boards.greenhouse.io/coinbase,greenhouse,"{""board_token"": ""coinbase""}",skip,
 coinbase,coinbase-careers-base,https://job-boards.greenhouse.io/basejobs,greenhouse,"{""board_token"": ""basejobs""}",skip,
