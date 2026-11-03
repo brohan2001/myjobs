@@ -77,6 +77,10 @@ from src.queries.monitor import (
     _DROP_GUARD_THRESHOLD_DEFAULT,
     _EXTEND_BOARD_LEASE,
     _FETCH_DUE_BOARDS,
+    _FETCH_GUARD_STATE,
+    _GUARD_ESCAPE_HOURS,
+    _GUARD_ESCAPE_SPREAD,
+    _GUARD_ESCAPE_STREAK,
     _INSERT_RICH_JOB,
     _INSERT_RICH_JOB_ENRICH,
     _INSERT_URL_ONLY_JOBS,
@@ -426,8 +430,9 @@ async def _mark_gone_with_guards(
     commits — same pattern as :func:`_emit_gone_counter`.
     """
     md = metadata or {}
-    history = list(md.get("recent_discovered_counts") or [])
-    streak = int(md.get("suspect_streak") or 0)
+    state = await conn.fetchrow(_FETCH_GUARD_STATE, board_id)
+    history = list(_json_value(state, "history") or [])
+    streak = int(_json_value(state, "streak") or 0)
 
     drop_threshold = _setting(md, "drop_threshold", _DROP_GUARD_THRESHOLD_DEFAULT)
     blast_floor = _setting(md, "blast_radius_floor", _BLAST_RADIUS_FLOOR_DEFAULT)
@@ -476,15 +481,20 @@ async def _mark_gone_with_guards(
             )
             skip_reason = "blast_radius"
 
+    # Guard state: a passing check clears it. A skipped one extends it, and a long, steady one escapes (D44) but
+    # keeps the streak, since the missing rows need several more checks to reach the delist threshold.
+    suspect = {"suspect_streak": 0, "suspect_counts": None, "suspect_since": None}
     if skip_reason is not None:
-        await conn.execute(
-            _UPDATE_METADATA,
-            board_id,
-            json.dumps({"suspect_streak": streak + 1}),
-        )
-        return 0, skip_reason
+        counts = ((list(_json_value(state, "suspect_counts") or []) if streak else []) + [discovered])
+        counts = counts[-_GUARD_ESCAPE_STREAK:]
+        since = (_json_value(state, "suspect_since") if streak else None) or datetime.now(UTC).isoformat()
+        suspect = {"suspect_streak": streak + 1, "suspect_counts": counts, "suspect_since": since}
+        if not _steady_shrink(streak + 1, counts, since):
+            await conn.execute(_UPDATE_METADATA, board_id, json.dumps(suspect))
+            return 0, skip_reason
+        board_log.warning("batch.monitor.guard_escaped", skip_reason=skip_reason, counts=counts, since=since)
+        history = []  # the old baseline described the board before it shrank
 
-    # Both guards passed — perform gone-detection and roll the baseline.
     gone_rows = await conn.fetch(
         _MARK_GONE_BY_TIMESTAMP,
         board_id,
@@ -495,9 +505,31 @@ async def _mark_gone_with_guards(
     await conn.execute(
         _UPDATE_METADATA,
         board_id,
-        json.dumps({"recent_discovered_counts": new_history, "suspect_streak": 0}),
+        json.dumps({"recent_discovered_counts": new_history, **suspect}),
     )
     return len(gone_rows), None
+
+
+def _json_value(row, key: str):
+    """A jsonb column from *row*, decoded (asyncpg returns jsonb as text)."""
+    val = row[key] if row is not None else None
+    if isinstance(val, str) and key != "suspect_since":
+        with contextlib.suppress(ValueError):
+            return json.loads(val)
+    return val
+
+
+def _steady_shrink(streak: int, counts: list[int], since: str, now: datetime | None = None) -> bool:
+    """True when the guards have fired long enough on a steady count that the board really shrank (D44)."""
+    if streak < _GUARD_ESCAPE_STREAK or len(counts) < _GUARD_ESCAPE_STREAK:
+        return False
+    try:
+        started = datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        return False
+    if (now or datetime.now(UTC)) - started < timedelta(hours=_GUARD_ESCAPE_HOURS):
+        return False
+    return max(counts) <= min(counts) * (1 + _GUARD_ESCAPE_SPREAD)
 
 
 # A 5-strike auto-disable doesn't necessarily mean the board is dead.

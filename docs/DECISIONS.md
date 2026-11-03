@@ -239,3 +239,13 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
   when that host has no robots.txt (Goldman's `api-higher.gs.com`).
 - **Why:** on 2026-11-03, 18 boards had been skipped this way for days while keeping their old jobs live (Goldman's
   higher.gs.com: 229 jobs from Oct 23), and they looked stuck because nothing was ever written back.
+
+## D44: Delisting guards read their state from the DB and yield to a steady shrink (Default, 2026-11-03)
+- **What:** the drop and blast-radius guards read `suspect_streak` and `recent_discovered_counts` from the `job_board`
+  row, not the board config the worker caches in Redis. When a guard has skipped gone-detection for 3+ checks over at
+  least 24 h and those checks found counts within 10% of each other, gone-detection runs anyway. The streak is kept
+  until a check passes normally, so the missing rows can reach their delist threshold.
+- **Why:** the cached copy never saw the guard's own writes, so every streak stayed at 1 and every history stayed
+  frozen at its sync-time value. A board whose ghost rows outnumbered its live jobs could never delist them. On
+  2026-11-03 that left ~37.6k ghost jobs active on the feed (Speechify: 1,499 of 2,237, last seen in May), 98% of them
+  undated. A truncating monitor flaps; a board that really shrank reports the same count every check.
