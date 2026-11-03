@@ -1294,6 +1294,12 @@ def _validate_total_records(
     expected = _resolve_total_records(data, pagination_cfg)
     if expected is None or expected > MAX_URLS:
         return
+    # myjobs delta: ``exact_total: false`` for sites whose total counts repeated rows (Apple's, ~20% repeats);
+    # it still fails when fewer than half the advertised jobs come back.
+    if pagination_cfg.get("exact_total") is False:
+        if len(urls) < expected / 2:
+            raise RuntimeError(f"nextdata discovered {len(urls)} unique jobs for {board_url}; expected ~{expected}")
+        return
     if len(urls) != expected:
         raise RuntimeError(
             f"nextdata discovered {len(urls)} unique jobs for {board_url}; expected {expected}"

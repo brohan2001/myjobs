@@ -22,7 +22,11 @@ Ours, not vendored: `src/core/*_resolve.py`, `salary_extract.py` (+ `salary_inr.
 3. `src/core/monitors/lever.py`: `date_posted` from Lever's `createdAt` (epoch ms). Marked `myjobs delta`.
    `accenture.py`: falls back to `postedDateText` ("Posted 3 days ago"). `pinpoint.py`: no `date_posted`; upstream
    read `deadline_at`, the application deadline, and Pinpoint publishes no post date.
-4. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
+4. `src/core/monitors/join.py` reads `pageData` or `initialState` (join moved boards from one to the other in
+   2026-10). The join `scraper_config` paths in `data/boards.csv` use the same `(a || b).job` fallback.
+   `src/core/monitors/nextdata.py`: `pagination.exact_total: false` accepts at least half the advertised total
+   (Apple's total counts repeated rows). Marked `myjobs delta`.
+5. `src/config.py` must provide the settings the vendored code reads (`webshare_proxy_urls`,
    `webshare_proxy_canary_slot`, …).
 
 Stand-ins, so vendored files stay unmodified:
