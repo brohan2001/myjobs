@@ -34,6 +34,8 @@ from src.core.experience_extract import estimate_experience, extract_experience
         ("Work experience: 8-10+ years in enterprise IT", (8, 10)),
         ("Key Skills: 3 to 10 yrs of experience Strong programming", (3, 10)),
         ("Exp: 0-2 yrs", (0, 2)),
+        ("5-12 years of exp in SAP MM.", (5, 12)),
+        ("Cyber experience ranging from 3 to 7 years is mandatory", (3, 7)),
         ("Minimum 7.5 year(s) of experience is required", (7, None)),  # Accenture
         ("8–12+ years of experience delivering infrastructure", (8, 12)),  # not 12: the range starts at 8
         ("5-6 + years of experience in data engineering", (5, 6)),
@@ -103,3 +105,12 @@ def test_ignores(html):
 def test_estimates_from_the_title(title, want):
     got = estimate_experience(title)
     assert (got and (got.min_years, got.max_years)) == want
+
+
+def test_scrape_reads_experience_from_the_qualifications_extra():
+    from src.processing.cpu import _extract_experience_fields
+
+    # Oracle HCM: the description is the company blurb; the years are in ExternalQualificationsStr.
+    assert _extract_experience_fields("<p>About Kotak</p>", {"qualifications": "<li>5-8 years of experience</li>"}) == (5, 8)
+    assert _extract_experience_fields("<p>About Kotak</p>", {"qualifications": ["1-2 years’ experience"]}) == (1, 2)
+    assert _extract_experience_fields(None, None) == (None, None)

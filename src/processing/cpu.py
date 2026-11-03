@@ -160,14 +160,20 @@ def _extract_salary_fields(
     return sal_min, sal_max, sr.currency, sr.period, salary_eur
 
 
-def _extract_experience_fields(html: str | None) -> tuple[int | None, int | None]:
-    """Extract experience requirement from HTML.
+def _extract_experience_fields(html: str | None, extras: dict | None = None) -> tuple[int | None, int | None]:
+    """Extract experience requirement from HTML, and from a scraper's extras: Oracle HCM puts the years in its
+    separate ``qualifications`` field.
 
     Returns (experience_min, experience_max). max is None for open-ended ("5+ years").
     """
-    if not html:
+    parts = [html or ""]
+    for key in ("qualifications", "responsibilities", "skills"):
+        value = (extras or {}).get(key)
+        parts.extend(value if isinstance(value, list) else [value])
+    text = "\n".join(p for p in parts if isinstance(p, str) and p)
+    if not text:
         return None, None
-    result = extract_experience(html)
+    result = extract_experience(text)
     if result is None:
         return None, None
     return result.min_years, result.max_years
