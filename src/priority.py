@@ -1,4 +1,4 @@
-"""How often each board is checked (D33, D36).
+"""Every 6 h: how often each board is checked (D33, D36), and re-queueing scrapes Redis lost (D41).
 
 Boards of companies that may hire in India keep the base interval: hourly, or every 3 h for slow board types. Companies
 whose open tech jobs are all outside India are checked every 12 h, and companies with no open tech jobs every 8 h.
@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections import Counter
+import json
+from collections import Counter, defaultdict
+from urllib.parse import urlparse
 
 import asyncpg
 
@@ -85,6 +87,48 @@ async def apply_india_priority(conn: asyncpg.Connection) -> Counter:
     return counts
 
 
+# A scrape is queued in Redis only when its job is first seen or relisted. When Redis loses it (a restart without a
+# fresh snapshot, the stale-queue prune), Postgres still says it is due but nothing claims it: 18k Oracle HCM jobs sat
+# unscraped, and so without a description or experience, for weeks.
+_DUE_SCRAPES = """
+SELECT p.id::text AS id, p.source_url AS url, p.description_r2_hash AS r2_hash,
+       b.id::text AS board_id, b.metadata, b.crawler_type
+FROM job_posting p JOIN job_board b ON b.id = p.board_id
+WHERE p.is_active AND b.is_enabled AND p.next_scrape_at < now() - interval '1 hour'
+"""
+_SCRAPE_QUEUES = ("ft_scrapes_simple", "scrapes_simple", "ft_scrapes_browser", "scrapes_browser")
+
+
+async def requeue_lost_scrapes(conn: asyncpg.Connection) -> int:
+    """Queue again every due scrape that is in no Redis scrape queue. Returns how many."""
+    import structlog
+
+    from src.processing.board import _enqueue_scrapes_for_relisted
+
+    rows = await conn.fetch(_DUE_SCRAPES)
+    r = get_redis()
+    lost: dict[str, list] = defaultdict(list)
+    for start in range(0, len(rows), 1000):
+        chunk = rows[start:start + 1000]
+        pipe = r.pipeline()
+        for row in chunk:
+            domain = urlparse(row["url"]).hostname or ""
+            for q in _SCRAPE_QUEUES:
+                pipe.zscore(f"{q}:{domain}", row["id"])
+        scores = await pipe.execute()
+        for i, row in enumerate(chunk):
+            if all(s is None for s in scores[i * 4:i * 4 + 4]):
+                lost[row["board_id"]].append(row)
+    for board_id, board_rows in lost.items():
+        meta = board_rows[0]["metadata"]
+        meta = json.loads(meta) if isinstance(meta, str) else (meta or {})
+        await _enqueue_scrapes_for_relisted(
+            [dict(row) for row in board_rows], board_id, meta, structlog.get_logger(), crawler_type=board_rows[0]["crawler_type"])
+    n = sum(len(v) for v in lost.values())
+    log.info("priority.requeued_lost_scrapes", extra={"count": n, "due": len(rows)})
+    return n
+
+
 async def priority_loop(pool: asyncpg.Pool, shutdown_event: asyncio.Event) -> None:
     """Re-classify every 6 h. A Redis lock lets only one worker process do it; a failed run frees it for a retry.
 
@@ -102,6 +146,7 @@ async def priority_loop(pool: asyncpg.Pool, shutdown_event: asyncio.Event) -> No
             if await r.set("lock:priority", "1", nx=True, ex=REFRESH_SECONDS - 60):
                 async with pool.acquire() as conn:
                     await apply_india_priority(conn)
+                    await requeue_lost_scrapes(conn)
         except Exception:
             log.exception("priority.failed")
             with contextlib.suppress(Exception):
