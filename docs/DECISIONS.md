@@ -203,3 +203,16 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Why:** on 2026-11-03, 597 boards were "failing", but ~230 of them (all 97 Greenhouse, Recruitee, Oracle HCM,
   Workable…) had succeeded within the day: passing timeouts from the laptop, which retry with backoff (D37). They hid
   the real breaks (join's new page layout, mokahr) and fired a false workable alert.
+
+## D41: Stated experience first, then a title estimate; freshers need evidence (User, 2026-11-03)
+- **What:** a job's experience is what the posting states (`experience_extract.py`). When it states none, the title's
+  level gives an estimate (`ESTIMATE_RULES`: intern 0–1, junior/associate/level I 0–2, II 2–5, III 4–8, senior 5+,
+  lead/staff/manager 7+, architect/expert 8+, principal/engineering manager 10+, director 12+). The estimate is worked
+  out when the API reads a job, not stored, and the filter applies the same rules as Postgres regexes. The feed shows
+  "3–5 yrs" for a stated value and a muted "~0–2 yrs" for an estimate. "Freshers" lists only jobs that state 0 years or
+  have an entry-level title. A title too senior for the cap is always out, even when stated years fit. A plain title
+  ("Software Engineer") with no stated years has no estimate. We don't guess from the skills list, and we don't run a
+  local LLM: the laptop has no RAM to spare (D30), and an LLM can't find years a posting never states.
+- **Why:** on 2026-11-03, all 100 of the first India "freshers" jobs had no stated experience, and the list included
+  managers, "Engr II" and "Expert" roles. Separately, Redis had lost the scrape tasks for 18k Oracle HCM jobs, so they
+  never got a description. A 6-hourly pass now queues those again (`requeue_lost_scrapes`).

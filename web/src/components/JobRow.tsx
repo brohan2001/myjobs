@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { formatAtsName } from "@/lib/ats";
-import { formatSalary, jobWhen } from "@/lib/format";
+import { formatExperience, formatSalary, jobWhen } from "@/lib/format";
 import { orderLocations } from "@/lib/locations";
 import { RATES } from "@/lib/rates";
 import { Job } from "@/lib/types";
@@ -47,6 +47,7 @@ export function JobRow({
   const modesText = formatWorkModes(job.work_modes);
 
   // Salary formatted
+  const expText = formatExperience(job.experience);
   const salaryText = formatSalary(job.salary, currency, RATES);
 
   // ATS formatted
@@ -87,6 +88,11 @@ export function JobRow({
         <p className="tags">
           {modesText && <span className="mode">{modesText}</span>}
           {salaryText && <span className="pay">{salaryText}</span>}
+          {expText && (
+            <span className={job.experience?.estimated ? "exp exp-estimated" : "exp"} title={job.experience?.estimated ? "estimated from the title" : "stated in the posting"}>
+              {expText}
+            </span>
+          )}
           {atsName && <span>via {atsName}</span>}
           <Link
             href={`/jobs/${job.id}`}

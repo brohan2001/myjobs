@@ -576,7 +576,7 @@ async def _process_one_enrich_scrape(
             desc_text = _coerce_text(content.description)
             tech_ids = _resolve_technology_ids(desc_text, tech_id_map)
             s_min, s_max, s_cur, s_per, s_eur = _extract_salary_fields(desc_text, rates)
-            exp_min, exp_max = _extract_experience_fields(desc_text)
+            exp_min, exp_max = _extract_experience_fields(desc_text, content.extras)
 
             # Reuse the earlier fetch for R2 extras.
             r2_title = None
@@ -803,7 +803,7 @@ async def _process_one_scrape(
         # Extract salary + experience from description
         rates = await _batch._get_currency_rates(pool)
         s_min, s_max, s_cur, s_per, s_eur = _extract_salary_fields(desc_text, rates)
-        exp_min, exp_max = _extract_experience_fields(desc_text)
+        exp_min, exp_max = _extract_experience_fields(desc_text, content.extras)
 
         # Stage R2 pending data (pure computation, no I/O)
         staged = _stage_r2_pending(
@@ -1059,7 +1059,7 @@ async def _do_one_enrich_scrape(
         desc_text = _coerce_text(content.description)
         tech_ids = _resolve_technology_ids(desc_text, tech_id_map)
         s_min, s_max, s_cur, s_per, s_eur = _extract_salary_fields(desc_text, rates)
-        exp_min, exp_max = _extract_experience_fields(desc_text)
+        exp_min, exp_max = _extract_experience_fields(desc_text, content.extras)
 
         # Reuse the earlier fetch for R2 extras.
         r2_title = None
@@ -1178,7 +1178,7 @@ async def _do_one_scrape(
 
     # Extract salary + experience from description
     s_min, s_max, s_cur, s_per, s_eur = _extract_salary_fields(desc_text, rates)
-    exp_min, exp_max = _extract_experience_fields(desc_text)
+    exp_min, exp_max = _extract_experience_fields(desc_text, content.extras)
 
     # Stage R2 pending data (pure computation, no I/O)
     staged = _stage_r2_pending(
