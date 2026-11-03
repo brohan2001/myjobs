@@ -466,5 +466,6 @@ _FILL_POSTED_AT = """
 UPDATE job_posting p SET posted_at = v.posted_at
 FROM unnest($2::text[], $3::timestamptz[]) AS v(source_url, posted_at)
 WHERE p.source_url = v.source_url AND p.board_id = $1::uuid AND p.posted_at IS NULL
+  AND v.posted_at <= p.first_seen_at + interval '1 day'  -- a later date is a repost stamp, not the post date (D45)
 """
 

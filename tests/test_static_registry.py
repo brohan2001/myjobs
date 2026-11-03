@@ -81,7 +81,7 @@ def test_is_rich_monitor_consistency():
 
 
 def test_all_scraper_types_match():
-    core_scraper_all = frozenset(scraper_registry.keys())
+    core_scraper_all = frozenset(scraper_registry.keys()) - {"page-date"}  # ours, registered by src/processing/page_date.py
     assert compat_scraper_all() == core_scraper_all, (
         f"_compat.all_scraper_types() drifted from core: "
         f"missing={core_scraper_all - compat_scraper_all()}, "
