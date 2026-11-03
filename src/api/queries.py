@@ -267,7 +267,8 @@ SELECT
     jp.active_jobs, jp.new_last_24h, jp.companies_hiring,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled)                                          AS boards_enabled,
     (SELECT COUNT(*) FROM job_board WHERE is_enabled AND last_success_at >= now() - interval '24 hours') AS boards_fresh_24h,
-    (SELECT COUNT(*) FROM job_board WHERE is_enabled AND consecutive_failures > 0)             AS boards_failing,
+    (SELECT COUNT(*) FROM job_board WHERE is_enabled AND consecutive_failures > 0
+         AND coalesce(last_success_at, '-infinity') < now() - interval '1 day')              AS boards_failing,  -- D40
     (SELECT MAX(last_success_at) FROM job_board)                                               AS last_updated
 FROM (SELECT COUNT(*)                                                         AS active_jobs,
              COUNT(*) FILTER (WHERE listed_at >= now() - interval '24 hours') AS new_last_24h,
@@ -291,7 +292,8 @@ SELECT jb.crawler_type AS ats,
        COUNT(*) FILTER (WHERE jb.is_enabled)                                         AS boards,
        COUNT(*) FILTER (WHERE jb.is_enabled AND jb.consecutive_failures = 0
                         AND jb.last_success_at >= now() - interval '24 hours')       AS healthy,
-       COUNT(*) FILTER (WHERE jb.is_enabled AND jb.consecutive_failures > 0)         AS failing,
+       COUNT(*) FILTER (WHERE jb.is_enabled AND jb.consecutive_failures > 0
+                                 AND coalesce(jb.last_success_at, '-infinity') < now() - interval '1 day') AS failing,  -- D40
        COUNT(*) FILTER (WHERE jb.board_status = 'gone')                              AS gone,
        MAX(jb.last_success_at)                                                       AS last_success_at
 FROM job_board jb

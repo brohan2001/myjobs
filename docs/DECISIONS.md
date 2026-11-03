@@ -196,3 +196,10 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Why:** 36% of feed jobs had no post date, and the feed showed the crawl time as if it were one. Of the dated jobs
   first seen in the past week, ~77% had been posted more than 7 days earlier, so a crawl time says little about a
   job's age.
+
+## D40: A board is failing only after a day without success (Default, 2026-11-03)
+- **What:** health alerts, `myjobs stats` and the coverage page count a board as failing when its last check failed
+  **and** it has had no success for 24 h. The admin "failing" list still shows every board whose last check failed.
+- **Why:** on 2026-11-03, 597 boards were "failing", but ~230 of them (all 97 Greenhouse, Recruitee, Oracle HCM,
+  Workable…) had succeeded within the day: passing timeouts from the laptop, which retry with backoff (D37). They hid
+  the real breaks (join's new page layout, mokahr) and fired a false workable alert.
