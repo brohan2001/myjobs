@@ -146,7 +146,7 @@ def _classify_job_url(url: str, board_url: str | None = None) -> str | None:
     Rejection reasons (stable metric label values):
 
     - ``"invalid"`` — empty, malformed, or missing scheme/host.
-    - ``"bare_host"`` — path is empty, ``/``, or a bare hash fragment.
+    - ``"bare_host"`` — path is empty, ``/``, or a bare hash fragment (a ``#!/a/b`` route is a path).
     - ``"board_homepage"`` — host matches the board's own host and the
       path (after ``rstrip("/")``) equals the board's own path, which
       catches hash-only variants like ``.../#0``. The rule is skipped
@@ -162,6 +162,9 @@ def _classify_job_url(url: str, board_url: str | None = None) -> str | None:
         return "invalid"
     if not p.scheme or not p.netloc:
         return "invalid"
+    # A single-page app's hash route ("/#!/jobdetail/<slug>", Persistent) is a job path; "#" or "#0" is not.
+    if "/" in p.fragment.lstrip("!").strip("/"):
+        return None
     path = (p.path or "").rstrip("/")
     if not path:
         return "bare_host"
