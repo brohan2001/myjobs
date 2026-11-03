@@ -72,7 +72,7 @@ _EXPERIENCE_RE = re.compile(
     r"[\w]+\s+){0,3}"  # up to 3 qualifying adjectives / domain words
     r"(?:"
     # Must end with one of these experience-confirming words
-    r"experience|expereince|experiance"
+    r"experience|expereince|experiance|exp\b"
     r"|Erfahrung"
     r"|expérience"
     r"|esperienza"
@@ -114,7 +114,7 @@ _EXPERIENCE_REVERSED_RE = re.compile(
 _EXPERIENCE_LABEL_RE = re.compile(
     r"\b(?:experience|expereince|experiance|exp)\.?(?:\s+(?:required|range|level))?"
     r"\s*[-:：–(]?\s*"
-    r"(?:(?:of|for|from|between|typically|minimum|min\.?|at\s+least|over|around|approx\.?)\s+|>\s*)*"
+    r"(?:(?:of|for|from|ranging\s+from|between|typically|minimum|min\.?|at\s+least|over|around|approx\.?)\s+|>\s*)*"
     r"(\d{1,2})(?:\.\d)?"
     r"\s*(?:[+＋]|\s*(?:[-–—]|to)\s*(\d{1,2})(?:\.\d)?\s*[+＋]?)?"
     r"\s*(?:years?|yrs?)\b",
