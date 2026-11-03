@@ -216,3 +216,17 @@ Uncapped, the worker averaged 3+ cores, peaked at 8.6 GB and kept the CPU at 91 
 - **Why:** on 2026-11-03, all 100 of the first India "freshers" jobs had no stated experience, and the list included
   managers, "Engr II" and "Expert" roles. Separately, Redis had lost the scrape tasks for 18k Oracle HCM jobs, so they
   never got a description. A 6-hourly pass now queues those again (`requeue_lost_scrapes`).
+
+## D42: Non-tech role words outrank tech words; CJK titles are judged too (Default, 2026-11-03)
+- **What:** in `tech_gate.py`, a title naming a non-tech role (`_NON_TECH_ROLE`: sales, account executive, business
+  development, marketing, cashier, retail, security officer/guard, CT/radiology tech, …) is dropped unless it also
+  names a tech role (`_TECH_ROLE`: engineer, developer, architect, analyst, scientist, designer, pre-sales, technical
+  sales, product manager, ISSO, …). This runs before the taxonomy, which reads "Business Development Manager" as
+  engineering-manager. Chinese, Japanese and Korean titles are kept only with a tech word (`_CJK_TECH_WORDS`: 工程师,
+  开发, 数据, 项目经理, エンジニア, 개발, …); other non-Latin titles are still kept unjudged.
+- **Why:** on 2026-11-03, about 22% of 400 random feed jobs weren't tech. The biggest groups were CJK titles kept
+  unread (16k "星级咖啡师" barista rows, Domino's, Uniqlo, insurance counters), security guards ("security" is a tech
+  word), retail "Front End" and "Product Demonstrator" roles, and "Cloud Account Executive" ("cloud" outranked
+  account-executive). The re-gate dropped 108.6k of 602k active jobs. On jseek.co's tech sample it keeps 1,146 of
+  1,150 postings; the 4 dropped are a sales specialist role. Kept-sample precision went from ~78% to ~95%. The rest is
+  a scattered tail (hotel and hospital roles, "Danish Speaker") not worth more patterns.
