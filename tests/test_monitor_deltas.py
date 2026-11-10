@@ -57,3 +57,11 @@ def test_set_body_param_reaches_into_a_json_form_field():
     body = set_body_param('domain=x&filterCri={"paginationStartNo":0,"n":10}', "filterCri.paginationStartNo", 20)
     assert json.loads(parse_qs(body)["filterCri"][0]) == {"paginationStartNo": 20, "n": 10}
     assert parse_qs(body)["domain"] == ["x"]
+
+
+def test_bytedance_date_is_the_publish_time():
+    from src.core.monitors.bytedance import _CAMPUS, _to_job
+    from src.processing.cpu import _coerce_datetime
+
+    job = _to_job({"id": 7700851878603786549, "title": "Data Science Intern", "publish_time": 1792994365779}, _CAMPUS)
+    assert _coerce_datetime(job.date_posted).date().isoformat() == "2026-10-26"

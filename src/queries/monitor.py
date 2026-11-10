@@ -75,6 +75,22 @@ _DROP_GUARD_MIN_HISTORY = 3
 # fires even with empty discovered-count history.
 _BLAST_RADIUS_FLOOR_DEFAULT = 0.50
 
+# A guard that keeps firing on a steady count is not seeing a truncation: the board really shrank (D44). After this
+# many skipped checks over at least a day, with discovered counts within 10% of each other, gone-detection runs.
+_GUARD_ESCAPE_STREAK = 3
+_GUARD_ESCAPE_HOURS = 24
+_GUARD_ESCAPE_SPREAD = 0.10
+
+# The guard state lives in the DB row: the board config the worker holds is a cached copy that never sees these
+# writes, so reading it there kept every streak at 1 and every history frozen at its sync-time value (D44).
+_FETCH_GUARD_STATE = """
+SELECT metadata->'recent_discovered_counts' AS history,
+       metadata->'suspect_streak'           AS streak,
+       metadata->'suspect_counts'           AS suspect_counts,
+       metadata->>'suspect_since'           AS suspect_since
+FROM job_board WHERE id = $1
+"""
+
 _COUNT_BOARD_ACTIVE_AND_MISSING = """
 SELECT
     COUNT(*) FILTER (WHERE is_active) AS active,
@@ -450,5 +466,6 @@ _FILL_POSTED_AT = """
 UPDATE job_posting p SET posted_at = v.posted_at
 FROM unnest($2::text[], $3::timestamptz[]) AS v(source_url, posted_at)
 WHERE p.source_url = v.source_url AND p.board_id = $1::uuid AND p.posted_at IS NULL
+  AND v.posted_at <= p.first_seen_at + interval '1 day'  -- a later date is a repost stamp, not the post date (D45)
 """
 

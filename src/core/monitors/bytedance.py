@@ -276,6 +276,11 @@ def _text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _posted(item: dict) -> str | None:
+    value = item.get("publish_time") or item.get("create_time")
+    return str(value) if value is not None else None
+
+
 def _to_job(item: dict, portal: _Portal) -> DiscoveredJob:
     job_id = str(item["id"])
     responsibility = _text(item.get("description"))
@@ -307,7 +312,8 @@ def _to_job(item: dict, portal: _Portal) -> DiscoveredJob:
         description="".join(description_parts) or None,
         locations=[location] if location else None,
         employment_type=_text(recruit.get("en_name")) or _text(recruit.get("name")),
-        date_posted=str(item["create_time"]) if item.get("create_time") is not None else None,
+        # myjobs delta: the API sends publish_time (epoch ms); create_time is no longer in it.
+        date_posted=_posted(item),
         metadata={"team": team} if team else None,
         # These numeric detail URLs predate the native adapter and already
         # form the production registry identity. Keep URL identity continuity

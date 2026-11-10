@@ -17,7 +17,7 @@ from __future__ import annotations
 import src.queries.lookups as _lookups_mod
 from src.core.monitor import monitor_one, monitor_one_stream  # noqa: F401
 from src.core.monitors import api_monitor_types, get_stream_fn, monitor_needs_browser  # noqa: F401
-from src.core.scrape import scrape_one  # noqa: F401
+from src.processing.page_date import scrape_one  # noqa: F401  (D45: adds the page's own date)
 
 # ── Re-exports: processing/board.py ──────────────────────────────────
 from src.processing.board import (  # noqa: F401
